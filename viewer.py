@@ -31,6 +31,7 @@ from ide.commands import CommandRegistry, Command
 from ide.context import IDEContext
 from ide.document import Document
 from ide.events import EventsSpine
+from ide.kernel import init_kernel, get_kernel
 from ide.ai import LocalAIClient, HybridAIClient
 from ide.lexicon import LocalLexicon
 from ide.tasks import TaskExtractor, TaskIndexStore
@@ -236,15 +237,17 @@ class ChatPanel(QWidget):
         "/edit": ("code_edit", "Edit code with instruction"),
         "/generate": ("code_generate", "Generate code from description"),
         "/history": (None, "Show spine event history (episodic memory)"),
+        "/kernel": (None, "Show kernel state (contexts, events)"),
         "/help": (None, "Show available commands"),
     }
 
-    def __init__(self, ai_client, get_context_callback=None, execute_provider_callback=None, get_spine_callback=None, parent=None):
+    def __init__(self, ai_client, get_context_callback=None, execute_provider_callback=None, get_spine_callback=None, get_kernel_callback=None, parent=None):
         super().__init__(parent)
         self.ai_client = ai_client
         self.get_context_callback = get_context_callback
         self.execute_provider_callback = execute_provider_callback
         self.get_spine_callback = get_spine_callback
+        self.get_kernel_callback = get_kernel_callback
         self.messages = []  # Chat history for context
 
         layout = QVBoxLayout(self)
@@ -473,6 +476,48 @@ class ChatPanel(QWidget):
 
         self._append_system_message(history_text)
 
+    def _show_kernel(self):
+        """Display the kernel state (contexts, global events)."""
+        if not self.get_kernel_callback:
+            self._append_system_message("No kernel available.")
+            return
+
+        state = self.get_kernel_callback()
+        if not state:
+            self._append_system_message("Failed to get kernel state.")
+            return
+
+        kernel_text = "**Kernel State**<br>"
+        kernel_text += f"Active contexts: {state.get('contexts', 0)}<br><br>"
+
+        # List contexts
+        ctx_list = state.get('context_list', [])
+        if ctx_list:
+            kernel_text += "<b>Contexts:</b><br>"
+            for ctx in ctx_list:
+                path = ctx.get('path', 'untitled')
+                if path:
+                    path = path.split('\\')[-1].split('/')[-1]  # Just filename
+                ctx_type = ctx.get('type', 'unknown')
+                links = ctx.get('links', [])
+                link_str = f" (linked: {len(links)})" if links else ""
+                kernel_text += f"  [{ctx['id']}] {path} <i>({ctx_type})</i>{link_str}<br>"
+        else:
+            kernel_text += "<i>No active contexts</i><br>"
+
+        # Recent global events
+        kernel_text += "<br><b>Recent Global Events:</b><br>"
+        events = state.get('recent_events', [])
+        if events:
+            for e in events[-10:]:
+                time = e['timestamp'].split('T')[1].split('.')[0] if e.get('timestamp') else '??'
+                src = e.get('source', 'kernel') or 'kernel'
+                kernel_text += f"  [{time}] {src}: {e['event_type']}<br>"
+        else:
+            kernel_text += "  <i>No events yet</i><br>"
+
+        self._append_system_message(kernel_text)
+
     def send_message(self):
         """Send the user's message to the LLM."""
         user_text = self.input_field.toPlainText().strip()
@@ -489,6 +534,8 @@ class ChatPanel(QWidget):
                     self._show_help()
                 elif cmd == "/history":
                     self._show_history()
+                elif cmd == "/kernel":
+                    self._show_kernel()
                 elif provider_name:
                     self._append_user_message(user_text)
                     self._run_provider(provider_name)
@@ -2821,6 +2868,10 @@ class MarkdownEditor(QMainWindow):
         self.workspace_config = {}
         self.load_settings()
 
+        # Initialize kernel (Semantic OS core)
+        self.kernel = init_kernel()
+        self.kernel.spine.event_broadcast.connect(self._on_kernel_event)
+
         # Create shared AI client (LM Studio + local fallback)
         lm_studio_endpoint = self.workspace_config.get(
             "lm_studio_endpoint", "http://localhost:1234/v1"
@@ -3124,7 +3175,8 @@ class MarkdownEditor(QMainWindow):
             self.ai_client,
             get_context_callback=self._get_chat_context,
             execute_provider_callback=self._execute_chat_provider,
-            get_spine_callback=self._get_chat_spine
+            get_spine_callback=self._get_chat_spine,
+            get_kernel_callback=self.get_kernel_state
         )
         self.chat_dock.setWidget(self.chat_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.chat_dock)
@@ -4263,11 +4315,38 @@ class MarkdownEditor(QMainWindow):
             tab.events.document_opened.connect(self.on_document_opened)
             tab.events.document_closed.connect(self.on_document_closed)
             self.register_task_commands(tab)
+
+            # Create kernel context for this document
+            ctx = self.kernel.create_context(
+                path=file_path,
+                context_type="document",
+                metadata={"format": suffix.lstrip(".") if suffix else "md"}
+            )
+            tab.kernel_ctx = ctx
+            # Bridge local spine to kernel
+            tab.events.event_emitted.connect(
+                lambda e, ctx=ctx: ctx.emit(e.event_type, e.payload)
+            )
+
             # Register in workspace
             if hasattr(self, 'context_launcher'):
                 self.context_launcher.add_context(
                     file_path,
-                    context_id=tab.events.context_id,
+                    context_id=ctx.id,
+                    status="open"
+                )
+        else:
+            # PDF/EPUB - create kernel context without local spine bridge
+            ctx = self.kernel.create_context(
+                path=file_path,
+                context_type="reader",
+                metadata={"format": suffix.lstrip(".")}
+            )
+            tab.kernel_ctx = ctx
+            if hasattr(self, 'context_launcher'):
+                self.context_launcher.add_context(
+                    file_path,
+                    context_id=ctx.id,
                     status="open"
                 )
 
@@ -4310,11 +4389,17 @@ class MarkdownEditor(QMainWindow):
 
             if tab.file_path:
                 self.file_watcher.removePath(tab.file_path)
-                # Update workspace status
-                if hasattr(self, 'context_launcher'):
-                    self.context_launcher.update_context_status(tab.file_path, "closed")
             if tab.events:
                 tab.events.document_closed.emit(tab.document)
+
+        # Destroy kernel context (works for any tab type)
+        if hasattr(tab, 'kernel_ctx') and tab.kernel_ctx:
+            self.kernel.destroy_context(tab.kernel_ctx.id)
+
+        # Update workspace status
+        if hasattr(tab, 'file_path') and tab.file_path:
+            if hasattr(self, 'context_launcher'):
+                self.context_launcher.update_context_status(tab.file_path, "closed")
 
         self.tabs.removeTab(index)
 
@@ -4361,6 +4446,8 @@ class MarkdownEditor(QMainWindow):
                 break
         # Save workspace before closing
         self.save_workspace()
+        # Shutdown kernel
+        self.kernel.shutdown()
         event.accept()
 
     def get_workspace_path(self):
@@ -4404,6 +4491,16 @@ class MarkdownEditor(QMainWindow):
                     self.restoreState(QByteArray.fromBase64(data["window"]["state"].encode()))
         except Exception as e:
             print(f"Failed to load workspace: {e}")
+
+    def _on_kernel_event(self, event):
+        """Handle kernel-level events for cross-context coordination."""
+        # Log significant events to console for debugging
+        if event.event_type.startswith("context."):
+            pass  # Context lifecycle events handled elsewhere
+
+    def get_kernel_state(self):
+        """Get the kernel state (useful for AI context)."""
+        return self.kernel.get_system_state()
 
 
 def main():
