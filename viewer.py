@@ -4603,8 +4603,8 @@ class MarkdownEditor(QMainWindow):
         if isinstance(tab, MarkdownTab):
             palette = CommandPalette(tab.commands, tab.context, self)
             palette.exec()
-        elif isinstance(tab, DesktopView):
-            # If on Home tab, try to use the most recently used document tab
+        else:
+            # For Home tab, PDF tab, or any other - find a MarkdownTab to use
             for i in range(1, self.tabs.count()):
                 t = self.tabs.widget(i)
                 if isinstance(t, MarkdownTab):
