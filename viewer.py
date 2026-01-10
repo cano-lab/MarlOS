@@ -1260,7 +1260,11 @@ class ScaledPDFViewer(QWidget):
         self.measure_points = []
         self.measurements = []  # List of saved measurements
 
-        # Mode: "view", "calibrate", "measure"
+        # Coordinate capture for permit submissions
+        self.coordinate_points = []  # [(label, x_real, y_real, x_px, y_px), ...]
+        self.coord_origin = None  # (x_px, y_px) - origin point for relative coords
+
+        # Mode: "view", "calibrate", "measure", "coords"
         self.tool_mode = "view"
 
         layout = QVBoxLayout(self)
@@ -1316,6 +1320,32 @@ class ScaledPDFViewer(QWidget):
         self.scale_label = QLabel("Scale: Not calibrated")
         self.scale_label.setStyleSheet("color: #666;")
         toolbar.addWidget(self.scale_label)
+
+        toolbar.addSpacing(10)
+
+        self.clear_btn = QPushButton("Clear")
+        self.clear_btn.setToolTip("Clear all measurements")
+        self.clear_btn.clicked.connect(self.clear_measurements)
+        toolbar.addWidget(self.clear_btn)
+
+        self.export_btn = QPushButton("Export 1:1")
+        self.export_btn.setToolTip("Export page at true 1:1 scale for printing")
+        self.export_btn.clicked.connect(self.export_one_to_one)
+        self.export_btn.setEnabled(False)  # Enable after calibration
+        toolbar.addWidget(self.export_btn)
+
+        self.coords_btn = QPushButton("Coordinates")
+        self.coords_btn.setCheckable(True)
+        self.coords_btn.setToolTip("Click corners to capture coordinates for permit submission")
+        self.coords_btn.clicked.connect(self.toggle_coords_mode)
+        self.coords_btn.setEnabled(False)  # Enable after calibration
+        toolbar.addWidget(self.coords_btn)
+
+        self.export_coords_btn = QPushButton("Export Coords")
+        self.export_coords_btn.setToolTip("Export captured coordinates to CSV")
+        self.export_coords_btn.clicked.connect(self.export_coordinates)
+        self.export_coords_btn.setEnabled(False)
+        toolbar.addWidget(self.export_coords_btn)
 
         toolbar.addStretch()
 
@@ -1432,6 +1462,38 @@ class ScaledPDFViewer(QWidget):
             p1 = self.measure_points[0]
             painter.drawEllipse(int(p1[0])-4, int(p1[1])-4, 8, 8)
 
+        # Draw coordinate points
+        for i, (label, x_real, y_real, x_px, y_px) in enumerate(self.coordinate_points):
+            # Draw point marker
+            if i == 0:  # Origin point
+                pen = QPen(QColor("#ff6600"))
+                painter.setBrush(QColor("#ff6600"))
+            else:
+                pen = QPen(QColor("#9900cc"))
+                painter.setBrush(QColor("#9900cc"))
+            pen.setWidth(2)
+            painter.setPen(pen)
+            painter.drawEllipse(int(x_px)-5, int(y_px)-5, 10, 10)
+
+            # Draw label
+            painter.drawText(int(x_px) + 8, int(y_px) - 8, label)
+
+        # Draw lines connecting coordinate points (polygon outline)
+        if len(self.coordinate_points) > 1:
+            pen = QPen(QColor("#9900cc"))
+            pen.setWidth(1)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            for i in range(len(self.coordinate_points) - 1):
+                p1 = self.coordinate_points[i]
+                p2 = self.coordinate_points[i + 1]
+                painter.drawLine(int(p1[3]), int(p1[4]), int(p2[3]), int(p2[4]))
+            # Close the polygon if 3+ points
+            if len(self.coordinate_points) >= 3:
+                p1 = self.coordinate_points[-1]
+                p2 = self.coordinate_points[0]
+                painter.drawLine(int(p1[3]), int(p1[4]), int(p2[3]), int(p2[4]))
+
         painter.end()
         self.pdf_label.setPixmap(overlay)
 
@@ -1457,6 +1519,10 @@ class ScaledPDFViewer(QWidget):
                             self._finish_measurement()
                         else:
                             self.status_label.setText("Click second point...")
+                        self._draw_overlay()
+
+                    elif self.tool_mode == "coords":
+                        self._add_coordinate_point(x, y)
                         self._draw_overlay()
 
                     return True
@@ -1490,8 +1556,14 @@ class ScaledPDFViewer(QWidget):
                 self.scale_unit = unit
                 self.scale_factor = pixel_dist / dist
 
-                self.scale_label.setText(f"Scale: {self.scale_factor:.2f} px/{unit}")
-                self.status_label.setText(f"Calibrated: {dist} {unit} = {pixel_dist:.1f}px")
+                # Calculate and display drawing scale
+                drawing_scale = self.get_drawing_scale()
+                self.scale_label.setText(f"Drawing Scale: {drawing_scale}")
+                self.status_label.setText(f"Calibrated: {dist} {unit} = {pixel_dist:.1f}px (Scale {drawing_scale})")
+
+                # Enable export and coordinate buttons
+                self.export_btn.setEnabled(True)
+                self.coords_btn.setEnabled(True)
 
             except ValueError:
                 self.status_label.setText("Invalid input. Try '100 mm' or '3.5 ft'")
@@ -1525,6 +1597,7 @@ class ScaledPDFViewer(QWidget):
             self.tool_mode = "calibrate"
             self.calibration_points = []
             self.measure_btn.setChecked(False)
+            self.coords_btn.setChecked(False)
             self.status_label.setText("Click first point on a known dimension...")
         else:
             self.tool_mode = "view"
@@ -1535,12 +1608,129 @@ class ScaledPDFViewer(QWidget):
             self.tool_mode = "measure"
             self.measure_points = []
             self.calibrate_btn.setChecked(False)
+            self.coords_btn.setChecked(False)
             if not self.scale_factor:
                 self.status_label.setText("Measuring in pixels (calibrate for real units)")
             else:
                 self.status_label.setText("Click first point to measure...")
         else:
             self.tool_mode = "view"
+
+    def toggle_coords_mode(self):
+        """Toggle coordinate capture mode."""
+        if self.coords_btn.isChecked():
+            self.tool_mode = "coords"
+            self.calibrate_btn.setChecked(False)
+            self.measure_btn.setChecked(False)
+            if not self.coordinate_points:
+                self.status_label.setText("Click ORIGIN point first (will be 0,0)...")
+            else:
+                self.status_label.setText(f"Click to add point (have {len(self.coordinate_points)} points)")
+        else:
+            self.tool_mode = "view"
+
+    def _add_coordinate_point(self, x_px, y_px):
+        """Add a coordinate point at the clicked position."""
+        from PyQt6.QtWidgets import QInputDialog
+
+        # Calculate real-world coordinates
+        if not self.coordinate_points:
+            # First point is the origin
+            x_real, y_real = 0.0, 0.0
+            self.coord_origin = (x_px, y_px)
+            default_label = "Origin"
+        else:
+            # Calculate relative to origin
+            ox, oy = self.coord_origin
+            x_real = (x_px - ox) / self.scale_factor
+            y_real = (oy - y_px) / self.scale_factor  # Y inverted (screen coords)
+            default_label = f"P{len(self.coordinate_points)}"
+
+        # Ask for label
+        label, ok = QInputDialog.getText(
+            self, "Point Label",
+            f"Coordinates: ({x_real:.2f}, {y_real:.2f}) {self.scale_unit}\n\nEnter label for this point:",
+            text=default_label
+        )
+
+        if ok and label:
+            self.coordinate_points.append((label, x_real, y_real, x_px, y_px))
+            self.export_coords_btn.setEnabled(True)
+            self.status_label.setText(
+                f"Added {label}: ({x_real:.2f}, {y_real:.2f}) {self.scale_unit} "
+                f"[{len(self.coordinate_points)} points total]"
+            )
+
+    def export_coordinates(self):
+        """Export captured coordinates to CSV."""
+        if not self.coordinate_points:
+            self.status_label.setText("No coordinates captured")
+            return
+
+        from PyQt6.QtWidgets import QFileDialog
+
+        default_name = "coordinates.csv"
+        if self.pdf_doc:
+            default_name = Path(self.pdf_doc.name).stem + "_coords.csv"
+
+        save_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Coordinates",
+            default_name,
+            "CSV Files (*.csv);;Text Files (*.txt)"
+        )
+
+        if not save_path:
+            return
+
+        try:
+            with open(save_path, "w", encoding="utf-8") as f:
+                # Header
+                f.write(f"# Coordinate Export\n")
+                f.write(f"# Unit: {self.scale_unit}\n")
+                f.write(f"# Scale: {self.get_drawing_scale()}\n")
+                f.write(f"# Points: {len(self.coordinate_points)}\n")
+                f.write(f"#\n")
+                f.write(f"Label,X ({self.scale_unit}),Y ({self.scale_unit})\n")
+
+                for label, x_real, y_real, x_px, y_px in self.coordinate_points:
+                    f.write(f"{label},{x_real:.4f},{y_real:.4f}\n")
+
+                # Add polygon area if 3+ points
+                if len(self.coordinate_points) >= 3:
+                    area = self._calculate_polygon_area()
+                    f.write(f"#\n")
+                    f.write(f"# Polygon Area: {area:.4f} sq {self.scale_unit}\n")
+
+            self.status_label.setText(f"Exported {len(self.coordinate_points)} coordinates to {Path(save_path).name}")
+
+        except Exception as e:
+            self.status_label.setText(f"Export error: {e}")
+
+    def _calculate_polygon_area(self):
+        """Calculate polygon area using shoelace formula."""
+        if len(self.coordinate_points) < 3:
+            return 0
+
+        # Extract x, y coordinates
+        coords = [(p[1], p[2]) for p in self.coordinate_points]
+        n = len(coords)
+
+        # Shoelace formula
+        area = 0
+        for i in range(n):
+            j = (i + 1) % n
+            area += coords[i][0] * coords[j][1]
+            area -= coords[j][0] * coords[i][1]
+
+        return abs(area) / 2
+
+    def clear_coordinates(self):
+        """Clear all coordinate points."""
+        self.coordinate_points = []
+        self.coord_origin = None
+        self.export_coords_btn.setEnabled(False)
+        self._draw_overlay()
+        self.status_label.setText("Coordinates cleared")
 
     def zoom_in(self):
         self.zoom = min(4.0, self.zoom * 1.25)
@@ -1561,6 +1751,187 @@ class ScaledPDFViewer(QWidget):
             self.current_page -= 1
             self.measurements = []
             self.render_page()
+
+    def clear_measurements(self):
+        """Clear all measurements and coordinates from the page."""
+        self.measurements = []
+        self.measure_points = []
+        self.coordinate_points = []
+        self.coord_origin = None
+        self.export_coords_btn.setEnabled(False)
+        self._draw_overlay()
+        self.status_label.setText("All measurements and coordinates cleared")
+
+    def export_one_to_one(self):
+        """Export current page at 1:1 scale for accurate printing."""
+        try:
+            self._do_export_one_to_one()
+        except Exception as e:
+            self.status_label.setText(f"Export error: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _do_export_one_to_one(self):
+        """Internal export implementation."""
+        self.status_label.setText("Preparing 1:1 export...")
+
+        if not self.pdf_doc:
+            self.status_label.setText("No PDF loaded")
+            return
+
+        if not self.scale_factor:
+            self.status_label.setText("Calibrate first to enable 1:1 export")
+            return
+
+        try:
+            import fitz
+        except ImportError:
+            self.status_label.setText("PyMuPDF not installed")
+            return
+
+        # Calculate the DPI needed for 1:1 printing
+        # scale_factor = pixels / real_unit at current render DPI
+        # For 1:1 printing, we need: printed_size = real_size
+        # At print time, printers use 72 DPI for PDF points
+        # So we need to calculate what DPI renders the drawing at 1:1
+
+        # Get page size in points (72 points = 1 inch)
+        page = self.pdf_doc[self.current_page]
+        page_rect = page.rect
+        page_width_pts = page_rect.width
+        page_height_pts = page_rect.height
+
+        # Convert scale unit to inches for calculation
+        unit_to_inch = {
+            "mm": 1 / 25.4,
+            "cm": 1 / 2.54,
+            "m": 39.37,
+            "in": 1.0,
+            "ft": 12.0,
+            "inch": 1.0,
+            "inches": 1.0,
+        }
+        inch_factor = unit_to_inch.get(self.scale_unit.lower(), 1/25.4)
+
+        # Calculate the scale ratio
+        # At current DPI, scale_factor pixels = 1 real unit
+        # Pixels at current DPI: scale_factor
+        # Real size in inches: 1 * inch_factor
+        # Current render: self.dpi pixels per inch
+        # Drawing scale = (scale_factor / self.dpi) / inch_factor
+        drawing_scale = (self.scale_factor / self.dpi) / inch_factor
+
+        # For 1:1 export, we need to render at a DPI that makes drawing_scale = 1
+        # target_dpi such that (scale_factor / target_dpi) / inch_factor = 1
+        # target_dpi = scale_factor / inch_factor
+        target_dpi = self.scale_factor / inch_factor
+
+        # Calculate resulting paper size in inches
+        paper_width_in = page_width_pts / 72 * (target_dpi / 72)
+        paper_height_in = page_height_pts / 72 * (target_dpi / 72)
+
+        # Ask for output file
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+
+        # Show info about the export
+        info_msg = f"""1:1 Export Information:
+
+Current drawing scale: 1:{1/drawing_scale:.1f}
+Target scale: 1:1 (actual size)
+
+Rendering at {target_dpi:.0f} DPI
+
+The exported image will print at actual size when printed
+at 100% scale (no fit-to-page).
+
+Note: Very large drawings may create large files."""
+
+        reply = QMessageBox.information(
+            self, "1:1 Export",
+            info_msg,
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel
+        )
+
+        if reply != QMessageBox.StandardButton.Ok:
+            return
+
+        # Get save path
+        default_name = Path(self.pdf_doc.name).stem + "_1to1.pdf"
+        save_path, _ = QFileDialog.getSaveFileName(
+            self, "Export 1:1 PDF",
+            default_name,
+            "PDF Files (*.pdf);;PNG Image (*.png)"
+        )
+
+        if not save_path:
+            return
+
+        try:
+            # Render at target DPI
+            mat = fitz.Matrix(target_dpi / 72, target_dpi / 72)
+            pix = page.get_pixmap(matrix=mat)
+
+            if save_path.lower().endswith('.png'):
+                # Save as PNG
+                pix.save(save_path)
+                self.status_label.setText(f"Exported: {Path(save_path).name} ({pix.width}x{pix.height}px)")
+            else:
+                # Create a new PDF with the rendered image
+                # The image is embedded at the size that makes it print 1:1
+                out_doc = fitz.open()
+
+                # Calculate page size in points for 1:1 printing at 72 DPI
+                # At 72 DPI, 1 inch = 72 points
+                # Our image is target_dpi pixels per inch of real drawing
+                # So image dimensions / target_dpi = size in inches
+                # Size in points = (image dimensions / target_dpi) * 72
+                img_width_pts = (pix.width / target_dpi) * 72
+                img_height_pts = (pix.height / target_dpi) * 72
+
+                out_page = out_doc.new_page(width=img_width_pts, height=img_height_pts)
+
+                # Insert the image to fill the page
+                out_page.insert_image(
+                    out_page.rect,
+                    pixmap=pix
+                )
+
+                out_doc.save(save_path)
+                out_doc.close()
+
+                self.status_label.setText(
+                    f"Exported 1:1: {Path(save_path).name} "
+                    f"({img_width_pts/72:.1f}\" x {img_height_pts/72:.1f}\")"
+                )
+
+        except Exception as e:
+            self.status_label.setText(f"Export error: {e}")
+
+    def get_drawing_scale(self):
+        """Calculate and return the drawing scale ratio (e.g., 1:100)."""
+        if not self.scale_factor:
+            return None
+
+        # Convert to inches for consistent calculation
+        unit_to_inch = {
+            "mm": 1 / 25.4,
+            "cm": 1 / 2.54,
+            "m": 39.37,
+            "in": 1.0,
+            "ft": 12.0,
+        }
+        inch_factor = unit_to_inch.get(self.scale_unit.lower(), 1/25.4)
+
+        # scale_factor = pixels per real unit at current DPI
+        # 1 inch on screen = self.dpi pixels
+        # 1 real unit = scale_factor pixels
+        # ratio = screen_size / real_size = (scale_factor / self.dpi) / inch_factor
+        ratio = (self.scale_factor / self.dpi) / inch_factor
+
+        if ratio >= 1:
+            return f"{ratio:.1f}:1"  # Enlarged
+        else:
+            return f"1:{1/ratio:.0f}"  # Reduced (typical for drawings)
 
 
 class ReaderTab(QWidget):
@@ -2955,24 +3326,22 @@ class MarkdownEditor(QMainWindow):
 
         self.setAcceptDrops(True)
 
-        # Central stacked widget: Desktop view + Tabs
-        self.central_stack = QStackedWidget()
-
-        # Desktop view (shown when no files open)
-        self.desktop_view = DesktopView()
-        self.desktop_view.file_requested.connect(self.open_file)
-        self.desktop_view.new_file_requested.connect(self.new_file)
-        self.central_stack.addWidget(self.desktop_view)
-
-        # Tab widget for documents
+        # Tab widget with Home tab always present
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.setDocumentMode(True)
         self.tabs.currentChanged.connect(self.on_tab_changed)
-        self.central_stack.addWidget(self.tabs)
 
-        self.setCentralWidget(self.central_stack)
+        # Desktop view as permanent Home tab
+        self.desktop_view = DesktopView()
+        self.desktop_view.file_requested.connect(self.open_file)
+        self.desktop_view.new_file_requested.connect(self.new_file)
+        self.tabs.addTab(self.desktop_view, "Home")
+        # Make Home tab non-closable
+        self.tabs.tabBar().setTabButton(0, self.tabs.tabBar().ButtonPosition.RightSide, None)
+
+        self.setCentralWidget(self.tabs)
 
         self.setup_menu()
         self.setup_side_panels()
@@ -2995,14 +3364,15 @@ class MarkdownEditor(QMainWindow):
             self.show_desktop()
 
     def show_desktop(self):
-        """Show the desktop view."""
-        self.central_stack.setCurrentWidget(self.desktop_view)
+        """Show the desktop/home tab."""
+        self.tabs.setCurrentIndex(0)  # Home tab is always index 0
         self.desktop_view.refresh_icons()
         self.setWindowTitle("Semantic OS")
 
     def show_editor(self):
-        """Show the tabs/editor view."""
-        self.central_stack.setCurrentWidget(self.tabs)
+        """Show the most recent document tab (or stay if already on one)."""
+        if self.tabs.currentIndex() == 0 and self.tabs.count() > 1:
+            self.tabs.setCurrentIndex(1)  # Switch to first document tab
 
     def setup_menu(self):
         menubar = self.menuBar()
@@ -4439,6 +4809,10 @@ class MarkdownEditor(QMainWindow):
                     self.file_watcher.addPath(tab.file_path)
 
     def close_tab(self, index: int):
+        # Don't close the Home tab (index 0)
+        if index == 0:
+            return
+
         tab = self.tabs.widget(index)
         if isinstance(tab, MarkdownTab):
             if tab.modified:
@@ -4471,8 +4845,8 @@ class MarkdownEditor(QMainWindow):
 
         self.tabs.removeTab(index)
 
-        # If no tabs left, show desktop
-        if self.tabs.count() == 0:
+        # If only Home tab left, switch to it
+        if self.tabs.count() == 1:
             self.show_desktop()
 
     def close_current_tab(self):
