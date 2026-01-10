@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "markdown-viewer"
+version = "1.0.0"
+description = "A markdown viewer with print support"
+requires-python = ">=3.9"
+dependencies = [
+    "PyQt6",
+    "markdown",
+    "pygments",
+]
+
+[project.scripts]
+mdview = "viewer:main"
+
+[project.gui-scripts]
+mdview-gui = "viewer:main"

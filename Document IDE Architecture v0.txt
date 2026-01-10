@@ -1,0 +1,362 @@
+Document IDE Architecture v0
+Implementation Specification
+1. Scope & Intent
+
+This specification defines the minimum architecture for a Document IDE that:
+
+Behaves like a plain text editor by default
+
+Supports advanced document intelligence
+
+Allows powerful transformations only by explicit user action
+
+Scales without feature entanglement
+
+This is not a UI specification.
+This is a behavioral and architectural contract.
+
+2. Core Concepts (Normative)
+2.1 Document
+
+A Document is the single source of truth for textual content.
+
+Requirements
+
+Stores raw text
+
+Tracks modified state
+
+Knows file path (if any)
+
+Emits events on change and save
+
+Prohibitions
+
+MUST NOT know about UI
+
+MUST NOT render itself
+
+MUST NOT call providers directly
+
+2.2 Events Spine
+
+The Events Spine is the only mechanism by which changes propagate.
+
+Minimum Events
+
+document_changed(document)
+
+document_saved(document)
+
+cursor_moved(position)
+
+Rules
+
+Events are broadcast
+
+No event implies permission to mutate
+
+Events MUST be synchronous in v0
+
+3. Providers
+3.1 Definition
+
+A Provider is a bounded unit of capability that:
+
+Observes documents and events
+
+May compute derived information
+
+May request actions via commands
+
+Providers do not own UI, execution, or permission.
+
+3.2 Provider Categories
+
+Providers MUST belong to exactly one category.
+
+A. Always-On Providers
+
+Activated at document load
+
+Silent
+
+Read-only
+
+No UI
+
+No mutation
+
+Examples:
+
+Language Service
+
+File State Tracker
+
+B. Implied Providers
+
+Activated automatically
+
+UI is hidden by default
+
+React to navigation or context
+
+No mutation
+
+Examples:
+
+Outline
+
+Preview
+
+Word Count
+
+C. On-Demand Providers
+
+Dormant by default
+
+Activated only by command
+
+May mutate document or create artifacts
+
+Examples:
+
+Image Generator
+
+Exporters
+
+Formatters
+
+3.3 Provider Rules (Strict)
+
+Providers MUST NOT mutate documents directly
+
+Providers MUST NOT assume UI presence
+
+Providers MUST register commands for any action
+
+Providers MAY share read-only services
+
+4. IDE Context
+4.1 Purpose
+
+The IDEContext is the only object through which providers interact with the IDE.
+
+It represents capability, not ownership.
+
+4.2 Minimum Interface
+
+The context MUST expose:
+
+document
+events
+editor          # optional
+preview         # optional
+commands        # CommandRegistry
+
+
+And MUST provide:
+
+has_selection()
+get_selection()
+insert_text(text)
+confirm(title) -> bool
+
+4.3 Mutation Rule
+
+All document mutation MUST flow through IDEContext methods.
+
+Providers never mutate state directly.
+
+5. Command System
+5.1 Command Definition
+
+A Command is a named, discoverable, user-invoked action.
+
+Required Properties
+
+id (stable, namespaced)
+
+title
+
+handler(context)
+
+Optional Flags
+
+requires_selection
+
+modifies_document
+
+confirm
+
+5.2 Command Registry
+
+The Command Registry:
+
+Stores commands
+
+Validates preconditions
+
+Executes handlers
+
+Does not implement UI
+
+Execution Rules
+
+Validate availability
+
+Request confirmation if required
+
+Invoke handler with context
+
+5.3 Naming Convention (Required)
+
+Commands MUST use dot-namespaced identifiers:
+
+document.save
+markdown.export.pdf
+markdown.generate.image
+markdown.format.table
+
+
+Identifiers are public API and MUST remain stable.
+
+6. Markdown Language Service (Always-On)
+6.1 Role
+
+The Markdown Language Service provides structural understanding.
+
+It is not a linter and not a formatter.
+
+6.2 Responsibilities
+
+Parse Markdown into an internal structure
+
+Track:
+
+Headings
+
+Sections
+
+Links
+
+Code blocks
+
+Tasks
+
+Cache results
+
+Update on document change
+
+6.3 Prohibitions
+
+MUST NOT render
+
+MUST NOT emit diagnostics
+
+MUST NOT mutate content
+
+MUST NOT show UI
+
+7. Image Generator Provider (Example: Transformative)
+7.1 Classification
+
+Provider Type: On-Demand
+
+Activation: Command only
+
+Side Effects: Asset creation (optional), document mutation (optional)
+
+7.2 Required Behavior
+
+Uses selection or explicit input
+
+Generates image artifact
+
+Offers user choice:
+
+Insert
+
+Save only
+
+Discard
+
+7.3 Prohibited Behavior
+
+Auto-generation
+
+Background execution
+
+Silent insertion
+
+Overwriting assets without confirmation
+
+8. Default User Experience Contract
+
+When the IDE is opened and the user types:
+
+No popups
+
+No auto-formatting
+
+No diagnostics
+
+No unsolicited UI
+
+No background mutation
+
+Observed behavior MUST match a plain text editor.
+
+9. Architectural Laws (Non-Negotiable)
+
+Providers may observe by default
+
+Providers may act only via commands
+
+Commands exist only by user intent
+
+Editing is sacred
+
+Understanding precedes action
+
+Violating these breaks the architecture.
+
+10. Versioning
+
+This document defines Document IDE Architecture v0.
+
+Changes MUST:
+
+Preserve existing command IDs
+
+Preserve provider categories
+
+Maintain default quiet behavior
+
+11. Implementation Order (Recommended)
+
+Events Spine
+
+Command Registry
+
+Markdown Language Service
+
+Outline Provider
+
+Preview Provider
+
+Image Generator Provider
+
+Final Note (Intent)
+
+This architecture prioritizes:
+
+Trust
+
+Legibility
+
+Consent
+
+Longevity
+
+It is designed to grow without losing its soul.
