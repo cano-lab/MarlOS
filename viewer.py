@@ -63,6 +63,10 @@ from ide.providers import (
     OutlineProvider,
     PreviewProvider,
     WordCountProvider,
+    CodeRunnerProvider,
+    BuildProvider,
+    ShellProvider,
+    PythonInterpreterProvider,
 )
 
 
@@ -2404,6 +2408,10 @@ class MarkdownTab(QWidget):
         self.suggestion_provider = SuggestionProvider(self.ai_client)
         self.lexicon_provider = LexiconProvider(self.lexicon)
         self.coding_agent_provider = CodingAgentProvider(self.ai_client)
+        self.code_runner_provider = CodeRunnerProvider()
+        self.build_provider = BuildProvider()
+        self.shell_provider = ShellProvider()
+        self.python_interpreter_provider = PythonInterpreterProvider()
         self.dark_mode = dark_mode
         self.edit_mode = False
         self.graphics_enabled = graphics_enabled
@@ -2548,6 +2556,10 @@ class MarkdownTab(QWidget):
             self.suggestion_provider,
             self.lexicon_provider,
             self.coding_agent_provider,
+            self.code_runner_provider,
+            self.build_provider,
+            self.shell_provider,
+            self.python_interpreter_provider,
         ]
         if self.graphics_enabled:
             self.providers.append(self.image_generator_provider)
@@ -3410,7 +3422,7 @@ class MarkdownEditor(QMainWindow):
         file_menu.addAction(print_action)
 
         export_action = QAction("Export to &PDF...", self)
-        export_action.setShortcut(QKeySequence("Ctrl+Shift+P"))
+        export_action.setShortcut(QKeySequence("Ctrl+Shift+E"))
         export_action.triggered.connect(self.export_pdf_current)
         file_menu.addAction(export_action)
 
@@ -4591,6 +4603,17 @@ class MarkdownEditor(QMainWindow):
         if isinstance(tab, MarkdownTab):
             palette = CommandPalette(tab.commands, tab.context, self)
             palette.exec()
+        elif isinstance(tab, DesktopView):
+            # If on Home tab, try to use the most recently used document tab
+            for i in range(1, self.tabs.count()):
+                t = self.tabs.widget(i)
+                if isinstance(t, MarkdownTab):
+                    self.tabs.setCurrentIndex(i)
+                    palette = CommandPalette(t.commands, t.context, self)
+                    palette.exec()
+                    return
+            # No document tabs open
+            QMessageBox.information(self, "Command Palette", "Open a document first to use the command palette.")
 
     def jump_to_heading(self, item):
         tab = self.tabs.currentWidget()

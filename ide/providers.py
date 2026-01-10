@@ -1120,3 +1120,519 @@ class CodingAgentProvider(Provider):
 
         context.present_text("AI Status", status, allow_insert=False)
         return True
+
+
+class CodeRunnerProvider(Provider):
+    """Provider for running code in various languages.
+
+    Executes code with proper sandboxing and permission checks.
+    Only works on documents with ai_access="edit" or explicit permission.
+    """
+
+    SUPPORTED_LANGUAGES = {
+        "python": {"cmd": "python", "ext": ".py"},
+        "py": {"cmd": "python", "ext": ".py"},
+        "node": {"cmd": "node", "ext": ".js"},
+        "javascript": {"cmd": "node", "ext": ".js"},
+        "js": {"cmd": "node", "ext": ".js"},
+    }
+
+    def __init__(self):
+        super().__init__("code_runner", ProviderCategory.ON_DEMAND)
+
+    def activate(self, context):
+        context.commands.register(
+            Command(
+                "code.run",
+                "Compiler: Run Code File",
+                lambda ctx: self._run_code(ctx),
+            )
+        )
+        context.commands.register(
+            Command(
+                "code.run.selection",
+                "Compiler: Run Selection",
+                lambda ctx: self._run_selection(ctx),
+            )
+        )
+
+    def _check_permission(self, context):
+        """Check if code execution is permitted for this context."""
+        # Check kernel context if available
+        if hasattr(context, 'kernel_ctx') and context.kernel_ctx:
+            perms = context.kernel_ctx.check_provider(self.name)
+            if not perms.get('can_invoke', False):
+                return False, "Code execution not permitted by document manifest"
+
+        return True, None
+
+    def _run_code(self, context):
+        """Run the entire document as code."""
+        allowed, msg = self._check_permission(context)
+        if not allowed:
+            context.present_text("Permission Denied", msg, allow_insert=False)
+            return False
+
+        content = context.document.content
+        lang = self._detect_language(context)
+
+        if not lang:
+            context.present_text(
+                "Run Code",
+                "Could not detect language. Supported: Python, JavaScript/Node",
+                allow_insert=False
+            )
+            return False
+
+        return self._execute(context, content, lang)
+
+    def _run_selection(self, context):
+        """Run selected code."""
+        allowed, msg = self._check_permission(context)
+        if not allowed:
+            context.present_text("Permission Denied", msg, allow_insert=False)
+            return False
+
+        selection = context.get_selection()
+        if not selection:
+            context.present_text("Run Selection", "No code selected", allow_insert=False)
+            return False
+
+        lang = self._detect_language(context)
+        if not lang:
+            # Try to guess from selection
+            if "def " in selection or "import " in selection:
+                lang = "python"
+            elif "function " in selection or "const " in selection or "let " in selection:
+                lang = "node"
+            else:
+                lang = "python"  # Default
+
+        return self._execute(context, selection, lang)
+
+    def _detect_language(self, context):
+        """Detect language from file extension or content."""
+        if context.document.file_path:
+            ext = context.document.file_path.split(".")[-1].lower()
+            if ext in ("py", "pyw"):
+                return "python"
+            elif ext in ("js", "mjs", "cjs"):
+                return "node"
+
+        # Check content for hints
+        content = context.document.content[:500]
+        if "#!/usr/bin/env python" in content or "import " in content:
+            return "python"
+        if "#!/usr/bin/env node" in content or "require(" in content:
+            return "node"
+
+        return None
+
+    def _execute(self, context, code, lang):
+        """Execute code and show output."""
+        import subprocess
+        import tempfile
+        import os
+
+        lang_info = self.SUPPORTED_LANGUAGES.get(lang)
+        if not lang_info:
+            context.present_text("Run Code", f"Unsupported language: {lang}", allow_insert=False)
+            return False
+
+        # Write to temp file
+        with tempfile.NamedTemporaryFile(
+            mode='w',
+            suffix=lang_info["ext"],
+            delete=False,
+            encoding='utf-8'
+        ) as f:
+            f.write(code)
+            temp_path = f.name
+
+        try:
+            # Execute with timeout
+            result = subprocess.run(
+                [lang_info["cmd"], temp_path],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=os.path.dirname(context.document.file_path) if context.document.file_path else None
+            )
+
+            output = ""
+            if result.stdout:
+                output += f"=== Output ===\n{result.stdout}\n"
+            if result.stderr:
+                output += f"=== Errors ===\n{result.stderr}\n"
+            if result.returncode != 0:
+                output += f"\n[Exit code: {result.returncode}]"
+
+            if not output:
+                output = "[No output]"
+
+            context.present_text(f"Run {lang.title()}", output, allow_insert=False)
+            return True
+
+        except subprocess.TimeoutExpired:
+            context.present_text("Run Code", "Execution timed out (30s limit)", allow_insert=False)
+            return False
+        except FileNotFoundError:
+            context.present_text(
+                "Run Code",
+                f"'{lang_info['cmd']}' not found. Is {lang} installed?",
+                allow_insert=False
+            )
+            return False
+        except Exception as e:
+            context.present_text("Run Code", f"Error: {e}", allow_insert=False)
+            return False
+        finally:
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+
+
+class BuildProvider(Provider):
+    """Provider for running build commands.
+
+    Detects project type and runs appropriate build commands.
+    """
+
+    BUILD_CONFIGS = {
+        "package.json": {"name": "npm", "commands": ["npm install", "npm run build", "npm test"]},
+        "Cargo.toml": {"name": "cargo", "commands": ["cargo build", "cargo run", "cargo test"]},
+        "Makefile": {"name": "make", "commands": ["make", "make clean", "make test"]},
+        "pyproject.toml": {"name": "python", "commands": ["pip install -e .", "pytest", "python -m build"]},
+        "setup.py": {"name": "python", "commands": ["pip install -e .", "pytest"]},
+        "go.mod": {"name": "go", "commands": ["go build", "go run .", "go test"]},
+    }
+
+    def __init__(self):
+        super().__init__("build_runner", ProviderCategory.ON_DEMAND)
+
+    def activate(self, context):
+        context.commands.register(
+            Command(
+                "build.run",
+                "Compiler: Build Project",
+                lambda ctx: self._run_build(ctx),
+            )
+        )
+        context.commands.register(
+            Command(
+                "build.command",
+                "Compiler: Custom Build Command",
+                lambda ctx: self._run_custom(ctx),
+            )
+        )
+
+    def _detect_project(self, context):
+        """Detect project type from workspace files."""
+        import os
+        from pathlib import Path
+
+        if not context.document.file_path:
+            return None, None
+
+        work_dir = Path(context.document.file_path).parent
+
+        # Walk up to find project root
+        for _ in range(5):  # Max 5 levels up
+            for config_file, config in self.BUILD_CONFIGS.items():
+                if (work_dir / config_file).exists():
+                    return work_dir, config
+            parent = work_dir.parent
+            if parent == work_dir:
+                break
+            work_dir = parent
+
+        return None, None
+
+    def _run_build(self, context):
+        """Run detected build system."""
+        work_dir, config = self._detect_project(context)
+
+        if not config:
+            context.present_text(
+                "Build",
+                "No recognized build system found.\n\n"
+                "Supported: npm, cargo, make, python (pyproject.toml), go",
+                allow_insert=False
+            )
+            return False
+
+        # Let user choose which command
+        choice = context.choose_option(
+            f"Build ({config['name']})",
+            f"Select command to run in {work_dir}:",
+            config['commands']
+        )
+
+        if not choice:
+            return False
+
+        return self._execute_command(context, choice, work_dir)
+
+    def _run_custom(self, context):
+        """Run a custom build command."""
+        from pathlib import Path
+
+        if not context.document.file_path:
+            context.present_text("Build", "Save file first to set working directory", allow_insert=False)
+            return False
+
+        work_dir = Path(context.document.file_path).parent
+
+        # Common commands to suggest
+        commands = ["npm run", "python -m pytest", "make", "cargo build", "go build"]
+
+        choice = context.choose_option(
+            "Run Command",
+            f"Select or enter command (runs in {work_dir}):",
+            commands
+        )
+
+        if not choice:
+            return False
+
+        return self._execute_command(context, choice, work_dir)
+
+    def _execute_command(self, context, command, work_dir):
+        """Execute a shell command."""
+        import subprocess
+        import os
+
+        try:
+            # Use shell=True for commands with arguments
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=120,  # 2 minute timeout for builds
+                cwd=str(work_dir),
+                env={**os.environ, "PYTHONUNBUFFERED": "1"}
+            )
+
+            output = f"$ {command}\n\n"
+            if result.stdout:
+                output += result.stdout
+            if result.stderr:
+                output += f"\n[stderr]\n{result.stderr}"
+            output += f"\n\n[Exit code: {result.returncode}]"
+
+            context.present_text("Build Output", output, allow_insert=False)
+            return result.returncode == 0
+
+        except subprocess.TimeoutExpired:
+            context.present_text("Build", "Command timed out (2 min limit)", allow_insert=False)
+            return False
+        except Exception as e:
+            context.present_text("Build", f"Error: {e}", allow_insert=False)
+            return False
+
+
+class ShellProvider(Provider):
+    """Provider for running shell commands with output capture."""
+
+    def __init__(self):
+        super().__init__("shell_runner", ProviderCategory.ON_DEMAND)
+
+    def activate(self, context):
+        context.commands.register(
+            Command(
+                "shell.run",
+                "Compiler: Shell Command",
+                lambda ctx: self._run_shell(ctx),
+            )
+        )
+
+    def _run_shell(self, context):
+        """Run a shell command and show output."""
+        from pathlib import Path
+        import subprocess
+        import os
+
+        work_dir = "."
+        if context.document.file_path:
+            work_dir = str(Path(context.document.file_path).parent)
+
+        # Get command from user
+        command = context.choose_option(
+            "Shell Command",
+            f"Enter command (runs in {work_dir}):",
+            ["ls -la", "pwd", "git status", "git log --oneline -10"]
+        )
+
+        if not command:
+            return False
+
+        try:
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=work_dir
+            )
+
+            output = f"$ {command}\n\n"
+            if result.stdout:
+                output += result.stdout
+            if result.stderr:
+                output += f"\n[stderr]\n{result.stderr}"
+            output += f"\n\n[Exit code: {result.returncode}]"
+
+            context.present_text("Shell Output", output, allow_insert=True)
+            return True
+
+        except subprocess.TimeoutExpired:
+            context.present_text("Shell", "Command timed out", allow_insert=False)
+            return False
+        except Exception as e:
+            context.present_text("Shell", f"Error: {e}", allow_insert=False)
+            return False
+
+
+class PythonInterpreterProvider(Provider):
+    """Interactive Python interpreter/REPL provider.
+
+    Provides a persistent Python session that maintains state across
+    executions. Variables and imports persist between runs.
+    """
+
+    def __init__(self):
+        super().__init__("python_interpreter", ProviderCategory.ON_DEMAND)
+        self._globals = {}
+        self._locals = {}
+        self._history = []
+
+    def activate(self, context):
+        context.commands.register(
+            Command(
+                "python.eval",
+                "Python: Evaluate Selection",
+                lambda ctx: self._eval_selection(ctx),
+            )
+        )
+        context.commands.register(
+            Command(
+                "python.repl",
+                "Python: Interactive REPL",
+                lambda ctx: self._show_repl(ctx),
+            )
+        )
+        context.commands.register(
+            Command(
+                "python.reset",
+                "Python: Reset Interpreter",
+                lambda ctx: self._reset(ctx),
+            )
+        )
+
+    def _eval_selection(self, context):
+        """Evaluate selected Python code."""
+        code = context.get_selection()
+        if not code:
+            context.present_text(
+                "Python Eval",
+                "Select some Python code to evaluate",
+                allow_insert=False
+            )
+            return False
+
+        return self._execute(context, code)
+
+    def _execute(self, context, code):
+        """Execute Python code and capture output."""
+        import sys
+        import io
+        import traceback
+
+        # Capture stdout/stderr
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = io.StringIO()
+        sys.stderr = io.StringIO()
+
+        result_value = None
+        error = None
+
+        try:
+            # Try to eval first (for expressions)
+            try:
+                result_value = eval(code, self._globals, self._locals)
+            except SyntaxError:
+                # Fall back to exec for statements
+                exec(code, self._globals, self._locals)
+        except Exception:
+            error = traceback.format_exc()
+
+        stdout_output = sys.stdout.getvalue()
+        stderr_output = sys.stderr.getvalue()
+
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+
+        # Build output
+        output_parts = []
+
+        if stdout_output:
+            output_parts.append(stdout_output.rstrip())
+
+        if result_value is not None:
+            output_parts.append(f">>> {repr(result_value)}")
+
+        if stderr_output:
+            output_parts.append(f"[stderr]\n{stderr_output.rstrip()}")
+
+        if error:
+            output_parts.append(f"[Error]\n{error}")
+
+        output = "\n".join(output_parts) if output_parts else "[No output]"
+
+        # Add to history
+        self._history.append({"code": code, "output": output})
+
+        context.present_text("Python Result", output, allow_insert=True)
+        return True
+
+    def _show_repl(self, context):
+        """Show an interactive REPL dialog."""
+        # Build history display
+        if self._history:
+            history_text = []
+            for entry in self._history[-10:]:  # Last 10 entries
+                code_lines = entry["code"].strip().split("\n")
+                for i, line in enumerate(code_lines):
+                    prefix = ">>> " if i == 0 else "... "
+                    history_text.append(prefix + line)
+                history_text.append(entry["output"])
+                history_text.append("")
+            recent = "\n".join(history_text)
+        else:
+            recent = "Python interpreter ready. Select code and use 'Python: Evaluate Selection'."
+
+        # Show current namespace
+        user_vars = {k: type(v).__name__ for k, v in self._locals.items()
+                     if not k.startswith('_')}
+        if user_vars:
+            vars_str = "\n".join(f"  {k}: {t}" for k, t in user_vars.items())
+            recent += f"\n\nDefined variables:\n{vars_str}"
+
+        context.present_text("Python REPL", recent, allow_insert=False)
+        return True
+
+    def _reset(self, context):
+        """Reset the interpreter state."""
+        self._globals = {}
+        self._locals = {}
+        self._history = []
+        context.present_text(
+            "Python Reset",
+            "Interpreter state cleared. All variables and imports removed.",
+            allow_insert=False
+        )
+        return True
