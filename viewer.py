@@ -238,16 +238,18 @@ class ChatPanel(QWidget):
         "/generate": ("code_generate", "Generate code from description"),
         "/history": (None, "Show spine event history (episodic memory)"),
         "/kernel": (None, "Show kernel state (contexts, events)"),
+        "/manifest": (None, "Show/edit document manifest (permissions)"),
         "/help": (None, "Show available commands"),
     }
 
-    def __init__(self, ai_client, get_context_callback=None, execute_provider_callback=None, get_spine_callback=None, get_kernel_callback=None, parent=None):
+    def __init__(self, ai_client, get_context_callback=None, execute_provider_callback=None, get_spine_callback=None, get_kernel_callback=None, get_manifest_callback=None, parent=None):
         super().__init__(parent)
         self.ai_client = ai_client
         self.get_context_callback = get_context_callback
         self.execute_provider_callback = execute_provider_callback
         self.get_spine_callback = get_spine_callback
         self.get_kernel_callback = get_kernel_callback
+        self.get_manifest_callback = get_manifest_callback
         self.messages = []  # Chat history for context
 
         layout = QVBoxLayout(self)
@@ -518,6 +520,56 @@ class ChatPanel(QWidget):
 
         self._append_system_message(kernel_text)
 
+    def _show_manifest(self):
+        """Display the manifest for the current document."""
+        if not self.get_manifest_callback:
+            self._append_system_message("Manifest not available.")
+            return
+
+        manifest_info = self.get_manifest_callback()
+        if not manifest_info:
+            self._append_system_message("No active document context.")
+            return
+
+        manifest = manifest_info.get("manifest")
+        path = manifest_info.get("path", "untitled")
+        if path:
+            path = path.split('\\')[-1].split('/')[-1]
+
+        manifest_text = f"**Document Manifest** - {path}<br><br>"
+
+        if manifest:
+            manifest_text += f"<b>Type:</b> {manifest.document_type}<br>"
+            manifest_text += f"<b>AI Access:</b> {manifest.ai_access}<br>"
+
+            if manifest.tags:
+                manifest_text += f"<b>Tags:</b> {', '.join(manifest.tags)}<br>"
+
+            manifest_text += "<br><b>Default Permissions:</b><br>"
+            manifest_text += f"  Read: {manifest.default_can_read}<br>"
+            manifest_text += f"  Write: {manifest.default_can_write}<br>"
+            manifest_text += f"  Emit: {manifest.default_can_emit}<br>"
+            manifest_text += f"  Invoke: {manifest.default_can_invoke}<br>"
+
+            if manifest.providers:
+                manifest_text += "<br><b>Provider Overrides:</b><br>"
+                for pid, perm in manifest.providers.items():
+                    perms = []
+                    if perm.can_read: perms.append("read")
+                    if perm.can_write: perms.append("write")
+                    if perm.can_emit: perms.append("emit")
+                    if perm.can_invoke: perms.append("invoke")
+                    manifest_text += f"  {pid}: [{', '.join(perms)}]<br>"
+
+            if manifest.links:
+                manifest_text += f"<br><b>Links:</b> {', '.join(manifest.links)}<br>"
+        else:
+            manifest_text += "<i>Using default manifest (no overrides)</i><br>"
+            manifest_text += "<br>Add a manifest to control provider access:<br>"
+            manifest_text += "<code>---<br>type: document<br>ai_access: observe<br>---</code>"
+
+        self._append_system_message(manifest_text)
+
     def send_message(self):
         """Send the user's message to the LLM."""
         user_text = self.input_field.toPlainText().strip()
@@ -536,6 +588,8 @@ class ChatPanel(QWidget):
                     self._show_history()
                 elif cmd == "/kernel":
                     self._show_kernel()
+                elif cmd == "/manifest":
+                    self._show_manifest()
                 elif provider_name:
                     self._append_user_message(user_text)
                     self._run_provider(provider_name)
@@ -3176,7 +3230,8 @@ class MarkdownEditor(QMainWindow):
             get_context_callback=self._get_chat_context,
             execute_provider_callback=self._execute_chat_provider,
             get_spine_callback=self._get_chat_spine,
-            get_kernel_callback=self.get_kernel_state
+            get_kernel_callback=self.get_kernel_state,
+            get_manifest_callback=self._get_current_manifest
         )
         self.chat_dock.setWidget(self.chat_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.chat_dock)
@@ -3200,6 +3255,19 @@ class MarkdownEditor(QMainWindow):
         if isinstance(tab, MarkdownTab):
             return tab.events
         return None
+
+    def _get_current_manifest(self):
+        """Get the manifest from the current tab's kernel context."""
+        tab = self.tabs.currentWidget()
+        if not tab or not hasattr(tab, 'kernel_ctx'):
+            return None
+
+        ctx = tab.kernel_ctx
+        return {
+            "path": ctx.path,
+            "manifest": ctx.manifest,
+            "ai_access": ctx.ai_access,
+        }
 
     def _on_context_selected(self, path):
         """Handle context selection from the workspace launcher."""

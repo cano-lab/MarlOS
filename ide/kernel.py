@@ -15,9 +15,12 @@ The kernel is the "quiet and capable" foundation.
 
 from PyQt6.QtCore import QObject, pyqtSignal
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Dict, List, Optional, Callable, TYPE_CHECKING
 from datetime import datetime
 import uuid
+
+if TYPE_CHECKING:
+    from ide.manifest import DocumentManifest
 
 
 @dataclass
@@ -29,11 +32,17 @@ class ContextHandle:
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-    # Permissions (from manifest when implemented)
+    # Permissions (derived from manifest)
     can_write: bool = True
     can_emit: bool = True
     can_invoke: bool = True
     can_link: bool = True
+
+    # AI access level from manifest
+    ai_access: str = "observe"  # "none", "observe", "suggest", "edit"
+
+    # Reference to the full manifest
+    manifest: Optional['DocumentManifest'] = None
 
 
 @dataclass
@@ -140,14 +149,28 @@ class ContextRegistry:
         self._links: Dict[str, List[str]] = {}  # context_id -> linked context_ids
 
     def register(self, path: str = None, context_type: str = "document",
-                 metadata: Dict = None) -> ContextHandle:
-        """Register a new context."""
+                 metadata: Dict = None, manifest: 'DocumentManifest' = None) -> ContextHandle:
+        """Register a new context with optional manifest."""
+        from ide.manifest import ManifestLoader
+
         context_id = str(uuid.uuid4())[:8]
+
+        # Load manifest if not provided and path exists
+        if manifest is None and path:
+            manifest = ManifestLoader.load_for_path(path)
+
+        # Create handle with manifest-derived permissions
         handle = ContextHandle(
             context_id=context_id,
             path=path,
-            context_type=context_type,
+            context_type=manifest.document_type if manifest else context_type,
             metadata=metadata or {},
+            can_write=manifest.default_can_write if manifest else True,
+            can_emit=manifest.default_can_emit if manifest else True,
+            can_invoke=manifest.default_can_invoke if manifest else True,
+            can_link=True,
+            ai_access=manifest.ai_access if manifest else "observe",
+            manifest=manifest,
         )
 
         self._contexts[context_id] = handle
@@ -155,7 +178,19 @@ class ContextRegistry:
             self._path_index[path] = context_id
         self._links[context_id] = []
 
-        self._spine.emit("context.registered", handle.to_dict() if hasattr(handle, 'to_dict') else str(handle))
+        # Auto-link to related contexts from manifest
+        if manifest and manifest.links:
+            for link_path in manifest.links:
+                linked = self.get_by_path(link_path)
+                if linked:
+                    self.link(context_id, linked.context_id)
+
+        self._spine.emit("context.registered", {
+            "id": context_id,
+            "path": path,
+            "type": handle.context_type,
+            "ai_access": handle.ai_access,
+        })
         self._spine.context_created.emit(handle)
 
         return handle
@@ -237,8 +272,43 @@ class ContextPrimitives:
         """Get this context's file path."""
         return self._handle.path
 
-    def attach(self, key: str, value: Any):
+    @property
+    def manifest(self):
+        """Get the manifest for this context."""
+        return self._handle.manifest
+
+    @property
+    def ai_access(self) -> str:
+        """Get AI access level for this context."""
+        return self._handle.ai_access
+
+    def check_provider(self, provider_id: str) -> Dict[str, bool]:
+        """Check what permissions a provider has for this context."""
+        if not self._handle.manifest:
+            return {
+                "can_read": True,
+                "can_write": self._handle.can_write,
+                "can_emit": self._handle.can_emit,
+                "can_invoke": self._handle.can_invoke,
+            }
+
+        perm = self._handle.manifest.get_provider_permission(provider_id)
+        return {
+            "can_read": perm.can_read,
+            "can_write": perm.can_write,
+            "can_emit": perm.can_emit,
+            "can_invoke": perm.can_invoke,
+        }
+
+    def provider_can(self, provider_id: str, action: str) -> bool:
+        """Check if a provider can perform a specific action."""
+        perms = self.check_provider(provider_id)
+        return perms.get(f"can_{action}", False)
+
+    def attach(self, key: str, value: Any, provider_id: str = None):
         """Attach data to this context."""
+        if provider_id and not self.provider_can(provider_id, "write"):
+            raise PermissionError(f"Provider {provider_id} cannot write to context {self.id}")
         if not self._handle.can_write:
             raise PermissionError(f"Context {self.id} cannot write (attach)")
         self._attachments[key] = value
@@ -351,17 +421,29 @@ class Kernel(QObject):
 
     def get_system_state(self) -> Dict:
         """Get current kernel state (for debugging/AI context)."""
+        context_list = []
+        for p in self._primitives.values():
+            handle = self.registry.get(p.id)
+            ctx_info = {
+                "id": p.id,
+                "path": p.path,
+                "type": handle.context_type if handle else "unknown",
+                "ai_access": handle.ai_access if handle else "observe",
+                "links": p.get_links(),
+            }
+            # Add manifest summary if present
+            if handle and handle.manifest:
+                ctx_info["manifest"] = {
+                    "type": handle.manifest.document_type,
+                    "ai_access": handle.manifest.ai_access,
+                    "tags": handle.manifest.tags,
+                    "providers": len(handle.manifest.providers),
+                }
+            context_list.append(ctx_info)
+
         return {
             "contexts": len(self._primitives),
-            "context_list": [
-                {
-                    "id": p.id,
-                    "path": p.path,
-                    "type": self.registry.get(p.id).context_type if self.registry.get(p.id) else "unknown",
-                    "links": p.get_links(),
-                }
-                for p in self._primitives.values()
-            ],
+            "context_list": context_list,
             "recent_events": [e.to_dict() for e in self.spine.query(limit=10)],
         }
 
