@@ -19,6 +19,8 @@ class RuntimeType(str, Enum):
     MICROVM = "microvm"         # Firecracker/QEMU micro-VM
     WASM = "wasm"               # WebAssembly sandbox
     NATIVE = "native"           # Run directly (development only)
+    WINE = "wine"               # Wine for Windows apps (full GPU!)
+    PROTON = "proton"           # Proton for games (Steam's Wine)
 
 
 @dataclass
@@ -89,23 +91,61 @@ class LegacyAppManager:
 
     # Default app configurations
     DEFAULT_APPS: Dict[str, AppConfig] = {
+        # Native Linux apps
         "gimp": AppConfig(
             name="gimp",
-            runtime=RuntimeType.DOCKER,
-            image="gimp:latest",
-            file_associations=[".xcf", ".psd", ".png", ".jpg"],
+            runtime=RuntimeType.NATIVE,
+            executable="gimp",
+            file_associations=[".xcf", ".png", ".jpg", ".tiff"],
+        ),
+        "inkscape": AppConfig(
+            name="inkscape",
+            runtime=RuntimeType.NATIVE,
+            executable="inkscape",
+            file_associations=[".svg", ".eps"],
         ),
         "libreoffice": AppConfig(
             name="libreoffice",
-            runtime=RuntimeType.DOCKER,
-            image="libreoffice/online:latest",
-            file_associations=[".odt", ".docx", ".xlsx", ".pptx"],
+            runtime=RuntimeType.NATIVE,
+            executable="libreoffice",
+            file_associations=[".odt", ".ods", ".odp"],
         ),
         "vscode": AppConfig(
             name="vscode",
-            runtime=RuntimeType.NATIVE,  # Usually run natively
+            runtime=RuntimeType.NATIVE,
             executable="code",
             file_associations=[".py", ".js", ".ts", ".md", ".json"],
+        ),
+        "blender": AppConfig(
+            name="blender",
+            runtime=RuntimeType.NATIVE,
+            executable="blender",
+            file_associations=[".blend", ".fbx", ".obj"],
+        ),
+        # Windows apps via Wine (full GPU performance!)
+        "photoshop": AppConfig(
+            name="photoshop",
+            runtime=RuntimeType.WINE,
+            executable="C:/Program Files/Adobe/Adobe Photoshop 2024/Photoshop.exe",
+            file_associations=[".psd", ".psb"],
+        ),
+        "illustrator": AppConfig(
+            name="illustrator",
+            runtime=RuntimeType.WINE,
+            executable="C:/Program Files/Adobe/Adobe Illustrator 2024/Illustrator.exe",
+            file_associations=[".ai"],
+        ),
+        "msword": AppConfig(
+            name="msword",
+            runtime=RuntimeType.WINE,
+            executable="C:/Program Files/Microsoft Office/root/Office16/WINWORD.EXE",
+            file_associations=[".doc", ".docx"],
+        ),
+        "msexcel": AppConfig(
+            name="msexcel",
+            runtime=RuntimeType.WINE,
+            executable="C:/Program Files/Microsoft Office/root/Office16/EXCEL.EXE",
+            file_associations=[".xls", ".xlsx"],
         ),
     }
 
@@ -125,6 +165,7 @@ class LegacyAppManager:
         self._docker_runtime = None
         self._microvm_runtime = None
         self._wasm_runtime = None
+        self._wine_runtime = None
         self._gui_monitor_factory = None
         self._ai_interpreter = None
 
@@ -180,6 +221,8 @@ class LegacyAppManager:
                 running = self._launch_microvm(app_id, config, document)
             elif config.runtime == RuntimeType.WASM:
                 running = self._launch_wasm(app_id, config, document)
+            elif config.runtime in (RuntimeType.WINE, RuntimeType.PROTON):
+                running = self._launch_wine(app_id, config, document)
             else:
                 running = self._launch_native(app_id, config, document)
 
@@ -304,6 +347,46 @@ class LegacyAppManager:
             print(f"[Legacy] Native launch error: {e}")
 
         return None
+
+    def _launch_wine(self, app_id: str, config: AppConfig, document: str) -> Optional[RunningApp]:
+        """Launch Windows app via Wine/Proton (full GPU performance!)."""
+        # Lazy load Wine runtime
+        if self._wine_runtime is None:
+            try:
+                from .wine_runtime import WineRuntime, WineAppConfig, ProtonRuntime
+                if config.runtime == RuntimeType.PROTON:
+                    self._wine_runtime = ProtonRuntime()
+                else:
+                    self._wine_runtime = WineRuntime()
+            except ImportError as e:
+                print(f"[Legacy] Wine runtime not available: {e}")
+                return None
+
+        if not self._wine_runtime.is_available():
+            print("[Legacy] Wine is not installed")
+            print("[Legacy] Install with: sudo apt install wine64 wine32")
+            return None
+
+        # Convert AppConfig to WineAppConfig
+        from .wine_runtime import WineAppConfig as WineConfig
+        wine_config = WineConfig(
+            name=config.name,
+            executable=config.executable,
+            file_associations=config.file_associations,
+            use_dxvk=config.gpu_passthrough,  # Use DXVK for GPU apps
+        )
+
+        try:
+            process = self._wine_runtime.run(wine_config, document)
+            return RunningApp(
+                app_id=app_id,
+                config=config,
+                process=process,
+                document_path=document,
+            )
+        except Exception as e:
+            print(f"[Legacy] Wine launch error: {e}")
+            return None
 
     def _start_monitoring(self, running: RunningApp):
         """Start GUI monitoring for semantic event capture."""
