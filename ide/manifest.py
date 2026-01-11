@@ -16,10 +16,118 @@ The kernel checks the manifest before allowing provider operations.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Set
+from typing import Dict, List, Optional, Any, Set, Union
 from pathlib import Path
+from enum import Enum
 import json
 import re
+
+
+class LinkRelation(str, Enum):
+    """Semantic relationship types between documents."""
+
+    # Structural relationships
+    CONTAINS = "contains"           # This document contains the target (parent)
+    PART_OF = "part_of"            # This document is part of the target (child)
+
+    # Reference relationships
+    REFERENCES = "references"       # General reference
+    CITES = "cites"                # Academic/formal citation
+    QUOTES = "quotes"              # Direct quotation
+
+    # Dependency relationships
+    IMPLEMENTS = "implements"       # This implements a spec/interface
+    EXTENDS = "extends"            # This extends/builds upon target
+    REQUIRES = "requires"          # This depends on target
+    USED_BY = "used_by"           # Target depends on this
+
+    # Versioning relationships
+    SUPERSEDES = "supersedes"      # This replaces the target
+    SUPERSEDED_BY = "superseded_by"  # This is replaced by target
+    VERSION_OF = "version_of"      # This is a version of target
+    DERIVED_FROM = "derived_from"  # This was derived from target
+
+    # Semantic relationships
+    RELATED_TO = "related_to"      # General semantic relation
+    CONTRADICTS = "contradicts"    # This conflicts with target
+    SUPPORTS = "supports"          # This provides evidence for target
+    EXPLAINS = "explains"          # This explains the target
+    EXAMPLE_OF = "example_of"      # This is an example of target concept
+
+    # Workflow relationships
+    REVIEWED_BY = "reviewed_by"    # Target is reviewer of this
+    APPROVED_BY = "approved_by"    # Target approved this
+    BLOCKS = "blocks"              # This blocks target
+    BLOCKED_BY = "blocked_by"      # This is blocked by target
+
+
+# Inverse relationship mapping
+INVERSE_RELATIONS = {
+    LinkRelation.CONTAINS: LinkRelation.PART_OF,
+    LinkRelation.PART_OF: LinkRelation.CONTAINS,
+    LinkRelation.IMPLEMENTS: LinkRelation.USED_BY,
+    LinkRelation.USED_BY: LinkRelation.IMPLEMENTS,
+    LinkRelation.REQUIRES: LinkRelation.USED_BY,
+    LinkRelation.SUPERSEDES: LinkRelation.SUPERSEDED_BY,
+    LinkRelation.SUPERSEDED_BY: LinkRelation.SUPERSEDES,
+    LinkRelation.BLOCKS: LinkRelation.BLOCKED_BY,
+    LinkRelation.BLOCKED_BY: LinkRelation.BLOCKS,
+    LinkRelation.SUPPORTS: LinkRelation.SUPPORTED_BY if hasattr(LinkRelation, 'SUPPORTED_BY') else LinkRelation.RELATED_TO,
+}
+
+
+@dataclass
+class SemanticLink:
+    """A semantic link to another document."""
+    target: str                              # Path to target document
+    relation: LinkRelation = LinkRelation.RELATED_TO
+    label: Optional[str] = None              # Human-readable label
+    bidirectional: bool = True               # Create inverse link in target?
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict:
+        result = {
+            "target": self.target,
+            "relation": self.relation.value,
+        }
+        if self.label:
+            result["label"] = self.label
+        if not self.bidirectional:
+            result["bidirectional"] = False
+        if self.metadata:
+            result["metadata"] = self.metadata
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Union[str, Dict]) -> 'SemanticLink':
+        """Parse from dict or simple string path."""
+        if isinstance(data, str):
+            return cls(target=data)
+
+        relation_str = data.get("relation", "related_to")
+        try:
+            relation = LinkRelation(relation_str)
+        except ValueError:
+            relation = LinkRelation.RELATED_TO
+
+        return cls(
+            target=data.get("target", data.get("path", "")),
+            relation=relation,
+            label=data.get("label"),
+            bidirectional=data.get("bidirectional", True),
+            metadata=data.get("metadata", {}),
+        )
+
+    def get_inverse(self, source_path: str) -> 'SemanticLink':
+        """Get the inverse link (for bidirectional linking)."""
+        inverse_relation = INVERSE_RELATIONS.get(self.relation, LinkRelation.RELATED_TO)
+        return SemanticLink(
+            target=source_path,
+            relation=inverse_relation,
+            label=f"(inverse) {self.label}" if self.label else None,
+            bidirectional=False,  # Don't create infinite loop
+            metadata={"inverse_of": self.target},
+        )
 
 
 @dataclass
@@ -85,8 +193,8 @@ class DocumentManifest:
     # AI access level
     ai_access: str = "observe"  # "none", "observe", "suggest", "edit"
 
-    # Relationships
-    links: List[str] = field(default_factory=list)  # Linked context paths
+    # Relationships (semantic links)
+    links: List[SemanticLink] = field(default_factory=list)
     parent: Optional[str] = None  # Parent document (for hierarchies)
 
     # Metadata
@@ -134,6 +242,54 @@ class DocumentManifest:
             can_invoke=False,
         )
 
+    # ----- Semantic Link Methods -----
+
+    def add_link(self, target: str, relation: LinkRelation = LinkRelation.RELATED_TO,
+                 label: Optional[str] = None, bidirectional: bool = True) -> SemanticLink:
+        """Add a semantic link to another document."""
+        link = SemanticLink(
+            target=target,
+            relation=relation,
+            label=label,
+            bidirectional=bidirectional,
+        )
+        # Check for duplicates
+        if not any(l.target == target and l.relation == relation for l in self.links):
+            self.links.append(link)
+        return link
+
+    def remove_link(self, target: str, relation: Optional[LinkRelation] = None) -> bool:
+        """Remove a link. If relation is None, removes all links to target."""
+        original_len = len(self.links)
+        if relation:
+            self.links = [l for l in self.links
+                         if not (l.target == target and l.relation == relation)]
+        else:
+            self.links = [l for l in self.links if l.target != target]
+        return len(self.links) < original_len
+
+    def get_links_by_relation(self, relation: LinkRelation) -> List[SemanticLink]:
+        """Get all links with a specific relation type."""
+        return [l for l in self.links if l.relation == relation]
+
+    def get_link_to(self, target: str) -> Optional[SemanticLink]:
+        """Get the primary link to a specific target."""
+        for link in self.links:
+            if link.target == target:
+                return link
+        return None
+
+    def has_link_to(self, target: str) -> bool:
+        """Check if this document links to target."""
+        return any(l.target == target for l in self.links)
+
+    def get_related_paths(self) -> Set[str]:
+        """Get all unique paths this document links to."""
+        paths = {l.target for l in self.links}
+        if self.parent:
+            paths.add(self.parent)
+        return paths
+
     def to_dict(self) -> Dict:
         return {
             "version": self.version,
@@ -150,7 +306,7 @@ class DocumentManifest:
                 pid: perm.to_dict()
                 for pid, perm in self.providers.items()
             },
-            "links": self.links,
+            "links": [link.to_dict() for link in self.links],
             "parent": self.parent,
             "created_at": self.created_at,
             "modified_at": self.modified_at,
@@ -165,6 +321,10 @@ class DocumentManifest:
                 pdata["provider_id"] = pid
                 providers[pid] = ProviderPermission.from_dict(pdata)
 
+        # Parse links as SemanticLink objects
+        raw_links = data.get("links", [])
+        links = [SemanticLink.from_dict(link) for link in raw_links]
+
         return cls(
             document_type=data.get("type", "document"),
             tags=data.get("tags", []),
@@ -174,7 +334,7 @@ class DocumentManifest:
             default_can_emit=defaults.get("can_emit", True),
             default_can_invoke=defaults.get("can_invoke", False),
             providers=providers,
-            links=data.get("links", []),
+            links=links,
             parent=data.get("parent"),
             created_at=data.get("created_at"),
             modified_at=data.get("modified_at"),
@@ -200,7 +360,14 @@ class DocumentManifest:
                 lines.append(f"  {pid}: [{', '.join(perms)}]")
 
         if self.links:
-            lines.append(f"links: [{', '.join(self.links)}]")
+            lines.append("links:")
+            for link in self.links:
+                if link.label:
+                    lines.append(f"  - target: {link.target}")
+                    lines.append(f"    relation: {link.relation.value}")
+                    lines.append(f"    label: {link.label}")
+                else:
+                    lines.append(f"  - {link.target} ({link.relation.value})")
 
         return "\n".join(lines)
 

@@ -15,12 +15,13 @@ The kernel is the "quiet and capable" foundation.
 
 from PyQt6.QtCore import QObject, pyqtSignal
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Callable, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Callable, Set, TYPE_CHECKING
 from datetime import datetime
+from collections import defaultdict
 import uuid
 
 if TYPE_CHECKING:
-    from ide.manifest import DocumentManifest
+    from ide.manifest import DocumentManifest, SemanticLink, LinkRelation
 
 
 @dataclass
@@ -249,6 +250,275 @@ class ContextRegistry:
         return self._links.get(context_id, []).copy()
 
 
+class RelationGraph:
+    """Semantic relationship graph between documents.
+
+    This graph tracks typed relationships (implements, references, supersedes, etc.)
+    between documents. It enables powerful queries like:
+    - "What documents implement this spec?"
+    - "What are all the references to this document?"
+    - "What supersedes this document?"
+
+    The graph is bidirectional: when A implements B, B is used_by A.
+    """
+
+    # Relations that should propagate changes (target should know when source changes)
+    PROPAGATING_RELATIONS = {
+        "implements",    # If spec changes, implementations should know
+        "extends",       # If base changes, extensions should know
+        "requires",      # If dependency changes, dependents should know
+        "references",    # If referenced doc changes, referencer may care
+        "derived_from",  # If original changes, derivation should know
+        "part_of",       # If container changes, parts should know
+    }
+
+    def __init__(self, spine: GlobalSpine):
+        self._spine = spine
+        # Forward edges: source_path -> [(target_path, relation, metadata)]
+        self._edges: Dict[str, List[tuple]] = defaultdict(list)
+        # Reverse edges: target_path -> [(source_path, relation, metadata)]
+        self._reverse_edges: Dict[str, List[tuple]] = defaultdict(list)
+        # Path to context_id mapping (for active contexts)
+        self._path_to_context: Dict[str, str] = {}
+        # Change notification callbacks
+        self._change_handlers: Dict[str, List[Callable]] = defaultdict(list)
+
+    def add_link(self, source_path: str, target_path: str, relation: str,
+                 label: str = None, metadata: Dict = None) -> bool:
+        """Add a semantic link to the graph."""
+        from ide.manifest import LinkRelation, INVERSE_RELATIONS
+
+        edge = (target_path, relation, label, metadata or {})
+
+        # Check for duplicate
+        if edge in self._edges[source_path]:
+            return False
+
+        self._edges[source_path].append(edge)
+
+        # Add reverse edge
+        try:
+            rel_enum = LinkRelation(relation)
+            inverse = INVERSE_RELATIONS.get(rel_enum)
+            inverse_rel = inverse.value if inverse else "related_to"
+        except ValueError:
+            inverse_rel = "related_to"
+
+        reverse_edge = (source_path, inverse_rel, label, metadata or {})
+        self._reverse_edges[target_path].append(reverse_edge)
+
+        self._spine.emit("relation.added", {
+            "source": source_path,
+            "target": target_path,
+            "relation": relation,
+        })
+        return True
+
+    def remove_link(self, source_path: str, target_path: str,
+                    relation: str = None) -> int:
+        """Remove link(s). If relation is None, removes all links to target."""
+        removed = 0
+
+        # Remove forward edges
+        original = self._edges[source_path]
+        if relation:
+            self._edges[source_path] = [
+                e for e in original if not (e[0] == target_path and e[1] == relation)
+            ]
+        else:
+            self._edges[source_path] = [e for e in original if e[0] != target_path]
+        removed = len(original) - len(self._edges[source_path])
+
+        # Remove reverse edges
+        if target_path in self._reverse_edges:
+            original = self._reverse_edges[target_path]
+            self._reverse_edges[target_path] = [
+                e for e in original if e[0] != source_path
+            ]
+
+        if removed > 0:
+            self._spine.emit("relation.removed", {
+                "source": source_path,
+                "target": target_path,
+                "count": removed,
+            })
+        return removed
+
+    def get_outgoing(self, path: str, relation: str = None) -> List[Dict]:
+        """Get all outgoing links from a document."""
+        edges = self._edges.get(path, [])
+        result = []
+        for target, rel, label, meta in edges:
+            if relation is None or rel == relation:
+                result.append({
+                    "target": target,
+                    "relation": rel,
+                    "label": label,
+                    "metadata": meta,
+                })
+        return result
+
+    def get_incoming(self, path: str, relation: str = None) -> List[Dict]:
+        """Get all incoming links to a document."""
+        edges = self._reverse_edges.get(path, [])
+        result = []
+        for source, rel, label, meta in edges:
+            if relation is None or rel == relation:
+                result.append({
+                    "source": source,
+                    "relation": rel,
+                    "label": label,
+                    "metadata": meta,
+                })
+        return result
+
+    def find_by_relation(self, relation: str) -> List[Dict]:
+        """Find all links with a specific relation type."""
+        result = []
+        for source, edges in self._edges.items():
+            for target, rel, label, meta in edges:
+                if rel == relation:
+                    result.append({
+                        "source": source,
+                        "target": target,
+                        "label": label,
+                        "metadata": meta,
+                    })
+        return result
+
+    def get_related(self, path: str, max_depth: int = 1) -> Set[str]:
+        """Get all documents related to this one, up to max_depth."""
+        visited = set()
+        frontier = {path}
+
+        for _ in range(max_depth):
+            next_frontier = set()
+            for p in frontier:
+                if p in visited:
+                    continue
+                visited.add(p)
+                # Add outgoing
+                for edge in self._edges.get(p, []):
+                    next_frontier.add(edge[0])
+                # Add incoming
+                for edge in self._reverse_edges.get(p, []):
+                    next_frontier.add(edge[0])
+            frontier = next_frontier - visited
+
+        visited.discard(path)  # Don't include self
+        return visited
+
+    def get_graph_summary(self) -> Dict:
+        """Get a summary of the relation graph."""
+        relation_counts = defaultdict(int)
+        for edges in self._edges.values():
+            for _, rel, _, _ in edges:
+                relation_counts[rel] += 1
+
+        return {
+            "nodes": len(self._edges) + len(self._reverse_edges),
+            "edges": sum(len(e) for e in self._edges.values()),
+            "relation_types": dict(relation_counts),
+        }
+
+    def load_from_manifest(self, path: str, manifest: 'DocumentManifest'):
+        """Load all links from a document's manifest."""
+        for link in manifest.links:
+            self.add_link(
+                source_path=path,
+                target_path=link.target,
+                relation=link.relation.value,
+                label=link.label,
+                metadata=link.metadata,
+            )
+
+    def clear_path(self, path: str):
+        """Remove all links from/to a path (when document is closed)."""
+        # Remove outgoing
+        if path in self._edges:
+            for target, rel, _, _ in self._edges[path]:
+                # Clean up reverse edge
+                if target in self._reverse_edges:
+                    self._reverse_edges[target] = [
+                        e for e in self._reverse_edges[target] if e[0] != path
+                    ]
+            del self._edges[path]
+
+        # Remove incoming (keeping reverse edges intact for when doc reopens)
+        # This is intentional - we want to remember relationships even when
+        # the target document is not open
+
+        # Clean up change handlers
+        if path in self._change_handlers:
+            del self._change_handlers[path]
+
+    # ----- Change Propagation Methods -----
+
+    def on_change(self, path: str, handler: Callable[[str, str, Dict], None]):
+        """Register a handler to be called when related documents change.
+
+        Handler receives: (changed_path, relation_type, metadata)
+        """
+        self._change_handlers[path].append(handler)
+
+    def off_change(self, path: str, handler: Callable = None):
+        """Remove change handler(s) for a path."""
+        if handler:
+            self._change_handlers[path] = [
+                h for h in self._change_handlers[path] if h != handler
+            ]
+        else:
+            self._change_handlers[path] = []
+
+    def notify_change(self, changed_path: str, change_type: str = "modified"):
+        """Notify related documents that this document has changed.
+
+        This propagates change notifications based on relationship types.
+        For example, if a spec changes, all implementing documents are notified.
+        """
+        notified = []
+
+        # Find documents that link TO the changed document with propagating relations
+        for source_path, edges in self._edges.items():
+            for target, rel, label, meta in edges:
+                if target == changed_path and rel in self.PROPAGATING_RELATIONS:
+                    # This source implements/extends/requires the changed doc
+                    if source_path in self._change_handlers:
+                        for handler in self._change_handlers[source_path]:
+                            try:
+                                handler(changed_path, rel, {
+                                    "change_type": change_type,
+                                    "label": label,
+                                    **meta,
+                                })
+                            except Exception:
+                                pass
+                        notified.append(source_path)
+
+        # Emit global event for system awareness
+        if notified:
+            self._spine.emit("relation.change_propagated", {
+                "source": changed_path,
+                "change_type": change_type,
+                "notified": notified,
+            })
+
+        return notified
+
+    def get_affected_by_change(self, path: str) -> List[Dict]:
+        """Get list of documents that would be affected if this document changes."""
+        affected = []
+        for source_path, edges in self._edges.items():
+            for target, rel, label, meta in edges:
+                if target == path and rel in self.PROPAGATING_RELATIONS:
+                    affected.append({
+                        "path": source_path,
+                        "relation": rel,
+                        "label": label,
+                    })
+        return affected
+
+
 class ContextPrimitives:
     """Context primitives API (ctx.attach, ctx.emit, ctx.invoke, ctx.link).
 
@@ -351,6 +621,61 @@ class ContextPrimitives:
         """Get all linked context IDs."""
         return self._kernel.registry.get_links(self.id)
 
+    # ----- Semantic Relation Methods -----
+
+    def add_relation(self, target_path: str, relation: str,
+                     label: str = None, metadata: Dict = None):
+        """Add a semantic relation to another document."""
+        if not self._handle.path:
+            raise ValueError("Cannot add relation: context has no path")
+        if not self._handle.can_link:
+            raise PermissionError(f"Context {self.id} cannot create relations")
+        self._kernel.relations.add_link(
+            self._handle.path, target_path, relation, label, metadata
+        )
+
+    def remove_relation(self, target_path: str, relation: str = None):
+        """Remove a semantic relation."""
+        if not self._handle.path:
+            return
+        self._kernel.relations.remove_link(self._handle.path, target_path, relation)
+
+    def get_outgoing_relations(self, relation: str = None) -> List[Dict]:
+        """Get all outgoing semantic relations."""
+        if not self._handle.path:
+            return []
+        return self._kernel.relations.get_outgoing(self._handle.path, relation)
+
+    def get_incoming_relations(self, relation: str = None) -> List[Dict]:
+        """Get all incoming semantic relations (documents that link to this)."""
+        if not self._handle.path:
+            return []
+        return self._kernel.relations.get_incoming(self._handle.path, relation)
+
+    def get_related_paths(self, max_depth: int = 1) -> Set[str]:
+        """Get paths of all related documents."""
+        if not self._handle.path:
+            return set()
+        return self._kernel.relations.get_related(self._handle.path, max_depth)
+
+    def notify_change(self, change_type: str = "modified"):
+        """Notify related documents that this document has changed."""
+        if not self._handle.path:
+            return []
+        return self._kernel.relations.notify_change(self._handle.path, change_type)
+
+    def on_related_change(self, handler: Callable):
+        """Register to be notified when related documents change."""
+        if not self._handle.path:
+            return
+        self._kernel.relations.on_change(self._handle.path, handler)
+
+    def get_change_impact(self) -> List[Dict]:
+        """Get list of documents that would be affected if this one changes."""
+        if not self._handle.path:
+            return []
+        return self._kernel.relations.get_affected_by_change(self._handle.path)
+
     def _dispatch(self, event: KernelEvent):
         """Internal: dispatch event to handlers."""
         handlers = self._handlers.get(event.event_type, [])
@@ -380,6 +705,7 @@ class Kernel(QObject):
         super().__init__()
         self.spine = GlobalSpine()
         self.registry = ContextRegistry(self.spine)
+        self.relations = RelationGraph(self.spine)
         self._primitives: Dict[str, ContextPrimitives] = {}
 
         # Connect spine to dispatch events to primitives
@@ -391,6 +717,11 @@ class Kernel(QObject):
         handle = self.registry.register(path, context_type, metadata)
         primitives = ContextPrimitives(handle, self)
         self._primitives[handle.context_id] = primitives
+
+        # Load semantic links from manifest into relation graph
+        if path and handle.manifest:
+            self.relations.load_from_manifest(path, handle.manifest)
+
         return primitives
 
     def get_context(self, context_id: str) -> Optional[ContextPrimitives]:
@@ -404,6 +735,11 @@ class Kernel(QObject):
 
     def destroy_context(self, context_id: str):
         """Destroy a context and clean up."""
+        # Clean up relation graph entries
+        handle = self.registry.get(context_id)
+        if handle and handle.path:
+            self.relations.clear_path(handle.path)
+
         if context_id in self._primitives:
             del self._primitives[context_id]
         self.registry.unregister(context_id)
@@ -445,6 +781,7 @@ class Kernel(QObject):
             "contexts": len(self._primitives),
             "context_list": context_list,
             "recent_events": [e.to_dict() for e in self.spine.query(limit=10)],
+            "relations": self.relations.get_graph_summary(),
         }
 
     def shutdown(self):

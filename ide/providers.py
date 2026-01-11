@@ -17,6 +17,7 @@ from enum import Enum
 import markdown
 
 from .commands import Command
+from .sandbox import get_sandbox, enable_docker_sandbox, disable_sandbox, SandboxMode
 
 
 class ProviderCategory(Enum):
@@ -1155,6 +1156,58 @@ class CodeRunnerProvider(Provider):
                 lambda ctx: self._run_selection(ctx),
             )
         )
+        context.commands.register(
+            Command(
+                "sandbox.enable",
+                "Sandbox: Enable Docker Isolation",
+                lambda ctx: self._enable_sandbox(ctx),
+            )
+        )
+        context.commands.register(
+            Command(
+                "sandbox.disable",
+                "Sandbox: Disable (Direct Execution)",
+                lambda ctx: self._disable_sandbox(ctx),
+            )
+        )
+        context.commands.register(
+            Command(
+                "sandbox.status",
+                "Sandbox: Show Status",
+                lambda ctx: self._show_sandbox_status(ctx),
+            )
+        )
+
+    def _enable_sandbox(self, context):
+        """Enable Docker sandboxing."""
+        sandbox = enable_docker_sandbox()
+        if sandbox.is_docker_available():
+            context.write_console_line("[Sandbox] Docker isolation ENABLED", "success")
+            context.write_console_line(f"  Memory limit: {sandbox.config.memory_limit}", "info")
+            context.write_console_line(f"  CPU limit: {sandbox.config.cpu_limit} cores", "info")
+            context.write_console_line(f"  Network: {'enabled' if sandbox.config.network_enabled else 'disabled'}", "info")
+        else:
+            context.write_console_line("[Sandbox] Docker not available - install Docker Desktop", "error")
+            disable_sandbox()
+
+    def _disable_sandbox(self, context):
+        """Disable sandboxing."""
+        disable_sandbox()
+        context.write_console_line("[Sandbox] Docker isolation DISABLED - running directly on host", "warning")
+
+    def _show_sandbox_status(self, context):
+        """Show current sandbox status."""
+        sandbox = get_sandbox()
+        mode = sandbox.config.mode.value
+        context.write_console_line(f"[Sandbox] Mode: {mode.upper()}", "info")
+        if sandbox.config.mode == SandboxMode.DOCKER:
+            available = "YES" if sandbox.is_docker_available() else "NO"
+            context.write_console_line(f"  Docker available: {available}", "info")
+            context.write_console_line(f"  Memory limit: {sandbox.config.memory_limit}", "info")
+            context.write_console_line(f"  CPU limit: {sandbox.config.cpu_limit} cores", "info")
+            context.write_console_line(f"  Network: {'enabled' if sandbox.config.network_enabled else 'disabled'}", "info")
+        else:
+            context.write_console_line("  Code runs directly on host (no isolation)", "warning")
 
     def _check_permission(self, context):
         """Check if code execution is permitted for this context."""
@@ -1229,9 +1282,8 @@ class CodeRunnerProvider(Provider):
         return None
 
     def _execute(self, context, code, lang):
-        """Execute code and show output in console."""
-        import subprocess
-        import tempfile
+        """Execute code and show output in console (sandboxed)."""
+        from ide.sandbox import get_sandbox
         import os
 
         lang_info = self.SUPPORTED_LANGUAGES.get(lang)
@@ -1239,55 +1291,37 @@ class CodeRunnerProvider(Provider):
             context.write_console_line(f"[Error] Unsupported language: {lang}", "error")
             return False
 
-        # Write to temp file
-        with tempfile.NamedTemporaryFile(
-            mode='w',
-            suffix=lang_info["ext"],
-            delete=False,
-            encoding='utf-8'
-        ) as f:
-            f.write(code)
-            temp_path = f.name
+        # Get working directory
+        workdir = None
+        if context.document.file_path:
+            workdir = os.path.dirname(context.document.file_path)
 
-        try:
-            context.write_console_command(f"{lang_info['cmd']} <code>")
+        # Execute through sandbox
+        sandbox = get_sandbox()
+        context.write_console_command(f"{lang_info['cmd']} <code> [{sandbox.config.mode.value}]")
 
-            # Execute with timeout
-            result = subprocess.run(
-                [lang_info["cmd"], temp_path],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                cwd=os.path.dirname(context.document.file_path) if context.document.file_path else None
-            )
+        result = sandbox.execute(code, lang, workdir)
 
-            if result.stdout:
-                context.write_console(result.stdout, "info")
-            if result.stderr:
-                context.write_console(result.stderr, "error")
-            if result.returncode != 0:
-                context.write_console_line(f"[Exit code: {result.returncode}]", "warning")
-            elif not result.stdout and not result.stderr:
-                context.write_console_line("[No output]", "info")
-            else:
-                context.write_console_line("[Done]", "success")
+        # Show execution mode indicator
+        if result.execution_mode == "docker":
+            context.write_console_line("[Running in Docker sandbox]", "info")
 
-            return True
-
-        except subprocess.TimeoutExpired:
-            context.write_console_line("[Error] Execution timed out (30s limit)", "error")
+        if result.error:
+            context.write_console_line(f"[Error] {result.error}", "error")
             return False
-        except FileNotFoundError:
-            context.write_console_line(f"[Error] '{lang_info['cmd']}' not found. Is {lang} installed?", "error")
-            return False
-        except Exception as e:
-            context.write_console_line(f"[Error] {e}", "error")
-            return False
-        finally:
-            try:
-                os.unlink(temp_path)
-            except:
-                pass
+
+        if result.stdout:
+            context.write_console(result.stdout, "info")
+        if result.stderr:
+            context.write_console(result.stderr, "error")
+        if result.exit_code != 0:
+            context.write_console_line(f"[Exit code: {result.exit_code}]", "warning")
+        elif not result.stdout and not result.stderr:
+            context.write_console_line("[No output]", "info")
+        else:
+            context.write_console_line("[Done]", "success")
+
+        return result.success
 
 
 class BuildProvider(Provider):
@@ -1495,6 +1529,522 @@ class ShellProvider(Provider):
         except Exception as e:
             context.write_console_line(f"[Error] {e}", "error")
             return False
+
+
+class HistoryProvider(Provider):
+    """History Provider with semantic compression and vector search.
+
+    Tracks document interactions and compresses them into semantic summaries
+    for efficient AI context. Instead of storing raw edit history, stores
+    compressed "what happened" summaries.
+
+    Features:
+    - Tracks: edits, commands, AI interactions, file operations
+    - Compresses old events into semantic summaries
+    - Provides compressed history for AI context windows
+    - Semantic search with vector embeddings (optional)
+    - Persistent storage with SQLite or MySQL
+
+    Category: ALWAYS_ON (silent tracking) + ON_DEMAND (commands)
+    """
+
+    # Events older than this get compressed
+    COMPRESSION_THRESHOLD_EVENTS = 50
+    # Maximum compressed summaries to keep
+    MAX_COMPRESSED_SUMMARIES = 100
+
+    def __init__(self, ai_client=None, enable_vectors: bool = True, vector_db_path: str = None):
+        super().__init__("history_provider", ProviderCategory.ALWAYS_ON)
+        self.ai_client = ai_client
+        self._enable_vectors = enable_vectors
+        self._vector_db_path = vector_db_path
+
+        # Recent raw events (kept for undo/detailed view)
+        self._raw_events = []
+
+        # Compressed semantic summaries
+        self._compressed_history = []
+
+        # Vector store (lazy loaded)
+        self._vector_store = None
+        self._vectors_available = None
+
+        # Session metadata
+        self._session_start = None
+        self._session_id = None
+        self._document_path = None
+        self._edit_count = 0
+        self._command_count = 0
+
+    def _get_vector_store(self):
+        """Lazy load vector store."""
+        if not self._enable_vectors:
+            return None
+
+        if self._vectors_available is False:
+            return None
+
+        if self._vector_store is None:
+            try:
+                from ide.vector_store import SQLiteVectorStore
+                import os
+
+                # Default path in user's app data or project directory
+                db_path = self._vector_db_path
+                if not db_path:
+                    db_path = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)),
+                        "..", "history_vectors.db"
+                    )
+
+                self._vector_store = SQLiteVectorStore(db_path)
+                self._vectors_available = True
+                print(f"[History] Vector store initialized: {db_path}")
+
+            except Exception as e:
+                print(f"[History] Vector store unavailable: {e}")
+                self._vectors_available = False
+                return None
+
+        return self._vector_store
+
+    def activate(self, context):
+        """Start tracking history for this context."""
+        import time
+        import uuid
+
+        self._session_start = time.time()
+        self._session_id = str(uuid.uuid4())[:8]
+        self._document_path = context.document.file_path
+
+        # Track document changes
+        context.events.document_changed.connect(self._on_document_changed)
+
+        # Register history commands
+        context.commands.register(
+            Command(
+                "history.view",
+                "History: View Session History",
+                lambda ctx: self._view_history(ctx),
+            )
+        )
+        context.commands.register(
+            Command(
+                "history.summary",
+                "History: Get Compressed Summary",
+                lambda ctx: self._get_summary(ctx),
+            )
+        )
+        context.commands.register(
+            Command(
+                "history.context",
+                "History: AI Context Export",
+                lambda ctx: self._export_context(ctx),
+            )
+        )
+        context.commands.register(
+            Command(
+                "history.clear",
+                "History: Clear Session History",
+                lambda ctx: self._clear_history(ctx),
+            )
+        )
+        context.commands.register(
+            Command(
+                "history.search",
+                "History: Semantic Search",
+                lambda ctx: self._semantic_search(ctx),
+            )
+        )
+        context.commands.register(
+            Command(
+                "history.vectors.status",
+                "History: Vector Store Status",
+                lambda ctx: self._vector_status(ctx),
+            )
+        )
+
+    def _on_document_changed(self, document):
+        """Track document edits."""
+        import time
+        self._edit_count += 1
+
+        event = {
+            "type": "edit",
+            "timestamp": time.time(),
+            "chars_changed": len(document.content),
+            "edit_number": self._edit_count,
+        }
+        self._add_event(event)
+
+    def record_command(self, command_id, command_name):
+        """Record a command execution (called by IDE context)."""
+        import time
+        self._command_count += 1
+
+        event = {
+            "type": "command",
+            "timestamp": time.time(),
+            "command_id": command_id,
+            "command_name": command_name,
+        }
+        self._add_event(event)
+
+    def record_ai_interaction(self, provider_name, prompt_summary, response_summary):
+        """Record an AI interaction with semantic compression."""
+        import time
+
+        event = {
+            "type": "ai_interaction",
+            "timestamp": time.time(),
+            "provider": provider_name,
+            "prompt": prompt_summary[:200],  # Truncate for storage
+            "response": response_summary[:200],
+        }
+        self._add_event(event)
+
+    def record_file_operation(self, operation, path):
+        """Record file operations (save, open, export)."""
+        import time
+
+        event = {
+            "type": "file_operation",
+            "timestamp": time.time(),
+            "operation": operation,  # "save", "open", "export"
+            "path": path,
+        }
+        self._add_event(event)
+
+    def _add_event(self, event):
+        """Add event and trigger compression if needed."""
+        self._raw_events.append(event)
+
+        # Compress if threshold reached
+        if len(self._raw_events) > self.COMPRESSION_THRESHOLD_EVENTS:
+            self._compress_events()
+
+    def _compress_events(self):
+        """Compress old events into semantic summaries."""
+        import time
+
+        if len(self._raw_events) < 20:
+            return
+
+        # Take oldest 30 events for compression
+        to_compress = self._raw_events[:30]
+        self._raw_events = self._raw_events[30:]
+
+        # Build semantic summary
+        summary = self._build_summary(to_compress)
+        timestamp = time.time()
+        block_id = f"hist_{self._session_id}_{int(timestamp)}"
+
+        compressed_block = {
+            "id": block_id,
+            "timestamp": timestamp,
+            "start_time": to_compress[0]["timestamp"],
+            "end_time": to_compress[-1]["timestamp"],
+            "event_count": len(to_compress),
+            "summary": summary,
+        }
+        self._compressed_history.append(compressed_block)
+
+        # Store in vector DB for semantic search
+        store = self._get_vector_store()
+        if store:
+            try:
+                store.add(
+                    id=block_id,
+                    text=summary,
+                    metadata={
+                        "session_id": self._session_id,
+                        "document": self._document_path,
+                        "event_count": len(to_compress),
+                        "start_time": to_compress[0]["timestamp"],
+                        "end_time": to_compress[-1]["timestamp"],
+                    },
+                    collection="history"
+                )
+            except Exception as e:
+                print(f"[History] Failed to store in vector DB: {e}")
+
+        # Limit compressed history size
+        if len(self._compressed_history) > self.MAX_COMPRESSED_SUMMARIES:
+            self._compressed_history = self._compressed_history[-self.MAX_COMPRESSED_SUMMARIES:]
+
+    def _build_summary(self, events):
+        """Build a semantic summary from raw events."""
+        # Count event types
+        edit_count = sum(1 for e in events if e["type"] == "edit")
+        command_events = [e for e in events if e["type"] == "command"]
+        ai_events = [e for e in events if e["type"] == "ai_interaction"]
+        file_events = [e for e in events if e["type"] == "file_operation"]
+
+        parts = []
+
+        if edit_count > 0:
+            parts.append(f"{edit_count} edits")
+
+        if command_events:
+            cmd_names = list(set(e["command_name"] for e in command_events))
+            if len(cmd_names) <= 3:
+                parts.append(f"Commands: {', '.join(cmd_names)}")
+            else:
+                parts.append(f"{len(command_events)} commands ({len(cmd_names)} unique)")
+
+        if ai_events:
+            providers = list(set(e["provider"] for e in ai_events))
+            parts.append(f"AI interactions: {', '.join(providers)}")
+
+        if file_events:
+            ops = list(set(e["operation"] for e in file_events))
+            parts.append(f"File ops: {', '.join(ops)}")
+
+        return "; ".join(parts) if parts else "Session activity"
+
+    def _view_history(self, context):
+        """Show session history in console."""
+        import time
+
+        context.write_console_line("=== Session History ===", "command")
+
+        # Session info
+        if self._session_start:
+            duration = time.time() - self._session_start
+            mins = int(duration // 60)
+            secs = int(duration % 60)
+            context.write_console_line(f"Session duration: {mins}m {secs}s", "info")
+
+        context.write_console_line(f"Total edits: {self._edit_count}", "info")
+        context.write_console_line(f"Commands executed: {self._command_count}", "info")
+
+        # Compressed history
+        if self._compressed_history:
+            context.write_console_line(f"\nCompressed blocks: {len(self._compressed_history)}", "info")
+            for i, block in enumerate(self._compressed_history[-5:], 1):  # Last 5
+                context.write_console_line(f"  [{i}] {block['summary']}", "info")
+
+        # Recent raw events
+        context.write_console_line(f"\nRecent events: {len(self._raw_events)}", "info")
+        for event in self._raw_events[-10:]:  # Last 10
+            event_type = event["type"]
+            if event_type == "edit":
+                context.write_console_line(f"  [edit] Edit #{event['edit_number']}", "info")
+            elif event_type == "command":
+                context.write_console_line(f"  [cmd] {event['command_name']}", "info")
+            elif event_type == "ai_interaction":
+                context.write_console_line(f"  [ai] {event['provider']}", "info")
+            elif event_type == "file_operation":
+                context.write_console_line(f"  [file] {event['operation']}", "info")
+
+        return True
+
+    def _get_summary(self, context):
+        """Get a full compressed summary of the session."""
+        import time
+
+        parts = []
+
+        # Session header
+        if self._document_path:
+            parts.append(f"Document: {self._document_path}")
+
+        if self._session_start:
+            duration = time.time() - self._session_start
+            parts.append(f"Session: {int(duration // 60)}m")
+
+        parts.append(f"Edits: {self._edit_count}, Commands: {self._command_count}")
+
+        # Compressed history summaries
+        if self._compressed_history:
+            parts.append("\nHistory:")
+            for block in self._compressed_history:
+                parts.append(f"  - {block['summary']}")
+
+        # Recent activity summary
+        if self._raw_events:
+            recent_summary = self._build_summary(self._raw_events)
+            parts.append(f"\nRecent: {recent_summary}")
+
+        summary = "\n".join(parts)
+        context.present_text("Session Summary", summary, allow_insert=True)
+        return True
+
+    def _export_context(self, context):
+        """Export compressed history for AI context window."""
+        # Build minimal context for AI
+        context_lines = []
+
+        # Document context
+        if self._document_path:
+            import os
+            filename = os.path.basename(self._document_path)
+            context_lines.append(f"[File: {filename}]")
+
+        # Compressed history (most relevant)
+        for block in self._compressed_history[-10:]:  # Last 10 blocks
+            context_lines.append(f"[{block['summary']}]")
+
+        # Recent activity
+        if self._raw_events:
+            recent = self._build_summary(self._raw_events[-20:])
+            context_lines.append(f"[Recent: {recent}]")
+
+        # This compressed format is efficient for AI context windows
+        compressed = " ".join(context_lines)
+
+        context.write_console_line("=== AI Context Export ===", "command")
+        context.write_console_line(f"Compressed to {len(compressed)} chars", "info")
+        context.write_console_line(compressed, "info")
+        context.write_console_line("\n[Copied to clipboard]", "success")
+
+        # Copy to clipboard if possible
+        try:
+            from PyQt6.QtWidgets import QApplication
+            clipboard = QApplication.clipboard()
+            clipboard.setText(compressed)
+        except Exception:
+            pass
+
+        return True
+
+    def _clear_history(self, context):
+        """Clear session history."""
+        self._raw_events = []
+        self._compressed_history = []
+        self._edit_count = 0
+        self._command_count = 0
+        context.write_console_line("[History] Session history cleared", "success")
+        return True
+
+    def get_context_for_ai(self, max_chars=500):
+        """Get compressed history string for AI prompts.
+
+        Returns a compact representation of session history
+        suitable for including in AI context windows.
+        """
+        parts = []
+
+        # Add compressed blocks (semantic summaries)
+        for block in self._compressed_history[-5:]:
+            parts.append(block['summary'])
+
+        # Add recent activity
+        if self._raw_events:
+            recent = self._build_summary(self._raw_events[-10:])
+            parts.append(f"Recent: {recent}")
+
+        result = " | ".join(parts)
+
+        # Truncate if needed
+        if len(result) > max_chars:
+            result = result[:max_chars-3] + "..."
+
+        return result
+
+    def _semantic_search(self, context):
+        """Perform semantic search across history."""
+        store = self._get_vector_store()
+
+        if not store:
+            context.write_console_line("[History] Vector store not available", "warning")
+            context.write_console_line("Install sentence-transformers: pip install sentence-transformers", "info")
+            return False
+
+        # Get search query from user
+        query = context.choose_option(
+            "Semantic Search",
+            "Enter search query (searches by meaning, not just keywords):",
+            ["formatting changes", "code execution", "file operations", "AI interactions"]
+        )
+
+        if not query:
+            return False
+
+        context.write_console_line(f"=== Searching: \"{query}\" ===", "command")
+
+        try:
+            results = store.search(query, k=10, collection="history")
+
+            if not results:
+                context.write_console_line("No matching history found.", "info")
+                return True
+
+            context.write_console_line(f"Found {len(results)} results:\n", "success")
+
+            for i, (doc_id, text, score, metadata) in enumerate(results, 1):
+                score_pct = int(score * 100)
+                context.write_console_line(f"[{i}] ({score_pct}% match) {text}", "info")
+
+                if metadata.get("document"):
+                    import os
+                    doc_name = os.path.basename(metadata["document"])
+                    context.write_console_line(f"    Document: {doc_name}", "info")
+
+            return True
+
+        except Exception as e:
+            context.write_console_line(f"[Error] Search failed: {e}", "error")
+            return False
+
+    def _vector_status(self, context):
+        """Show vector store status."""
+        context.write_console_line("=== Vector Store Status ===", "command")
+
+        store = self._get_vector_store()
+
+        if not store:
+            context.write_console_line("Status: NOT AVAILABLE", "warning")
+            context.write_console_line("\nTo enable semantic search:", "info")
+            context.write_console_line("  pip install sentence-transformers", "info")
+            return True
+
+        context.write_console_line("Status: ACTIVE", "success")
+
+        try:
+            # Get embedder info
+            from ide.embeddings import get_embedder
+            embedder = get_embedder()
+            context.write_console_line(f"Embedding model: {embedder.model_name}", "info")
+            context.write_console_line(f"Dimensions: {embedder.dimensions}D", "info")
+            context.write_console_line(f"Semantic mode: {'YES' if embedder.is_semantic else 'NO (fallback)'}", "info")
+
+            # Get store stats
+            total_count = store.count()
+            history_count = store.count(collection="history")
+            context.write_console_line(f"\nStored vectors: {total_count} total, {history_count} history", "info")
+
+            collections = store.list_collections()
+            if collections:
+                context.write_console_line(f"Collections: {', '.join(collections)}", "info")
+
+        except Exception as e:
+            context.write_console_line(f"[Error] Could not get status: {e}", "error")
+
+        return True
+
+    def semantic_recall(self, query: str, k: int = 5) -> list:
+        """Recall relevant history for AI context.
+
+        Use this to get semantically relevant history when
+        building AI prompts.
+
+        Args:
+            query: What to search for
+            k: Number of results
+
+        Returns:
+            List of (text, score, metadata) tuples
+        """
+        store = self._get_vector_store()
+        if not store:
+            return []
+
+        try:
+            results = store.search(query, k=k, collection="history")
+            return [(text, score, meta) for _, text, score, meta in results]
+        except Exception:
+            return []
 
 
 class PythonInterpreterProvider(Provider):

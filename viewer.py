@@ -67,6 +67,7 @@ from ide.providers import (
     BuildProvider,
     ShellProvider,
     PythonInterpreterProvider,
+    HistoryProvider,
 )
 
 
@@ -445,6 +446,150 @@ class ConsolePanel(QWidget):
     def set_dark_mode(self, dark_mode):
         """Console is always dark, this method is kept for compatibility."""
         pass  # Console stays dark regardless of app theme
+
+
+class LinkNavigatorPanel(QWidget):
+    """Panel showing semantic links for the current document."""
+
+    link_clicked = pyqtSignal(str)  # Emits target path when link is clicked
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.current_path = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        # Outgoing links section
+        out_label = QLabel("This document links to:")
+        out_label.setStyleSheet("font-weight: bold; color: #3d3929;")
+        layout.addWidget(out_label)
+
+        self.outgoing_list = QListWidget()
+        self.outgoing_list.setMaximumHeight(150)
+        self.outgoing_list.itemDoubleClicked.connect(self._on_link_clicked)
+        layout.addWidget(self.outgoing_list)
+
+        # Incoming links section
+        in_label = QLabel("Linked from:")
+        in_label.setStyleSheet("font-weight: bold; color: #3d3929;")
+        layout.addWidget(in_label)
+
+        self.incoming_list = QListWidget()
+        self.incoming_list.setMaximumHeight(150)
+        self.incoming_list.itemDoubleClicked.connect(self._on_link_clicked)
+        layout.addWidget(self.incoming_list)
+
+        # Related documents section
+        related_label = QLabel("Related documents:")
+        related_label.setStyleSheet("font-weight: bold; color: #3d3929;")
+        layout.addWidget(related_label)
+
+        self.related_list = QListWidget()
+        self.related_list.itemDoubleClicked.connect(self._on_link_clicked)
+        layout.addWidget(self.related_list)
+
+        # Impact section (documents affected if this changes)
+        impact_label = QLabel("Change impact:")
+        impact_label.setStyleSheet("font-weight: bold; color: #3d3929;")
+        layout.addWidget(impact_label)
+
+        self.impact_list = QListWidget()
+        self.impact_list.setMaximumHeight(100)
+        self.impact_list.itemDoubleClicked.connect(self._on_link_clicked)
+        layout.addWidget(self.impact_list)
+
+        layout.addStretch()
+
+        # Apply panel styling
+        self.setStyleSheet("""
+            QWidget { background-color: #faf8f5; color: #3d3929; }
+            QListWidget {
+                background-color: #ffffff;
+                color: #3d3929;
+                border: 1px solid #d5d0c4;
+                border-radius: 4px;
+            }
+            QListWidget::item {
+                padding: 4px 8px;
+            }
+            QListWidget::item:selected {
+                background: #e8d5b5;
+                color: #3d3929;
+            }
+            QListWidget::item:hover {
+                background: #f0ebe3;
+            }
+        """)
+
+    def update_for_path(self, path: str, kernel):
+        """Update the panel for a document path."""
+        self.current_path = path
+        self.outgoing_list.clear()
+        self.incoming_list.clear()
+        self.related_list.clear()
+        self.impact_list.clear()
+
+        if not path or not kernel:
+            return
+
+        # Get outgoing links
+        outgoing = kernel.relations.get_outgoing(path)
+        for link in outgoing:
+            target = Path(link["target"]).name
+            rel = link["relation"]
+            item = QListWidgetItem(f"{target}  ({rel})")
+            item.setData(Qt.ItemDataRole.UserRole, link["target"])
+            item.setToolTip(link["target"])
+            self.outgoing_list.addItem(item)
+
+        # Get incoming links
+        incoming = kernel.relations.get_incoming(path)
+        for link in incoming:
+            source = Path(link["source"]).name
+            rel = link["relation"]
+            item = QListWidgetItem(f"{source}  ({rel})")
+            item.setData(Qt.ItemDataRole.UserRole, link["source"])
+            item.setToolTip(link["source"])
+            self.incoming_list.addItem(item)
+
+        # Get related documents (2-hop)
+        related = kernel.relations.get_related(path, max_depth=2)
+        # Filter out already shown
+        shown = {link["target"] for link in outgoing}
+        shown.update(link["source"] for link in incoming)
+        for rel_path in related:
+            if rel_path not in shown:
+                name = Path(rel_path).name
+                item = QListWidgetItem(name)
+                item.setData(Qt.ItemDataRole.UserRole, rel_path)
+                item.setToolTip(rel_path)
+                self.related_list.addItem(item)
+
+        # Get change impact
+        impacted = kernel.relations.get_affected_by_change(path)
+        for doc in impacted:
+            name = Path(doc["path"]).name
+            rel = doc["relation"]
+            item = QListWidgetItem(f"{name}  ({rel})")
+            item.setData(Qt.ItemDataRole.UserRole, doc["path"])
+            item.setToolTip(f"Changes here affect: {doc['path']}")
+            self.impact_list.addItem(item)
+
+    def _on_link_clicked(self, item):
+        """Handle double-click on a link item."""
+        path = item.data(Qt.ItemDataRole.UserRole)
+        if path:
+            self.link_clicked.emit(path)
+
+    def clear_panel(self):
+        """Clear all lists."""
+        self.current_path = None
+        self.outgoing_list.clear()
+        self.incoming_list.clear()
+        self.related_list.clear()
+        self.impact_list.clear()
 
 
 class LLMWorker(QThread):
@@ -1095,13 +1240,31 @@ class ContextLauncher(QWidget):
             self.add_context(path)
             self.context_added.emit(path)
 
+    def _normalize_path(self, path):
+        """Normalize path to prevent duplicates from different path formats."""
+        from pathlib import Path
+        # Resolve to absolute, normalize slashes, and lowercase on Windows
+        normalized = str(Path(path).resolve())
+        if sys.platform == "win32":
+            normalized = normalized.lower()
+        return normalized
+
     def add_context(self, path, context_id=None, status="closed"):
         """Register a context in the workspace (no duplicates)."""
         from pathlib import Path
-        # Normalize path to prevent duplicates from different path formats
-        path = str(Path(path).resolve())
+        normalized = self._normalize_path(path)
+
+        # Skip if already exists
+        if normalized in self._contexts:
+            # Just update status if already present
+            self._contexts[normalized]["status"] = status
+            if context_id:
+                self._contexts[normalized]["context_id"] = context_id
+            self._refresh_list()
+            return
+
         name = Path(path).name
-        self._contexts[path] = {
+        self._contexts[normalized] = {
             "name": name,
             "status": status,
             "context_id": context_id
@@ -1110,16 +1273,18 @@ class ContextLauncher(QWidget):
 
     def update_context_status(self, path, status, context_id=None):
         """Update a context's status (open, modified, closed)."""
-        if path in self._contexts:
-            self._contexts[path]["status"] = status
+        normalized = self._normalize_path(path)
+        if normalized in self._contexts:
+            self._contexts[normalized]["status"] = status
             if context_id:
-                self._contexts[path]["context_id"] = context_id
+                self._contexts[normalized]["context_id"] = context_id
             self._refresh_list()
 
     def remove_context(self, path):
         """Remove a context from the workspace."""
-        if path in self._contexts:
-            del self._contexts[path]
+        normalized = self._normalize_path(path)
+        if normalized in self._contexts:
+            del self._contexts[normalized]
             self._refresh_list()
 
     def _refresh_list(self):
@@ -2688,6 +2853,7 @@ class MarkdownTab(QWidget):
         self.build_provider = BuildProvider()
         self.shell_provider = ShellProvider()
         self.python_interpreter_provider = PythonInterpreterProvider()
+        self.history_provider = HistoryProvider(self.ai_client)
         self.dark_mode = dark_mode
         self.edit_mode = False
         self._write_console_callback = write_console_callback
@@ -2839,6 +3005,7 @@ class MarkdownTab(QWidget):
             self.build_provider,
             self.shell_provider,
             self.python_interpreter_provider,
+            self.history_provider,
         ]
         if self.graphics_enabled:
             self.providers.append(self.image_generator_provider)
@@ -3875,6 +4042,13 @@ class MarkdownEditor(QMainWindow):
         self.console_action.triggered.connect(self.toggle_console_dock)
         view_menu.addAction(self.console_action)
 
+        self.links_action = QAction("&Links", self)
+        self.links_action.setCheckable(True)
+        self.links_action.setChecked(False)
+        self.links_action.setShortcut(QKeySequence("Ctrl+L"))
+        self.links_action.triggered.connect(self.toggle_links_dock)
+        view_menu.addAction(self.links_action)
+
         view_menu.addSeparator()
 
         settings_action = QAction("&Settings...", self)
@@ -4073,6 +4247,24 @@ class MarkdownEditor(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.console_dock)
         self.console_dock.setVisible(False)
         self.console_dock.setMinimumHeight(150)
+
+        # Link Navigator panel for semantic relationships
+        self.links_dock = QDockWidget("Links", self)
+        self.links_dock.setStyleSheet(dock_style)
+        self.links_panel = LinkNavigatorPanel()
+        self.links_panel.link_clicked.connect(self._on_link_navigate)
+        self.links_dock.setWidget(self.links_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.links_dock)
+        self.links_dock.setVisible(False)
+        self.links_dock.setMinimumWidth(250)
+
+    def _on_link_navigate(self, path):
+        """Handle navigation to a linked document."""
+        if os.path.exists(path):
+            self.open_document(path)
+        else:
+            QMessageBox.warning(self, "Link Target Not Found",
+                              f"Could not find: {path}")
 
     def _get_chat_context(self):
         """Get current selection and document for chat context."""
@@ -4331,6 +4523,20 @@ class MarkdownEditor(QMainWindow):
     def toggle_tasks_dock(self):
         self.tasks_dock.setVisible(self.tasks_action.isChecked())
 
+    def toggle_links_dock(self):
+        visible = self.links_action.isChecked()
+        self.links_dock.setVisible(visible)
+        if visible:
+            self._update_links_panel()
+
+    def _update_links_panel(self):
+        """Update the links panel for the current document."""
+        tab = self.tabs.currentWidget()
+        if isinstance(tab, MarkdownTab) and tab.file_path:
+            self.links_panel.update_for_path(tab.file_path, get_kernel())
+        else:
+            self.links_panel.clear_panel()
+
     def toggle_reader_mode(self):
         index = self.tabs.currentIndex()
         tab = self.tabs.currentWidget()
@@ -4361,7 +4567,7 @@ class MarkdownEditor(QMainWindow):
             )
             self._replace_tab(index, edit_tab, Path(tab.file_path).name, tab.file_path)
             edit_tab.outline_list = self.outline_dock.widget()
-            edit_tab.word_count_label = self.word_count_dock.widget()
+            edit_tab.word_count_label = self.word_count_label
             edit_tab.refresh_outline()
             edit_tab.refresh_word_count()
             edit_tab.events.document_saved.connect(self.on_document_saved)
@@ -5122,7 +5328,6 @@ class MarkdownEditor(QMainWindow):
         index = self.tabs.addTab(tab, "Untitled")
         self.tabs.setCurrentIndex(index)
         self.outline_list = self.outline_dock.widget()
-        self.word_count_label = self.word_count_dock.widget()
         tab.outline_list = self.outline_list
         tab.word_count_label = self.word_count_label
         tab.refresh_outline()
@@ -5143,16 +5348,20 @@ class MarkdownEditor(QMainWindow):
             name = Path(tab.file_path).name if tab.file_path else "Untitled"
             self.setWindowTitle(f"Markdown Editor - {name}")
             self.outline_list = self.outline_dock.widget()
-            self.word_count_label = self.word_count_dock.widget()
             tab.outline_list = self.outline_list
             tab.word_count_label = self.word_count_label
             tab.refresh_outline()
             tab.refresh_word_count()
             self.reader_action.setChecked(False)
+            # Update links panel if visible
+            if self.links_dock.isVisible():
+                self._update_links_panel()
         elif isinstance(tab, ReaderTab):
             name = Path(tab.file_path).name if tab.file_path else "Reader"
             self.setWindowTitle(f"Markdown Editor - {name}")
             self.reader_action.setChecked(True)
+            if self.links_dock.isVisible():
+                self.links_panel.clear_panel()
 
     def show_search(self):
         tab = self.tabs.currentWidget()
@@ -5243,7 +5452,6 @@ class MarkdownEditor(QMainWindow):
         self.tabs.setTabToolTip(index, file_path)
         self.file_watcher.addPath(file_path)
         self.outline_list = self.outline_dock.widget()
-        self.word_count_label = self.word_count_dock.widget()
         if isinstance(tab, MarkdownTab):
             tab.outline_list = self.outline_list
             tab.word_count_label = self.word_count_label
