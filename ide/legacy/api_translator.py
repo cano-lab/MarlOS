@@ -179,6 +179,39 @@ class SemanticAPITranslator:
             }
         ))
 
+        patterns.append(APIPattern(
+            api_regex=r"^(read|pread|readv)$",
+            category=APICategory.FILE,
+            semantic_template={
+                "primitive": "ctx.emit",
+                "event": "content_read",
+            }
+        ))
+
+        patterns.append(APIPattern(
+            api_regex=r"^(unlink|remove)$",
+            category=APICategory.FILE,
+            semantic_template={
+                "primitive": "ctx.invoke",
+                "action": "document.delete",
+            }
+        ))
+
+        # fopen/fclose (C library)
+        patterns.append(APIPattern(
+            api_regex=r"^fopen(64)?$",
+            category=APICategory.FILE,
+            translator=self._translate_fopen,
+        ))
+
+        patterns.append(APIPattern(
+            api_regex=r"^fclose$",
+            category=APICategory.FILE,
+            semantic_template={
+                "primitive": "ctx.detach",
+            }
+        ))
+
         # ============= CLIPBOARD =============
 
         patterns.append(APIPattern(
@@ -551,6 +584,38 @@ class SemanticAPITranslator:
                 intent = Intent.CREATE
             elif flags & O_WRONLY or flags & O_RDWR:
                 intent = Intent.EDIT
+            else:
+                intent = Intent.READ
+        else:
+            intent = Intent.READ
+
+        op = SemanticOp.attach(path=path, intent=intent)
+        op.source_api = context.api_name
+        op.source_app = context.app_name
+        op.source_pid = context.pid
+
+        return TranslationResult(
+            success=True,
+            operation=op,
+            method="pattern",
+            confidence=1.0,
+        )
+
+    def _translate_fopen(self, context: APICallContext, pattern: APIPattern) -> TranslationResult:
+        """Translate C library fopen() to semantic operation."""
+        args = context.args
+        path = args.get("path", args.get("pathname", "unknown"))
+        mode = args.get("mode", "r")
+
+        # Parse fopen mode string
+        if isinstance(mode, str):
+            if "w" in mode or "a" in mode:
+                if "+" in mode:
+                    intent = Intent.EDIT
+                else:
+                    intent = Intent.CREATE if "w" in mode else Intent.EDIT
+            elif "r" in mode:
+                intent = Intent.EDIT if "+" in mode else Intent.READ
             else:
                 intent = Intent.READ
         else:
