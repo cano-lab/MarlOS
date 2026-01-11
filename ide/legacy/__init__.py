@@ -30,6 +30,17 @@ Usage:
 
 from .app_manager import LegacyAppManager, AppConfig, RuntimeType
 from .wine_runtime import WineRuntime, WineAppConfig, ProtonRuntime, WineVariant
+from .semantic_ops import (
+    SemanticOp, SemanticPrimitive, Intent, EventType,
+    APICallContext, TranslationResult
+)
+from .api_translator import (
+    SemanticAPITranslator, get_translator, translate_api_call
+)
+from .syscall_hook import (
+    SemanticHookManager, SyscallHook, HookMethod, HookConfig,
+    hook_app
+)
 
 __all__ = [
     # App Manager
@@ -41,4 +52,21 @@ __all__ = [
     "WineAppConfig",
     "ProtonRuntime",
     "WineVariant",
+    # Semantic Operations
+    "SemanticOp",
+    "SemanticPrimitive",
+    "Intent",
+    "EventType",
+    "APICallContext",
+    "TranslationResult",
+    # API Translator
+    "SemanticAPITranslator",
+    "get_translator",
+    "translate_api_call",
+    # Syscall Hooking
+    "SemanticHookManager",
+    "SyscallHook",
+    "HookMethod",
+    "HookConfig",
+    "hook_app",
 ]
