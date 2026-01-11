@@ -14,6 +14,7 @@ class IDEContext:
         choose_option_callback=None,
         review_text_callback=None,
         present_suggestions_callback=None,
+        write_console_callback=None,
     ):
         self.document = document
         self.events = events
@@ -26,6 +27,7 @@ class IDEContext:
         self._choose_option_callback = choose_option_callback
         self._review_text_callback = review_text_callback
         self._present_suggestions_callback = present_suggestions_callback
+        self._write_console_callback = write_console_callback
 
     def has_selection(self):
         if not self.editor:
@@ -87,3 +89,19 @@ class IDEContext:
         if self._present_suggestions_callback:
             return self._present_suggestions_callback(title, suggestions)
         return ""
+
+    def write_console(self, text, category="info"):
+        """Write text to the console panel.
+
+        Categories: info, error, success, warning, command
+        """
+        if self._write_console_callback:
+            self._write_console_callback(text, category)
+
+    def write_console_line(self, text, category="info"):
+        """Write a line to the console panel."""
+        self.write_console(text + "\n", category)
+
+    def write_console_command(self, cmd):
+        """Write a command being executed to console."""
+        self.write_console(f"$ {cmd}\n", "command")

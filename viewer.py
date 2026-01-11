@@ -151,6 +151,138 @@ class MarkdownHighlighter(QSyntaxHighlighter):
             self.setFormat(match.capturedStart(), match.capturedLength(), self.list_format)
 
 
+class CodeHighlighter(QSyntaxHighlighter):
+    """Syntax highlighter for code files (Python, JavaScript, etc.)."""
+
+    PYTHON_KEYWORDS = [
+        'and', 'as', 'assert', 'async', 'await', 'break', 'class', 'continue',
+        'def', 'del', 'elif', 'else', 'except', 'finally', 'for', 'from',
+        'global', 'if', 'import', 'in', 'is', 'lambda', 'None', 'nonlocal',
+        'not', 'or', 'pass', 'raise', 'return', 'True', 'False', 'try',
+        'while', 'with', 'yield',
+    ]
+
+    JS_KEYWORDS = [
+        'async', 'await', 'break', 'case', 'catch', 'class', 'const', 'continue',
+        'debugger', 'default', 'delete', 'do', 'else', 'export', 'extends',
+        'finally', 'for', 'function', 'if', 'import', 'in', 'instanceof',
+        'let', 'new', 'null', 'return', 'static', 'super', 'switch', 'this',
+        'throw', 'true', 'false', 'try', 'typeof', 'undefined', 'var', 'void',
+        'while', 'with', 'yield',
+    ]
+
+    def __init__(self, parent=None, dark_mode=False, language="python"):
+        super().__init__(parent)
+        self.dark_mode = dark_mode
+        self.language = language
+        self.setup_formats()
+
+    def setup_formats(self):
+        if self.dark_mode:
+            keyword_color = QColor("#569cd6")
+            string_color = QColor("#ce9178")
+            comment_color = QColor("#6a9955")
+            number_color = QColor("#b5cea8")
+            function_color = QColor("#dcdcaa")
+            class_color = QColor("#4ec9b0")
+            decorator_color = QColor("#c586c0")
+        else:
+            keyword_color = QColor("#0000ff")
+            string_color = QColor("#a31515")
+            comment_color = QColor("#008000")
+            number_color = QColor("#098658")
+            function_color = QColor("#795e26")
+            class_color = QColor("#267f99")
+            decorator_color = QColor("#af00db")
+
+        self.keyword_format = QTextCharFormat()
+        self.keyword_format.setForeground(QBrush(keyword_color))
+        self.keyword_format.setFontWeight(QFont.Weight.Bold)
+
+        self.string_format = QTextCharFormat()
+        self.string_format.setForeground(QBrush(string_color))
+
+        self.comment_format = QTextCharFormat()
+        self.comment_format.setForeground(QBrush(comment_color))
+        self.comment_format.setFontItalic(True)
+
+        self.number_format = QTextCharFormat()
+        self.number_format.setForeground(QBrush(number_color))
+
+        self.function_format = QTextCharFormat()
+        self.function_format.setForeground(QBrush(function_color))
+
+        self.class_format = QTextCharFormat()
+        self.class_format.setForeground(QBrush(class_color))
+        self.class_format.setFontWeight(QFont.Weight.Bold)
+
+        self.decorator_format = QTextCharFormat()
+        self.decorator_format.setForeground(QBrush(decorator_color))
+
+    def highlightBlock(self, text):
+        keywords = self.PYTHON_KEYWORDS if self.language == "python" else self.JS_KEYWORDS
+
+        # Keywords
+        for keyword in keywords:
+            pattern = QRegularExpression(rf'\b{keyword}\b')
+            match_iter = pattern.globalMatch(text)
+            while match_iter.hasNext():
+                match = match_iter.next()
+                self.setFormat(match.capturedStart(), match.capturedLength(), self.keyword_format)
+
+        # Strings (single and double quotes)
+        string_patterns = [
+            QRegularExpression(r'"[^"\\]*(\\.[^"\\]*)*"'),
+            QRegularExpression(r"'[^'\\]*(\\.[^'\\]*)*'"),
+        ]
+        for pattern in string_patterns:
+            match_iter = pattern.globalMatch(text)
+            while match_iter.hasNext():
+                match = match_iter.next()
+                self.setFormat(match.capturedStart(), match.capturedLength(), self.string_format)
+
+        # Numbers
+        number_pattern = QRegularExpression(r'\b\d+\.?\d*\b')
+        match_iter = number_pattern.globalMatch(text)
+        while match_iter.hasNext():
+            match = match_iter.next()
+            self.setFormat(match.capturedStart(), match.capturedLength(), self.number_format)
+
+        # Function definitions
+        if self.language == "python":
+            func_pattern = QRegularExpression(r'\bdef\s+(\w+)')
+        else:
+            func_pattern = QRegularExpression(r'\bfunction\s+(\w+)')
+        match_iter = func_pattern.globalMatch(text)
+        while match_iter.hasNext():
+            match = match_iter.next()
+            self.setFormat(match.capturedStart(1), match.capturedLength(1), self.function_format)
+
+        # Class definitions
+        class_pattern = QRegularExpression(r'\bclass\s+(\w+)')
+        match_iter = class_pattern.globalMatch(text)
+        while match_iter.hasNext():
+            match = match_iter.next()
+            self.setFormat(match.capturedStart(1), match.capturedLength(1), self.class_format)
+
+        # Decorators (Python)
+        if self.language == "python":
+            decorator_pattern = QRegularExpression(r'@\w+')
+            match_iter = decorator_pattern.globalMatch(text)
+            while match_iter.hasNext():
+                match = match_iter.next()
+                self.setFormat(match.capturedStart(), match.capturedLength(), self.decorator_format)
+
+        # Comments
+        if self.language == "python":
+            comment_pattern = QRegularExpression(r'#.*$')
+        else:
+            comment_pattern = QRegularExpression(r'//.*$')
+        match = comment_pattern.match(text)
+        if match.hasMatch():
+            self.setFormat(match.capturedStart(), match.capturedLength(), self.comment_format)
+
+
 class SearchBar(QWidget):
     """Search bar widget."""
 
@@ -196,6 +328,123 @@ class SearchBar(QWidget):
     def find_prev(self):
         if self.target_widget and self.search_input.text():
             self.target_widget.find(self.search_input.text(), QTextDocument.FindFlag.FindBackward)
+
+
+class ConsolePanel(QWidget):
+    """Console panel for compiler output and messages. Always dark themed."""
+
+    def __init__(self, parent=None, dark_mode=True):
+        super().__init__(parent)
+        self.dark_mode = True  # Console is always dark
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Dark themed container
+        self.setStyleSheet("background-color: #1e1e1e;")
+
+        # Header with title and clear button
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(8, 4, 8, 4)
+
+        title = QLabel("Console")
+        title.setStyleSheet("font-weight: bold; color: #ccc;")
+        header_layout.addWidget(title)
+
+        header_layout.addStretch()
+
+        clear_btn = QPushButton("Clear")
+        clear_btn.setFixedWidth(60)
+        clear_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #333;
+                color: #ccc;
+                border: 1px solid #555;
+                padding: 2px 8px;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #444;
+            }
+        """)
+        clear_btn.clicked.connect(self.clear)
+        header_layout.addWidget(clear_btn)
+
+        layout.addWidget(header)
+
+        # Output area - always dark
+        self.output = QPlainTextEdit()
+        self.output.setReadOnly(True)
+        self.output.setFont(QFont("Consolas", 10))
+        self.output.setMaximumBlockCount(5000)
+        self.output.setStyleSheet("""
+            QPlainTextEdit {
+                background-color: #1e1e1e;
+                color: #d4d4d4;
+                border: none;
+                padding: 8px;
+                selection-background-color: #264f78;
+            }
+        """)
+
+        layout.addWidget(self.output)
+
+    def write(self, text, category="info"):
+        """Write text to console with optional category styling."""
+        cursor = self.output.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+
+        # Color based on category
+        if category == "error":
+            color = "#f44336" if self.dark_mode else "#c62828"
+        elif category == "success":
+            color = "#4caf50" if self.dark_mode else "#2e7d32"
+        elif category == "warning":
+            color = "#ff9800" if self.dark_mode else "#ef6c00"
+        elif category == "command":
+            color = "#2196f3" if self.dark_mode else "#1565c0"
+        else:
+            color = "#d4d4d4" if self.dark_mode else "#333333"
+
+        # Insert with color
+        fmt = cursor.charFormat()
+        fmt.setForeground(QBrush(QColor(color)))
+        cursor.setCharFormat(fmt)
+        cursor.insertText(text)
+
+        # Auto-scroll to bottom
+        self.output.setTextCursor(cursor)
+        self.output.ensureCursorVisible()
+
+    def write_line(self, text, category="info"):
+        """Write a line to console."""
+        self.write(text + "\n", category)
+
+    def write_command(self, cmd):
+        """Write a command being executed."""
+        self.write_line(f"$ {cmd}", "command")
+
+    def write_output(self, text):
+        """Write command output."""
+        self.write(text, "info")
+
+    def write_error(self, text):
+        """Write error output."""
+        self.write(text, "error")
+
+    def write_success(self, text):
+        """Write success message."""
+        self.write_line(text, "success")
+
+    def clear(self):
+        """Clear console output."""
+        self.output.clear()
+
+    def set_dark_mode(self, dark_mode):
+        """Console is always dark, this method is kept for compatibility."""
+        pass  # Console stays dark regardless of app theme
 
 
 class LLMWorker(QThread):
@@ -761,9 +1010,49 @@ class ContextLauncher(QWidget):
     context_selected = pyqtSignal(str)  # Emits file path
     context_added = pyqtSignal(str)     # Emits file path
 
+    # Consistent side panel styling (cream/warm theme)
+    PANEL_STYLE = """
+        QWidget {
+            background-color: #faf8f5;
+            color: #3d3929;
+        }
+        QLabel {
+            color: #3d3929;
+        }
+        QPushButton {
+            background-color: #ebe7df;
+            color: #3d3929;
+            border: 1px solid #d5d0c4;
+            padding: 4px 8px;
+            border-radius: 3px;
+        }
+        QPushButton:hover {
+            background-color: #e0dbd1;
+        }
+        QListWidget {
+            background-color: #ffffff;
+            color: #3d3929;
+            border: 1px solid #d5d0c4;
+            border-radius: 4px;
+        }
+        QListWidget::item {
+            padding: 6px;
+            border-bottom: 1px solid #ebe7df;
+            color: #3d3929;
+        }
+        QListWidget::item:hover {
+            background: #f5f3ef;
+        }
+        QListWidget::item:selected {
+            background: #e8d5b5;
+            color: #3d3929;
+        }
+    """
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._contexts = {}  # path -> {name, status, context_id}
+        self.setStyleSheet(self.PANEL_STYLE)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -772,7 +1061,7 @@ class ContextLauncher(QWidget):
         # Header
         header = QHBoxLayout()
         title = QLabel("Workspace")
-        title.setStyleSheet("font-weight: bold; font-size: 12px;")
+        title.setStyleSheet("font-weight: bold; font-size: 12px; color: #3d3929;")
         header.addWidget(title)
         header.addStretch()
 
@@ -785,28 +1074,12 @@ class ContextLauncher(QWidget):
 
         # Context list
         self.context_list = QListWidget()
-        self.context_list.setStyleSheet("""
-            QListWidget {
-                border: 1px solid #ccc;
-                border-radius: 4px;
-            }
-            QListWidget::item {
-                padding: 6px;
-                border-bottom: 1px solid #eee;
-            }
-            QListWidget::item:hover {
-                background: #f0f0f0;
-            }
-            QListWidget::item:selected {
-                background: #e0e0ff;
-            }
-        """)
         self.context_list.itemDoubleClicked.connect(self._on_item_double_clicked)
         layout.addWidget(self.context_list)
 
         # Status bar
         self.status_label = QLabel("0 contexts")
-        self.status_label.setStyleSheet("color: #666; font-size: 10px;")
+        self.status_label.setStyleSheet("color: #6b6555; font-size: 10px;")
         layout.addWidget(self.status_label)
 
     def _add_context(self):
@@ -823,8 +1096,10 @@ class ContextLauncher(QWidget):
             self.context_added.emit(path)
 
     def add_context(self, path, context_id=None, status="closed"):
-        """Register a context in the workspace."""
+        """Register a context in the workspace (no duplicates)."""
         from pathlib import Path
+        # Normalize path to prevent duplicates from different path formats
+        path = str(Path(path).resolve())
         name = Path(path).name
         self._contexts[path] = {
             "name": name,
@@ -2383,6 +2658,7 @@ class MarkdownTab(QWidget):
         context_menu_config=None,
         lexicon=None,
         ai_client=None,
+        write_console_callback=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -2414,6 +2690,7 @@ class MarkdownTab(QWidget):
         self.python_interpreter_provider = PythonInterpreterProvider()
         self.dark_mode = dark_mode
         self.edit_mode = False
+        self._write_console_callback = write_console_callback
         self.graphics_enabled = graphics_enabled
         self.context_menu_config = context_menu_config or {"enabled": set()}
 
@@ -2519,7 +2796,8 @@ class MarkdownTab(QWidget):
         self.editor.cursorPositionChanged.connect(self.on_cursor_moved)
         self.editor.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.editor.customContextMenuRequested.connect(self.show_editor_context_menu)
-        self.highlighter = MarkdownHighlighter(self.editor.document(), dark_mode)
+        self.highlighter = None
+        self._setup_highlighter(dark_mode)
         self.stack.addWidget(self.editor)
 
         self.context = IDEContext(
@@ -2534,6 +2812,7 @@ class MarkdownTab(QWidget):
             choose_option_callback=self.choose_option,
             review_text_callback=self.review_text,
             present_suggestions_callback=self.present_suggestions,
+            write_console_callback=self._write_console_callback,
         )
         self.document_command_provider = DocumentCommandProvider(
             self.save_file,
@@ -2643,6 +2922,11 @@ class MarkdownTab(QWidget):
         menu.addSeparator()
 
         enabled = self.context_menu_config.get("enabled", set())
+
+        # Detect language from file extension
+        lang = self._detect_file_language()
+        has_selection = bool(self.context.get_selection())
+
         actions = [
             ("quick_stats", "Quick Stats", self.show_quick_stats),
             ("lookup_definition", "Lookup Definition", self.show_definition_bubble),
@@ -2656,6 +2940,23 @@ class MarkdownTab(QWidget):
             ("diff_narrator", "Diff Narrator", lambda: self.commands.execute("document.diff.narrator", self.context)),
             ("generate_image", "Generate Image", lambda: self.commands.execute("markdown.generate.image", self.context)),
         ]
+
+        # Add language-specific code actions
+        if has_selection:
+            if lang == "python":
+                actions.append(("run_selection", "Run Python Selection", lambda: self.commands.execute("python.eval", self.context)))
+                actions.append(("python_eval", "Python: Evaluate", lambda: self.commands.execute("python.eval", self.context)))
+            elif lang in ("javascript", "node"):
+                actions.append(("run_selection", f"Run {lang.title()} Selection", lambda: self.commands.execute("code.run.selection", self.context)))
+            else:
+                actions.append(("run_selection", "Run Selection", lambda: self.commands.execute("code.run.selection", self.context)))
+
+        # File-level code actions
+        if lang:
+            lang_label = {"python": "Python", "javascript": "JavaScript", "node": "Node.js"}.get(lang, lang.title())
+            actions.append(("run_file", f"Run {lang_label} File", lambda: self.commands.execute("code.run", self.context)))
+
+        actions.append(("build_project", "Build Project", lambda: self.commands.execute("build.run", self.context)))
 
         term = self._current_term()
         if term:
@@ -2706,6 +3007,55 @@ class MarkdownTab(QWidget):
             cursor.select(cursor.SelectionType.WordUnderCursor)
             term = cursor.selectedText()
         return (term or "").strip()
+
+    def _detect_file_language(self):
+        """Detect programming language from file extension."""
+        if not self.file_path:
+            return None
+        ext = self.file_path.split(".")[-1].lower() if "." in self.file_path else ""
+        ext_map = {
+            "py": "python",
+            "pyw": "python",
+            "js": "javascript",
+            "mjs": "javascript",
+            "cjs": "javascript",
+            "ts": "typescript",
+            "tsx": "typescript",
+            "rs": "rust",
+            "go": "go",
+            "rb": "ruby",
+            "sh": "shell",
+            "bash": "shell",
+            "ps1": "powershell",
+            "c": "c",
+            "cpp": "cpp",
+            "h": "c",
+            "hpp": "cpp",
+            "java": "java",
+            "kt": "kotlin",
+            "swift": "swift",
+            "md": "markdown",
+        }
+        return ext_map.get(ext)
+
+    def _setup_highlighter(self, dark_mode=None):
+        """Set up the appropriate syntax highlighter based on file type."""
+        if dark_mode is None:
+            dark_mode = self.dark_mode
+
+        lang = self._detect_file_language()
+
+        # Remove old highlighter
+        if self.highlighter:
+            self.highlighter.setDocument(None)
+
+        # Choose highlighter based on language
+        if lang in ("python", "javascript", "typescript"):
+            hl_lang = "python" if lang == "python" else "javascript"
+            self.highlighter = CodeHighlighter(self.editor.document(), dark_mode, hl_lang)
+        else:
+            # Default to markdown highlighter
+            self.highlighter = MarkdownHighlighter(self.editor.document(), dark_mode)
 
     def show_definition_bubble(self):
         term = self._current_term()
@@ -2881,6 +3231,8 @@ class MarkdownTab(QWidget):
             self.editor.blockSignals(True)
             self.editor.setPlainText(self.document.content)
             self.editor.blockSignals(False)
+            # Update highlighter based on file type
+            self._setup_highlighter()
             self.refresh_view()
             if file_path:
                 self.preview.setSearchPaths([os.path.dirname(os.path.abspath(file_path))])
@@ -3297,9 +3649,15 @@ class MarkdownEditor(QMainWindow):
             ("Graphics", [
                 ("generate_image", "Generate Image"),
             ]),
+            ("Code", [
+                ("run_selection", "Run Selection"),
+                ("python_eval", "Python: Evaluate"),
+                ("run_file", "Run File"),
+                ("build_project", "Build Project"),
+            ]),
         ]
         self.context_menu_config = {
-            "enabled": {"quick_stats", "lookup_definition", "show_synonyms"},
+            "enabled": {"quick_stats", "lookup_definition", "show_synonyms", "run_selection", "python_eval", "run_file", "build_project"},
         }
         self.workspace_root = Path(__file__).resolve().parent
         self.workspace_config = {}
@@ -3510,6 +3868,13 @@ class MarkdownEditor(QMainWindow):
         self.chat_action.triggered.connect(self.toggle_chat_dock)
         view_menu.addAction(self.chat_action)
 
+        self.console_action = QAction("Con&sole", self)
+        self.console_action.setCheckable(True)
+        self.console_action.setChecked(False)
+        self.console_action.setShortcut(QKeySequence("Ctrl+`"))
+        self.console_action.triggered.connect(self.toggle_console_dock)
+        view_menu.addAction(self.console_action)
+
         view_menu.addSeparator()
 
         settings_action = QAction("&Settings...", self)
@@ -3518,8 +3883,78 @@ class MarkdownEditor(QMainWindow):
         view_menu.addAction(settings_action)
 
     def setup_side_panels(self):
+        # Consistent cream/warm theme for all side panels
+        dock_style = """
+            QDockWidget {
+                background-color: #faf8f5;
+                color: #3d3929;
+                titlebar-close-icon: url(close.png);
+            }
+            QDockWidget::title {
+                background-color: #ebe7df;
+                color: #3d3929;
+                padding: 6px;
+                font-weight: bold;
+            }
+        """
+        panel_style = """
+            QWidget {
+                background-color: #faf8f5;
+                color: #3d3929;
+            }
+            QLabel {
+                color: #3d3929;
+            }
+            QLineEdit {
+                background-color: #ffffff;
+                color: #3d3929;
+                border: 1px solid #d5d0c4;
+                padding: 4px;
+                border-radius: 3px;
+            }
+            QPushButton {
+                background-color: #ebe7df;
+                color: #3d3929;
+                border: 1px solid #d5d0c4;
+                padding: 4px 8px;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #e0dbd1;
+            }
+            QPushButton:checked {
+                background-color: #d5c9a8;
+            }
+            QComboBox {
+                background-color: #ffffff;
+                color: #3d3929;
+                border: 1px solid #d5d0c4;
+                padding: 4px;
+                border-radius: 3px;
+            }
+            QListWidget {
+                background-color: #ffffff;
+                color: #3d3929;
+                border: 1px solid #d5d0c4;
+                border-radius: 4px;
+            }
+            QListWidget::item {
+                padding: 6px;
+                border-bottom: 1px solid #ebe7df;
+                color: #3d3929;
+            }
+            QListWidget::item:hover {
+                background: #f5f3ef;
+            }
+            QListWidget::item:selected {
+                background: #e8d5b5;
+                color: #3d3929;
+            }
+        """
+
         # Context Launcher - the "desktop" of the Semantic OS
         self.workspace_dock = QDockWidget("Workspace", self)
+        self.workspace_dock.setStyleSheet(dock_style)
         self.context_launcher = ContextLauncher()
         self.context_launcher.context_selected.connect(self._on_context_selected)
         self.context_launcher.context_added.connect(self._on_context_added)
@@ -3528,21 +3963,30 @@ class MarkdownEditor(QMainWindow):
         self.workspace_dock.setMinimumWidth(200)
 
         self.outline_dock = QDockWidget("Outline", self)
+        self.outline_dock.setStyleSheet(dock_style)
         self.outline_list = QListWidget()
+        self.outline_list.setStyleSheet(panel_style)
         self.outline_list.itemActivated.connect(self.jump_to_heading)
         self.outline_dock.setWidget(self.outline_list)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.outline_dock)
         self.outline_dock.setVisible(False)
 
         self.word_count_dock = QDockWidget("Word Count", self)
+        self.word_count_dock.setStyleSheet(dock_style)
+        word_count_widget = QWidget()
+        word_count_widget.setStyleSheet(panel_style)
+        word_count_layout = QVBoxLayout(word_count_widget)
+        word_count_layout.setContentsMargins(12, 8, 12, 8)
         self.word_count_label = QLabel("Words: 0  Characters: 0")
-        self.word_count_label.setContentsMargins(12, 8, 12, 8)
-        self.word_count_dock.setWidget(self.word_count_label)
+        word_count_layout.addWidget(self.word_count_label)
+        self.word_count_dock.setWidget(word_count_widget)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.word_count_dock)
         self.word_count_dock.setVisible(False)
 
         self.tasks_dock = QDockWidget("Tasks", self)
+        self.tasks_dock.setStyleSheet(dock_style)
         tasks_widget = QWidget()
+        tasks_widget.setStyleSheet(panel_style)
         tasks_layout = QVBoxLayout(tasks_widget)
         tasks_layout.setContentsMargins(8, 8, 8, 8)
 
@@ -3607,6 +4051,7 @@ class MarkdownEditor(QMainWindow):
 
         # Chat panel dock - LLM conversation interface
         self.chat_dock = QDockWidget("Chat (AI)", self)
+        self.chat_dock.setStyleSheet(dock_style)
         self.chat_panel = ChatPanel(
             self.ai_client,
             get_context_callback=self._get_chat_context,
@@ -3619,6 +4064,15 @@ class MarkdownEditor(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.chat_dock)
         self.chat_dock.setVisible(False)
         self.chat_dock.setMinimumWidth(350)
+
+        # Console panel for compiler output
+        self.console_dock = QDockWidget("Console", self)
+        self.console_dock.setObjectName("console_dock")
+        self.console_panel = ConsolePanel(dark_mode=self.dark_mode)
+        self.console_dock.setWidget(self.console_panel)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.console_dock)
+        self.console_dock.setVisible(False)
+        self.console_dock.setMinimumHeight(150)
 
     def _get_chat_context(self):
         """Get current selection and document for chat context."""
@@ -3719,6 +4173,26 @@ class MarkdownEditor(QMainWindow):
         self.chat_dock.setVisible(visible)
         if visible:
             self.chat_panel.input_field.setFocus()
+
+    def toggle_console_dock(self):
+        """Toggle the console panel visibility."""
+        visible = self.console_action.isChecked()
+        self.console_dock.setVisible(visible)
+
+    def show_console(self):
+        """Show the console panel."""
+        self.console_dock.setVisible(True)
+        self.console_action.setChecked(True)
+
+    def write_to_console(self, text, category="info"):
+        """Write text to the console panel."""
+        self.show_console()
+        self.console_panel.write(text, category)
+
+    def _write_to_console(self, text, category="info"):
+        """Callback for providers to write to console."""
+        self.show_console()
+        self.console_panel.write(text, category)
 
     def on_task_badge_clicked(self):
         """Handle task badge button click - open the tasks panel."""
@@ -3883,6 +4357,7 @@ class MarkdownEditor(QMainWindow):
                 context_menu_config=self.context_menu_config,
                 lexicon=self.lexicon,
                 ai_client=self.ai_client,
+                write_console_callback=self._write_to_console,
             )
             self._replace_tab(index, edit_tab, Path(tab.file_path).name, tab.file_path)
             edit_tab.outline_list = self.outline_dock.widget()
@@ -4642,6 +5117,7 @@ class MarkdownEditor(QMainWindow):
             context_menu_config=self.context_menu_config,
             lexicon=self.lexicon,
             ai_client=self.ai_client,
+            write_console_callback=self._write_to_console,
         )
         index = self.tabs.addTab(tab, "Untitled")
         self.tabs.setCurrentIndex(index)
@@ -4759,6 +5235,7 @@ class MarkdownEditor(QMainWindow):
                 context_menu_config=self.context_menu_config,
                 lexicon=self.lexicon,
                 ai_client=self.ai_client,
+                write_console_callback=self._write_to_console,
             )
         name = Path(file_path).name
         index = self.tabs.addTab(tab, name)

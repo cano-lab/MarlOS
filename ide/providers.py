@@ -1229,14 +1229,14 @@ class CodeRunnerProvider(Provider):
         return None
 
     def _execute(self, context, code, lang):
-        """Execute code and show output."""
+        """Execute code and show output in console."""
         import subprocess
         import tempfile
         import os
 
         lang_info = self.SUPPORTED_LANGUAGES.get(lang)
         if not lang_info:
-            context.present_text("Run Code", f"Unsupported language: {lang}", allow_insert=False)
+            context.write_console_line(f"[Error] Unsupported language: {lang}", "error")
             return False
 
         # Write to temp file
@@ -1250,6 +1250,8 @@ class CodeRunnerProvider(Provider):
             temp_path = f.name
 
         try:
+            context.write_console_command(f"{lang_info['cmd']} <code>")
+
             # Execute with timeout
             result = subprocess.run(
                 [lang_info["cmd"], temp_path],
@@ -1259,32 +1261,27 @@ class CodeRunnerProvider(Provider):
                 cwd=os.path.dirname(context.document.file_path) if context.document.file_path else None
             )
 
-            output = ""
             if result.stdout:
-                output += f"=== Output ===\n{result.stdout}\n"
+                context.write_console(result.stdout, "info")
             if result.stderr:
-                output += f"=== Errors ===\n{result.stderr}\n"
+                context.write_console(result.stderr, "error")
             if result.returncode != 0:
-                output += f"\n[Exit code: {result.returncode}]"
+                context.write_console_line(f"[Exit code: {result.returncode}]", "warning")
+            elif not result.stdout and not result.stderr:
+                context.write_console_line("[No output]", "info")
+            else:
+                context.write_console_line("[Done]", "success")
 
-            if not output:
-                output = "[No output]"
-
-            context.present_text(f"Run {lang.title()}", output, allow_insert=False)
             return True
 
         except subprocess.TimeoutExpired:
-            context.present_text("Run Code", "Execution timed out (30s limit)", allow_insert=False)
+            context.write_console_line("[Error] Execution timed out (30s limit)", "error")
             return False
         except FileNotFoundError:
-            context.present_text(
-                "Run Code",
-                f"'{lang_info['cmd']}' not found. Is {lang} installed?",
-                allow_insert=False
-            )
+            context.write_console_line(f"[Error] '{lang_info['cmd']}' not found. Is {lang} installed?", "error")
             return False
         except Exception as e:
-            context.present_text("Run Code", f"Error: {e}", allow_insert=False)
+            context.write_console_line(f"[Error] {e}", "error")
             return False
         finally:
             try:
@@ -1354,12 +1351,8 @@ class BuildProvider(Provider):
         work_dir, config = self._detect_project(context)
 
         if not config:
-            context.present_text(
-                "Build",
-                "No recognized build system found.\n\n"
-                "Supported: npm, cargo, make, python (pyproject.toml), go",
-                allow_insert=False
-            )
+            context.write_console_line("[Build] No recognized build system found.", "warning")
+            context.write_console_line("Supported: npm, cargo, make, python (pyproject.toml), go", "info")
             return False
 
         # Let user choose which command
@@ -1379,7 +1372,7 @@ class BuildProvider(Provider):
         from pathlib import Path
 
         if not context.document.file_path:
-            context.present_text("Build", "Save file first to set working directory", allow_insert=False)
+            context.write_console_line("[Build] Save file first to set working directory", "warning")
             return False
 
         work_dir = Path(context.document.file_path).parent
@@ -1399,11 +1392,13 @@ class BuildProvider(Provider):
         return self._execute_command(context, choice, work_dir)
 
     def _execute_command(self, context, command, work_dir):
-        """Execute a shell command."""
+        """Execute a shell command and output to console."""
         import subprocess
         import os
 
         try:
+            context.write_console_command(command)
+
             # Use shell=True for commands with arguments
             result = subprocess.run(
                 command,
@@ -1415,21 +1410,23 @@ class BuildProvider(Provider):
                 env={**os.environ, "PYTHONUNBUFFERED": "1"}
             )
 
-            output = f"$ {command}\n\n"
             if result.stdout:
-                output += result.stdout
+                context.write_console(result.stdout, "info")
             if result.stderr:
-                output += f"\n[stderr]\n{result.stderr}"
-            output += f"\n\n[Exit code: {result.returncode}]"
+                context.write_console(result.stderr, "error")
 
-            context.present_text("Build Output", output, allow_insert=False)
+            if result.returncode == 0:
+                context.write_console_line("[Build complete]", "success")
+            else:
+                context.write_console_line(f"[Exit code: {result.returncode}]", "warning")
+
             return result.returncode == 0
 
         except subprocess.TimeoutExpired:
-            context.present_text("Build", "Command timed out (2 min limit)", allow_insert=False)
+            context.write_console_line("[Error] Command timed out (2 min limit)", "error")
             return False
         except Exception as e:
-            context.present_text("Build", f"Error: {e}", allow_insert=False)
+            context.write_console_line(f"[Error] {e}", "error")
             return False
 
 
@@ -1469,6 +1466,8 @@ class ShellProvider(Provider):
             return False
 
         try:
+            context.write_console_command(command)
+
             result = subprocess.run(
                 command,
                 shell=True,
@@ -1478,21 +1477,23 @@ class ShellProvider(Provider):
                 cwd=work_dir
             )
 
-            output = f"$ {command}\n\n"
             if result.stdout:
-                output += result.stdout
+                context.write_console(result.stdout, "info")
             if result.stderr:
-                output += f"\n[stderr]\n{result.stderr}"
-            output += f"\n\n[Exit code: {result.returncode}]"
+                context.write_console(result.stderr, "error")
 
-            context.present_text("Shell Output", output, allow_insert=True)
+            if result.returncode == 0:
+                context.write_console_line("[Done]", "success")
+            else:
+                context.write_console_line(f"[Exit code: {result.returncode}]", "warning")
+
             return True
 
         except subprocess.TimeoutExpired:
-            context.present_text("Shell", "Command timed out", allow_insert=False)
+            context.write_console_line("[Error] Command timed out", "error")
             return False
         except Exception as e:
-            context.present_text("Shell", f"Error: {e}", allow_insert=False)
+            context.write_console_line(f"[Error] {e}", "error")
             return False
 
 
@@ -1536,20 +1537,22 @@ class PythonInterpreterProvider(Provider):
         """Evaluate selected Python code."""
         code = context.get_selection()
         if not code:
-            context.present_text(
-                "Python Eval",
-                "Select some Python code to evaluate",
-                allow_insert=False
-            )
+            context.write_console_line("[Python] Select some code to evaluate", "warning")
             return False
 
         return self._execute(context, code)
 
     def _execute(self, context, code):
-        """Execute Python code and capture output."""
+        """Execute Python code and output to console."""
         import sys
         import io
         import traceback
+
+        # Show the code being executed
+        code_lines = code.strip().split('\n')
+        for i, line in enumerate(code_lines):
+            prefix = ">>> " if i == 0 else "... "
+            context.write_console_line(prefix + line, "command")
 
         # Capture stdout/stderr
         old_stdout = sys.stdout
@@ -1576,53 +1579,43 @@ class PythonInterpreterProvider(Provider):
         sys.stdout = old_stdout
         sys.stderr = old_stderr
 
-        # Build output
-        output_parts = []
-
+        # Output to console
         if stdout_output:
-            output_parts.append(stdout_output.rstrip())
+            context.write_console(stdout_output, "info")
 
         if result_value is not None:
-            output_parts.append(f">>> {repr(result_value)}")
+            context.write_console_line(repr(result_value), "success")
 
         if stderr_output:
-            output_parts.append(f"[stderr]\n{stderr_output.rstrip()}")
+            context.write_console(stderr_output, "warning")
 
         if error:
-            output_parts.append(f"[Error]\n{error}")
+            context.write_console(error, "error")
 
-        output = "\n".join(output_parts) if output_parts else "[No output]"
+        if not stdout_output and result_value is None and not stderr_output and not error:
+            context.write_console_line("[No output]", "info")
 
         # Add to history
-        self._history.append({"code": code, "output": output})
+        self._history.append({"code": code, "output": stdout_output or repr(result_value) or error or ""})
 
-        context.present_text("Python Result", output, allow_insert=True)
         return True
 
     def _show_repl(self, context):
-        """Show an interactive REPL dialog."""
-        # Build history display
-        if self._history:
-            history_text = []
-            for entry in self._history[-10:]:  # Last 10 entries
-                code_lines = entry["code"].strip().split("\n")
-                for i, line in enumerate(code_lines):
-                    prefix = ">>> " if i == 0 else "... "
-                    history_text.append(prefix + line)
-                history_text.append(entry["output"])
-                history_text.append("")
-            recent = "\n".join(history_text)
-        else:
-            recent = "Python interpreter ready. Select code and use 'Python: Evaluate Selection'."
+        """Show interpreter status in console."""
+        context.write_console_line("=== Python Interpreter Status ===", "command")
 
         # Show current namespace
         user_vars = {k: type(v).__name__ for k, v in self._locals.items()
                      if not k.startswith('_')}
         if user_vars:
-            vars_str = "\n".join(f"  {k}: {t}" for k, t in user_vars.items())
-            recent += f"\n\nDefined variables:\n{vars_str}"
+            context.write_console_line("Defined variables:", "info")
+            for k, t in user_vars.items():
+                context.write_console_line(f"  {k}: {t}", "info")
+        else:
+            context.write_console_line("No variables defined.", "info")
 
-        context.present_text("Python REPL", recent, allow_insert=False)
+        context.write_console_line(f"History: {len(self._history)} entries", "info")
+        context.write_console_line("Select code and use 'Python: Evaluate' to run.", "info")
         return True
 
     def _reset(self, context):
@@ -1630,9 +1623,5 @@ class PythonInterpreterProvider(Provider):
         self._globals = {}
         self._locals = {}
         self._history = []
-        context.present_text(
-            "Python Reset",
-            "Interpreter state cleared. All variables and imports removed.",
-            allow_insert=False
-        )
+        context.write_console_line("[Python] Interpreter reset. All variables cleared.", "success")
         return True
