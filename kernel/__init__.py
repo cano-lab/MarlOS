@@ -23,16 +23,43 @@ Usage:
 
     # Query by meaning
     results = kernel.query("documents I edited today")
+
+Shell:
+    python -m kernel.shell
+
+    semantic> show recent documents
+    semantic> what did I work on today
 """
 
 from .core import SemanticKernel
 from .memory import SemanticMemory, MemoryEntry, MemoryType
 from .syscall import SyscallSimulator
+from .ai_providers import (
+    get_provider,
+    AIProvider,
+    LMStudioProvider,
+    OllamaProvider,
+    OpenAIProvider,
+    AnthropicProvider,
+    ProviderType,
+)
+from .shell import SemanticShell
 
 __all__ = [
+    # Kernel
     "SemanticKernel",
     "SemanticMemory",
     "MemoryEntry",
     "MemoryType",
     "SyscallSimulator",
+    # AI Providers
+    "get_provider",
+    "AIProvider",
+    "LMStudioProvider",
+    "OllamaProvider",
+    "OpenAIProvider",
+    "AnthropicProvider",
+    "ProviderType",
+    # Shell
+    "SemanticShell",
 ]
