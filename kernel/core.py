@@ -5,6 +5,8 @@ Semantic Kernel Core
 The heart of Semantic OS. All operations are semantic.
 All state is vectors in memory pool.
 
+Now with PyQt integration for IDE use.
+
 Implements the semantic primitives:
     ctx.attach(path, intent)  - Open document context
     ctx.detach(path)          - Close document context
@@ -12,16 +14,33 @@ Implements the semantic primitives:
     ctx.invoke(action, args)  - Request action
     ctx.link(src, dst, rel)   - Create relationship
     ctx.query(q)              - Query semantic memory
+
+Usage (CLI):
+    kernel = SemanticKernel()
+    handle = kernel.attach("doc.txt", Intent.EDIT)
+
+Usage (PyQt IDE):
+    kernel = SemanticKernel(enable_qt=True)
+    kernel.context_attached.connect(on_attach)
 """
 
 import time
 import uuid
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Callable, Tuple
+from typing import Any, Dict, List, Optional, Callable, Tuple, TYPE_CHECKING
 from enum import Enum
 
 from .memory import SemanticMemory, MemoryEntry, MemoryType
+
+# Optional PyQt support
+try:
+    from PyQt6.QtCore import QObject, pyqtSignal
+    HAS_PYQT = True
+except ImportError:
+    HAS_PYQT = False
+    QObject = object
+    pyqtSignal = lambda *args: None
 
 
 class Intent(str, Enum):
@@ -47,6 +66,17 @@ class Handle:
     content_buffer: str = ""        # Buffered content
     modified: bool = False          # Has unsaved changes
 
+    # IDE compatibility
+    context_type: str = "document"
+    ai_access: str = "observe"
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    # Permissions (for IDE compatibility)
+    can_write: bool = True
+    can_emit: bool = True
+    can_invoke: bool = True
+    can_link: bool = True
+
 
 @dataclass
 class Process:
@@ -60,54 +90,28 @@ class Process:
     memory: Dict[int, bytes] = field(default_factory=dict)
 
 
-class SemanticKernel:
-    """The Semantic OS kernel.
-
-    Everything is semantic memory. Syscalls become semantic operations.
-
-    Usage:
-        kernel = SemanticKernel()
-
-        # Create a process context
-        proc = kernel.create_process("notepad.exe")
-
-        # Open a document
-        handle = kernel.attach("document.txt", Intent.EDIT, proc.id)
-
-        # Write content
-        kernel.write(handle, "Hello, semantic world!")
-
-        # Emit event
-        kernel.emit("content_changed", {"handle": handle.id})
-
-        # Query memory
-        results = kernel.query("documents edited recently")
-
-        # Close
-        kernel.detach(handle)
-    """
+class SemanticKernelBase:
+    """Base kernel without PyQt (for CLI use)."""
 
     def __init__(self, db_path: str = None):
-        """Initialize the kernel.
-
-        Args:
-            db_path: Path to memory database (None for in-memory)
-        """
         self.memory = SemanticMemory(db_path)
         self.processes: Dict[str, Process] = {}
         self.handles: Dict[str, Handle] = {}
         self._lock = threading.RLock()
 
-        # Event subscribers
+        # Event subscribers (callback-based)
         self._subscribers: Dict[str, List[Callable]] = {}
 
         # Action handlers
         self._action_handlers: Dict[str, Callable] = {}
 
+        # Path to handle mapping for IDE compatibility
+        self._path_index: Dict[str, str] = {}
+
         # Initialize built-in actions
         self._register_builtin_actions()
 
-        # Boot message
+        # Boot
         self._boot_time = time.time()
         self.emit("kernel.boot", {"time": self._boot_time})
 
@@ -127,7 +131,6 @@ class SemanticKernel:
         proc = Process(id=proc_id, name=name)
         self.processes[proc_id] = proc
 
-        # Store in semantic memory
         self.memory.store(
             content=f"Process {name} started",
             type=MemoryType.PROCESS,
@@ -148,12 +151,10 @@ class SemanticKernel:
         if not proc:
             return
 
-        # Close all handles
         for handle_id in list(proc.handles.keys()):
             handle = proc.handles[handle_id]
             self.detach(handle)
 
-        # Update memory
         self.memory.update(f"proc_{pid}", metadata={"state": "terminated"})
         del self.processes[pid]
 
@@ -161,29 +162,19 @@ class SemanticKernel:
 
     # ==================== SEMANTIC PRIMITIVES ====================
 
-    def attach(self, path: str, intent: Intent, process_id: str = None) -> Handle:
-        """ctx.attach - Open/access a document context.
-
-        Args:
-            path: Document path/identifier
-            intent: Access intent (read, edit, create)
-            process_id: Owning process (optional)
-
-        Returns:
-            Handle for the document
-        """
+    def attach(self, path: str, intent: Intent = Intent.READ,
+               process_id: str = None, context_type: str = "document",
+               metadata: Dict = None) -> Handle:
+        """ctx.attach - Open/access a document context."""
         with self._lock:
-            # Find or create document in memory
-            doc_id = f"doc_{path.replace('/', '_').replace('.', '_')}"
+            doc_id = f"doc_{path.replace('/', '_').replace('.', '_').replace(':', '_')}"
 
             existing = self.memory.get(doc_id)
 
             if existing:
-                # Document exists
                 document_id = existing.id
                 content = existing.content
             elif intent == Intent.CREATE:
-                # Create new document
                 document_id = self.memory.store(
                     content="",
                     type=MemoryType.DOCUMENT,
@@ -192,8 +183,6 @@ class SemanticKernel:
                 )
                 content = ""
             else:
-                # Document doesn't exist and not creating
-                # Create placeholder for now (in real OS, would fail)
                 document_id = self.memory.store(
                     content="",
                     type=MemoryType.DOCUMENT,
@@ -202,7 +191,6 @@ class SemanticKernel:
                 )
                 content = ""
 
-            # Create handle
             handle_id = str(uuid.uuid4())[:8]
             handle = Handle(
                 id=handle_id,
@@ -211,15 +199,16 @@ class SemanticKernel:
                 intent=intent,
                 process_id=process_id or "kernel",
                 content_buffer=content,
+                context_type=context_type,
+                metadata=metadata or {},
             )
 
             self.handles[handle_id] = handle
+            self._path_index[path] = handle_id
 
-            # Add to process
             if process_id and process_id in self.processes:
                 self.processes[process_id].handles[handle_id] = handle
 
-            # Store handle in memory
             self.memory.store(
                 content=f"Handle opened for {path} with intent {intent.value}",
                 type=MemoryType.HANDLE,
@@ -229,56 +218,52 @@ class SemanticKernel:
                     "path": path,
                     "intent": intent.value,
                     "process_id": process_id,
+                    "context_type": context_type,
                 },
                 id=f"handle_{handle_id}",
                 links=[document_id],
             )
 
-            self.emit("document.attached", {
+            self.emit("context.attached", {
                 "handle_id": handle_id,
                 "path": path,
                 "intent": intent.value,
+                "context_type": context_type,
             })
+
+            # Emit PyQt signal if available (overridden in subclass)
+            self._emit_qt_attached(handle)
 
             return handle
 
     def detach(self, handle: Handle):
-        """ctx.detach - Close/release a document context.
-
-        Args:
-            handle: The handle to close
-        """
+        """ctx.detach - Close/release a document context."""
         with self._lock:
-            # Flush any buffered changes
             if handle.modified:
                 self._flush_handle(handle)
 
-            # Remove from tracking
             if handle.id in self.handles:
                 del self.handles[handle.id]
 
-            # Remove from process
+            if handle.path in self._path_index:
+                del self._path_index[handle.path]
+
             if handle.process_id in self.processes:
                 proc = self.processes[handle.process_id]
                 if handle.id in proc.handles:
                     del proc.handles[handle.id]
 
-            # Update memory
             self.memory.update(f"handle_{handle.id}", metadata={"state": "closed"})
 
-            self.emit("document.detached", {
+            self.emit("context.detached", {
                 "handle_id": handle.id,
                 "path": handle.path,
             })
 
-    def emit(self, event: str, data: Any = None):
-        """ctx.emit - Emit a semantic event.
+            self._emit_qt_detached(handle.id)
 
-        Args:
-            event: Event name
-            data: Event data
-        """
-        # Store event in memory
+    def emit(self, event: str, data: Any = None, source: str = None, target: str = None):
+        """ctx.emit - Emit a semantic event."""
         event_content = f"{event}: {data}" if data else event
         self.memory.store(
             content=event_content,
@@ -286,11 +271,13 @@ class SemanticKernel:
             metadata={
                 "event": event,
                 "data": data,
+                "source": source,
+                "target": target,
                 "timestamp": time.time(),
             },
         )
 
-        # Notify subscribers
+        # Callback subscribers
         if event in self._subscribers:
             for callback in self._subscribers[event]:
                 try:
@@ -298,7 +285,6 @@ class SemanticKernel:
                 except Exception as e:
                     print(f"[Kernel] Event handler error: {e}")
 
-        # Wildcard subscribers
         if "*" in self._subscribers:
             for callback in self._subscribers["*"]:
                 try:
@@ -306,28 +292,17 @@ class SemanticKernel:
                 except Exception:
                     pass
 
+        # PyQt signal (overridden in subclass)
+        self._emit_qt_event(event, data, source, target)
+
     def invoke(self, action: str, **params) -> Any:
-        """ctx.invoke - Request an action.
-
-        Args:
-            action: Action name (e.g., "document.save")
-            **params: Action parameters
-
-        Returns:
-            Action result
-        """
-        # Store invocation
+        """ctx.invoke - Request an action."""
         self.memory.store(
             content=f"Invoke {action} with {params}",
             type=MemoryType.EVENT,
-            metadata={
-                "event": "action.invoked",
-                "action": action,
-                "params": params,
-            },
+            metadata={"event": "action.invoked", "action": action, "params": params},
         )
 
-        # Execute handler
         if action in self._action_handlers:
             try:
                 result = self._action_handlers[action](**params)
@@ -341,21 +316,10 @@ class SemanticKernel:
             return None
 
     def link(self, source: str, target: str, relation: str) -> bool:
-        """ctx.link - Create relationship between documents.
+        """ctx.link - Create relationship between documents."""
+        source_id = f"doc_{source.replace('/', '_').replace('.', '_').replace(':', '_')}"
+        target_id = f"doc_{target.replace('/', '_').replace('.', '_').replace(':', '_')}"
 
-        Args:
-            source: Source document path/id
-            target: Target document path/id
-            relation: Relationship type
-
-        Returns:
-            Success
-        """
-        # Find documents
-        source_id = f"doc_{source.replace('/', '_').replace('.', '_')}"
-        target_id = f"doc_{target.replace('/', '_').replace('.', '_')}"
-
-        # Create link
         success = self.memory.link(source_id, target_id, relation)
 
         if success:
@@ -368,37 +332,57 @@ class SemanticKernel:
         return success
 
     def query(self, q: str, **filters) -> List[Tuple[MemoryEntry, float]]:
-        """ctx.query - Query semantic memory.
-
-        Args:
-            q: Natural language query
-            **filters: Optional filters (type, metadata, etc.)
-
-        Returns:
-            List of (entry, score) tuples
-        """
+        """ctx.query - Query semantic memory."""
         type_filter = filters.pop("type", None)
         if isinstance(type_filter, str):
             type_filter = MemoryType(type_filter)
 
-        return self.memory.query(
-            query=q,
-            type=type_filter,
-            **filters,
+        return self.memory.query(query=q, type=type_filter, **filters)
+
+    # ==================== IDE COMPATIBILITY ====================
+
+    def get_handle(self, handle_id: str) -> Optional[Handle]:
+        """Get handle by ID (IDE: get_context)."""
+        return self.handles.get(handle_id)
+
+    def get_handle_by_path(self, path: str) -> Optional[Handle]:
+        """Get handle by path (IDE: get_context_by_path)."""
+        handle_id = self._path_index.get(path)
+        return self.handles.get(handle_id) if handle_id else None
+
+    def list_handles(self) -> List[Handle]:
+        """List all handles (IDE: list_all)."""
+        return list(self.handles.values())
+
+    # Aliases for IDE compatibility
+    def create_context(self, path: str = None, context_type: str = "document",
+                       metadata: Dict = None) -> Handle:
+        """IDE compatibility: create_context -> attach."""
+        return self.attach(
+            path=path or f"untitled_{uuid.uuid4().hex[:8]}",
+            intent=Intent.CREATE,
+            context_type=context_type,
+            metadata=metadata,
         )
+
+    def get_context(self, handle_id: str) -> Optional[Handle]:
+        """IDE compatibility alias."""
+        return self.get_handle(handle_id)
+
+    def get_context_by_path(self, path: str) -> Optional[Handle]:
+        """IDE compatibility alias."""
+        return self.get_handle_by_path(path)
+
+    def destroy_context(self, handle_id: str):
+        """IDE compatibility: destroy_context -> detach."""
+        handle = self.handles.get(handle_id)
+        if handle:
+            self.detach(handle)
 
     # ==================== READ/WRITE OPERATIONS ====================
 
     def read(self, handle: Handle, size: int = -1) -> str:
-        """Read from a document handle.
-
-        Args:
-            handle: Document handle
-            size: Bytes to read (-1 for all)
-
-        Returns:
-            Content string
-        """
+        """Read from a document handle."""
         if size < 0:
             return handle.content_buffer[handle.position:]
         else:
@@ -407,24 +391,13 @@ class SemanticKernel:
             return content
 
     def write(self, handle: Handle, content: str) -> int:
-        """Write to a document handle.
-
-        Args:
-            handle: Document handle
-            content: Content to write
-
-        Returns:
-            Bytes written
-        """
+        """Write to a document handle."""
         if handle.intent not in (Intent.EDIT, Intent.CREATE):
             raise PermissionError("Handle not opened for writing")
 
-        # Insert at position
         buffer = handle.content_buffer
         handle.content_buffer = (
-            buffer[:handle.position] +
-            content +
-            buffer[handle.position:]
+            buffer[:handle.position] + content + buffer[handle.position:]
         )
         handle.position += len(content)
         handle.modified = True
@@ -436,6 +409,20 @@ class SemanticKernel:
         })
 
         return len(content)
+
+    def set_content(self, handle: Handle, content: str):
+        """Set full content of handle (IDE compatibility)."""
+        handle.content_buffer = content
+        handle.modified = True
+        self.emit("content.changed", {
+            "handle_id": handle.id,
+            "path": handle.path,
+            "bytes": len(content),
+        })
+
+    def get_content(self, handle: Handle) -> str:
+        """Get full content of handle."""
+        return handle.content_buffer
 
     def seek(self, handle: Handle, position: int):
         """Seek to position in document."""
@@ -453,20 +440,12 @@ class SemanticKernel:
         )
         handle.modified = False
 
-        self.emit("content.saved", {
-            "handle_id": handle.id,
-            "path": handle.path,
-        })
+        self.emit("content.saved", {"handle_id": handle.id, "path": handle.path})
 
     # ==================== SUBSCRIPTIONS ====================
 
     def subscribe(self, event: str, callback: Callable):
-        """Subscribe to semantic events.
-
-        Args:
-            event: Event name (or "*" for all)
-            callback: Function to call (receives event, data)
-        """
+        """Subscribe to semantic events."""
         if event not in self._subscribers:
             self._subscribers[event] = []
         self._subscribers[event].append(callback)
@@ -485,7 +464,6 @@ class SemanticKernel:
         self._action_handlers[action] = handler
 
     def _action_save(self, handle_id: str = None, path: str = None) -> bool:
-        """Built-in save action."""
         if handle_id:
             handle = self.handles.get(handle_id)
             if handle:
@@ -494,19 +472,17 @@ class SemanticKernel:
         return False
 
     def _action_delete(self, path: str) -> bool:
-        """Built-in delete action."""
-        doc_id = f"doc_{path.replace('/', '_').replace('.', '_')}"
+        doc_id = f"doc_{path.replace('/', '_').replace('.', '_').replace(':', '_')}"
         return self.memory.delete(doc_id)
 
     def _action_copy(self, source: str, destination: str) -> bool:
-        """Built-in copy action."""
-        source_id = f"doc_{source.replace('/', '_').replace('.', '_')}"
+        source_id = f"doc_{source.replace('/', '_').replace('.', '_').replace(':', '_')}"
         source_doc = self.memory.get(source_id)
 
         if not source_doc:
             return False
 
-        dest_id = f"doc_{destination.replace('/', '_').replace('.', '_')}"
+        dest_id = f"doc_{destination.replace('/', '_').replace('.', '_').replace(':', '_')}"
         self.memory.store(
             content=source_doc.content,
             type=MemoryType.DOCUMENT,
@@ -518,7 +494,6 @@ class SemanticKernel:
         return True
 
     def _action_move(self, source: str, destination: str) -> bool:
-        """Built-in move action."""
         if self._action_copy(source, destination):
             return self._action_delete(source)
         return False
@@ -537,6 +512,28 @@ class SemanticKernel:
         """Get all open handles."""
         return list(self.handles.values())
 
+    def get_system_state(self) -> Dict:
+        """Get current kernel state (IDE compatibility)."""
+        handle_list = []
+        for h in self.handles.values():
+            handle_list.append({
+                "id": h.id,
+                "path": h.path,
+                "type": h.context_type,
+                "intent": h.intent.value,
+                "modified": h.modified,
+            })
+
+        return {
+            "contexts": len(self.handles),
+            "context_list": handle_list,
+            "recent_events": [
+                {"event": e.metadata.get("event"), "data": e.metadata.get("data")}
+                for e in self.get_events(10)
+            ],
+            "memory": self.memory.stats(),
+        }
+
     def stats(self) -> Dict[str, Any]:
         """Get kernel statistics."""
         return {
@@ -552,8 +549,94 @@ class SemanticKernel:
         """Shutdown the kernel."""
         self.emit("kernel.shutdown", {"uptime": time.time() - self._boot_time})
 
-        # Terminate all processes
         for pid in list(self.processes.keys()):
             self.terminate_process(pid)
 
         self.memory.close()
+
+    # ==================== PyQt STUBS (overridden in subclass) ====================
+
+    def _emit_qt_attached(self, handle: Handle):
+        pass
+
+    def _emit_qt_detached(self, handle_id: str):
+        pass
+
+    def _emit_qt_event(self, event: str, data: Any, source: str, target: str):
+        pass
+
+
+# PyQt-enabled kernel
+if HAS_PYQT:
+    class SemanticKernel(QObject, SemanticKernelBase):
+        """Semantic Kernel with PyQt signals for IDE integration."""
+
+        # PyQt signals
+        context_attached = pyqtSignal(object)   # Handle
+        context_detached = pyqtSignal(str)      # handle_id
+        context_focused = pyqtSignal(str)       # handle_id
+        event_emitted = pyqtSignal(str, object) # event, data
+        kernel_ready = pyqtSignal()
+        kernel_shutdown_signal = pyqtSignal()
+
+        def __init__(self, db_path: str = None, enable_qt: bool = True):
+            QObject.__init__(self)
+            self._enable_qt = enable_qt  # Set before base init
+            SemanticKernelBase.__init__(self, db_path)
+            if enable_qt:
+                self.kernel_ready.emit()
+
+        def _emit_qt_attached(self, handle: Handle):
+            if getattr(self, '_enable_qt', False):
+                self.context_attached.emit(handle)
+
+        def _emit_qt_detached(self, handle_id: str):
+            if getattr(self, '_enable_qt', False):
+                self.context_detached.emit(handle_id)
+
+        def _emit_qt_event(self, event: str, data: Any, source: str, target: str):
+            if getattr(self, '_enable_qt', False):
+                self.event_emitted.emit(event, data)
+
+        def focus_context(self, handle_id: str):
+            """Signal that a context is focused."""
+            if self._enable_qt:
+                self.context_focused.emit(handle_id)
+            self.emit("context.focused", {"handle_id": handle_id})
+
+        def shutdown(self):
+            """Shutdown with PyQt signal."""
+            if self._enable_qt:
+                self.kernel_shutdown_signal.emit()
+            SemanticKernelBase.shutdown(self)
+
+else:
+    # Fallback: no PyQt
+    class SemanticKernel(SemanticKernelBase):
+        """Semantic Kernel (without PyQt)."""
+
+        def __init__(self, db_path: str = None, enable_qt: bool = False):
+            super().__init__(db_path)
+
+        def focus_context(self, handle_id: str):
+            self.emit("context.focused", {"handle_id": handle_id})
+
+
+# ==================== GLOBAL INSTANCE ====================
+
+_kernel: Optional[SemanticKernel] = None
+
+
+def get_kernel() -> SemanticKernel:
+    """Get the global kernel instance."""
+    global _kernel
+    if _kernel is None:
+        _kernel = SemanticKernel()
+    return _kernel
+
+
+def init_kernel(db_path: str = None, enable_qt: bool = True) -> SemanticKernel:
+    """Initialize the kernel (call once at startup)."""
+    global _kernel
+    _kernel = SemanticKernel(db_path, enable_qt)
+    return _kernel

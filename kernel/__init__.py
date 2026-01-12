@@ -31,7 +31,7 @@ Shell:
     semantic> what did I work on today
 """
 
-from .core import SemanticKernel
+from .core import SemanticKernel, Handle, Process, Intent, get_kernel, init_kernel
 from .memory import SemanticMemory, MemoryEntry, MemoryType
 from .syscall import SyscallSimulator
 from .ai_providers import (
@@ -48,6 +48,11 @@ from .shell import SemanticShell
 __all__ = [
     # Kernel
     "SemanticKernel",
+    "Handle",
+    "Process",
+    "Intent",
+    "get_kernel",
+    "init_kernel",
     "SemanticMemory",
     "MemoryEntry",
     "MemoryType",
