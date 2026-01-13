@@ -74,11 +74,94 @@ class MarkdownRenderer:
     - toc: Table of contents generation
     - sane_lists: Improved list handling
 
+    Additional features:
+    - Task list checkboxes (- [ ] and - [x])
+    - Strikethrough (~~text~~)
+    - Emoji support (:emoji:)
+    - Code block language labels
+    - External link indicators
+
     Mermaid diagrams are preserved as styled placeholder blocks.
     """
 
+    # Common emoji mappings
+    EMOJI_MAP = {
+        ':smile:': '😊', ':grin:': '😁', ':joy:': '😂', ':heart:': '❤️',
+        ':thumbsup:': '👍', ':thumbsdown:': '👎', ':clap:': '👏', ':fire:': '🔥',
+        ':star:': '⭐', ':check:': '✅', ':x:': '❌', ':warning:': '⚠️',
+        ':info:': 'ℹ️', ':question:': '❓', ':exclamation:': '❗', ':bulb:': '💡',
+        ':rocket:': '🚀', ':bug:': '🐛', ':gear:': '⚙️', ':wrench:': '🔧',
+        ':hammer:': '🔨', ':key:': '🔑', ':lock:': '🔒', ':unlock:': '🔓',
+        ':folder:': '📁', ':file:': '📄', ':book:': '📖', ':memo:': '📝',
+        ':pencil:': '✏️', ':link:': '🔗', ':calendar:': '📅', ':clock:': '🕐',
+        ':email:': '📧', ':phone:': '📱', ':computer:': '💻', ':cloud:': '☁️',
+        ':sun:': '☀️', ':moon:': '🌙', ':earth:': '🌍', ':tree:': '🌳',
+        ':coffee:': '☕', ':pizza:': '🍕', ':cake:': '🎂', ':gift:': '🎁',
+        ':tada:': '🎉', ':sparkles:': '✨', ':zap:': '⚡', ':boom:': '💥',
+        ':+1:': '👍', ':-1:': '👎', ':ok:': '👌', ':wave:': '👋',
+        ':eyes:': '👀', ':thinking:': '🤔', ':100:': '💯', ':heavy_check_mark:': '✔️',
+    }
+
+    def _convert_emojis(self, content):
+        """Convert :emoji: codes to actual emoji characters."""
+        for code, emoji in self.EMOJI_MAP.items():
+            content = content.replace(code, emoji)
+        return content
+
+    def _convert_strikethrough(self, content):
+        """Convert ~~text~~ to strikethrough HTML."""
+        return re.sub(r'~~(.+?)~~', r'<del>\1</del>', content)
+
+    def _convert_task_lists(self, html):
+        """Convert task list items to checkboxes."""
+        # Convert unchecked: [ ]
+        html = re.sub(
+            r'<li>\s*\[\s*\]',
+            '<li class="task-item"><input type="checkbox" disabled>',
+            html
+        )
+        # Convert checked: [x] or [X]
+        html = re.sub(
+            r'<li>\s*\[[xX]\]',
+            '<li class="task-item task-done"><input type="checkbox" checked disabled>',
+            html
+        )
+        return html
+
+    def _add_code_labels(self, html):
+        """Add language labels to code blocks."""
+        # Find code blocks and add language label
+        def add_label(match):
+            style = match.group(1) if match.group(1) else ''
+            # Try to extract language from style attribute or class
+            lang_match = re.search(r'language-(\w+)', style)
+            if not lang_match:
+                lang_match = re.search(r'highlight (\w+)', style)
+            lang = lang_match.group(1) if lang_match else ''
+            if lang:
+                return f'<div class="code-block"><div class="code-label">{lang}</div><pre{style}>'
+            return match.group(0)
+
+        html = re.sub(r'<pre([^>]*)>', add_label, html)
+        # Close the wrapper div after </pre>
+        html = re.sub(r'</pre>(?!</div>)', '</pre></div>', html)
+        return html
+
+    def _mark_external_links(self, html):
+        """Add external link indicator to http/https links."""
+        def add_indicator(match):
+            attrs = match.group(1)
+            url = match.group(2)
+            text = match.group(3)
+            if url.startswith(('http://', 'https://')):
+                return f'<a{attrs}href="{url}" class="external-link">{text}<span class="external-icon">↗</span></a>'
+            return match.group(0)
+
+        return re.sub(r'<a([^>]*)href="([^"]+)"[^>]*>([^<]+)</a>', add_indicator, html)
+
     def render_html(self, content, dark_mode=False):
         mermaid_blocks = []
+        code_blocks = []
 
         def save_mermaid(match):
             code = match.group(1)
@@ -86,7 +169,20 @@ class MarkdownRenderer:
             mermaid_blocks.append(code)
             return f"<!--MERMAID_{idx}-->"
 
-        content = re.sub(r"```mermaid\\s*([\\s\\S]*?)```", save_mermaid, content)
+        def save_code_block(match):
+            lang = match.group(1) or ''
+            code = match.group(2)
+            idx = len(code_blocks)
+            code_blocks.append((lang, code))
+            return f"<!--CODEBLOCK_{idx}-->"
+
+        # Pre-process: save mermaid and code blocks
+        content = re.sub(r"```mermaid\s*([\s\S]*?)```", save_mermaid, content)
+        content = re.sub(r"```(\w*)\n([\s\S]*?)```", save_code_block, content)
+
+        # Convert emojis and strikethrough before markdown processing
+        content = self._convert_emojis(content)
+        content = self._convert_strikethrough(content)
 
         md = markdown.Markdown(
             extensions=["extra", "codehilite", "toc", "sane_lists"],
@@ -101,21 +197,45 @@ class MarkdownRenderer:
 
         body = md.convert(content)
 
+        # Post-process: convert task lists
+        body = self._convert_task_lists(body)
+
+        # Restore code blocks with language labels
+        for idx, (lang, code) in enumerate(code_blocks):
+            import html as html_lib
+            escaped_code = html_lib.escape(code)
+            if lang:
+                code_html = (
+                    f'<div class="code-block">'
+                    f'<div class="code-label">{lang}</div>'
+                    f'<pre><code class="language-{lang}">{escaped_code}</code></pre>'
+                    f'</div>'
+                )
+            else:
+                code_html = f'<pre><code>{escaped_code}</code></pre>'
+            body = body.replace(f"<p><!--CODEBLOCK_{idx}--></p>", code_html)
+            body = body.replace(f"<!--CODEBLOCK_{idx}-->", code_html)
+
+        # Restore mermaid blocks
         for idx, code in enumerate(mermaid_blocks):
             mermaid_html = (
-                "<div class=\"mermaid-container\">"
-                "<div class=\"mermaid-header\">dY\"S Mermaid Diagram</div>"
-                f"<pre class=\"mermaid-code\">{code}</pre>"
-                "<div class=\"mermaid-note\">Diagrams render in Mermaid-compatible viewers</div>"
-                "</div>"
+                '<div class="mermaid-container">'
+                '<div class="mermaid-header">Mermaid Diagram</div>'
+                f'<pre class="mermaid-code">{code}</pre>'
+                '<div class="mermaid-note">Diagrams render in Mermaid-compatible viewers</div>'
+                '</div>'
             )
+            body = body.replace(f"<p><!--MERMAID_{idx}--></p>", mermaid_html)
             body = body.replace(f"<!--MERMAID_{idx}-->", mermaid_html)
+
+        # Mark external links
+        body = self._mark_external_links(body)
 
         css = self._get_css(dark_mode)
         return (
             "<!DOCTYPE html>"
             "<html>"
-            "<head><meta charset=\"utf-8\"><style>"
+            '<head><meta charset="utf-8"><style>'
             f"{css}</style></head>"
             f"<body>{body}</body>"
             "</html>"
@@ -238,46 +358,90 @@ img {{
         return f"<!DOCTYPE html><html><head><style>{css}</style></head><body>{body}</body></html>"
 
     def _get_css(self, dark_mode):
+        # Shared styles for both themes
+        shared = """
+/* Task list items */
+.task-item { list-style: none; margin-left: -20px; }
+.task-item input[type="checkbox"] { margin-right: 8px; transform: scale(1.2); vertical-align: middle; }
+.task-done { opacity: 0.7; }
+.task-done input[type="checkbox"] { accent-color: #28a745; }
+
+/* Code blocks with language labels */
+.code-block { position: relative; margin: 16px 0; }
+.code-label {
+    position: absolute; top: 0; right: 0;
+    padding: 2px 8px; font-size: 11px; font-family: sans-serif;
+    border-radius: 0 4px 0 4px; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.code-block pre { margin: 0; border-radius: 4px; }
+.code-block code { display: block; overflow-x: auto; }
+
+/* External links */
+.external-link { position: relative; }
+.external-icon { font-size: 10px; margin-left: 2px; opacity: 0.7; vertical-align: super; }
+
+/* Strikethrough */
+del { text-decoration: line-through; opacity: 0.6; }
+
+/* Better typography */
+p { line-height: 1.7; }
+li { line-height: 1.6; margin-bottom: 4px; }
+"""
+
         if dark_mode:
-            return """
-body { font-family: "Segoe UI", Arial; font-size: 14px; line-height: 1.5;
-       color: #d4d4d4; background: #1e1e1e; margin: 20px; }
-h1, h2, h3, h4, h5, h6 { margin-top: 20px; margin-bottom: 10px; font-weight: bold; color: #fff; }
+            return shared + """
+body { font-family: "Segoe UI", -apple-system, Arial, sans-serif; font-size: 14px; line-height: 1.6;
+       color: #d4d4d4; background: #1e1e1e; margin: 20px; max-width: 900px; }
+h1, h2, h3, h4, h5, h6 { margin-top: 24px; margin-bottom: 12px; font-weight: 600; color: #fff; }
 h1 { font-size: 28px; border-bottom: 2px solid #444; padding-bottom: 8px; }
 h2 { font-size: 22px; border-bottom: 1px solid #444; padding-bottom: 6px; }
 h3 { font-size: 18px; } h4 { font-size: 16px; }
-p { margin: 0 0 16px 0; } a { color: #6cb6ff; }
-code { font-family: Consolas, monospace; background: #2d2d2d; padding: 2px 6px; font-size: 13px; }
-pre { font-family: Consolas, monospace; background: #2d2d2d; padding: 16px; font-size: 13px; border: 1px solid #444; }
-blockquote { margin: 0 0 16px 0; padding-left: 16px; color: #999; border-left: 4px solid #444; }
-table { border-collapse: collapse; margin-bottom: 16px; }
-th, td { border: 1px solid #444; padding: 8px 12px; }
-th { background: #2d2d2d; font-weight: bold; }
+p { margin: 0 0 16px 0; } a { color: #6cb6ff; text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { font-family: "Cascadia Code", Consolas, monospace; background: #2d2d2d; padding: 2px 6px;
+       font-size: 13px; border-radius: 3px; }
+pre { font-family: "Cascadia Code", Consolas, monospace; background: #2d2d2d; padding: 16px;
+      font-size: 13px; border: 1px solid #444; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { margin: 0 0 16px 0; padding: 12px 16px; color: #b0b0b0; border-left: 4px solid #3794ff;
+             background: #252526; border-radius: 0 4px 4px 0; }
+table { border-collapse: collapse; margin-bottom: 16px; width: 100%; }
+th, td { border: 1px solid #444; padding: 10px 14px; }
+th { background: #2d2d2d; font-weight: 600; }
+tr:nth-child(even) { background: #252526; }
 ul, ol { margin: 0 0 16px 0; padding-left: 24px; }
-hr { border: none; border-top: 2px solid #444; margin: 24px 0; }
-img { max-width: 100%; }
+hr { border: none; border-top: 2px solid #444; margin: 32px 0; }
+img { max-width: 100%; border-radius: 4px; }
+.code-label { background: #3794ff; color: #fff; }
 .mermaid-container { background: #252526; border: 2px solid #3794ff; border-radius: 8px; margin: 16px 0; overflow: hidden; }
 .mermaid-header { background: #3794ff; color: #fff; padding: 8px 12px; font-weight: bold; font-size: 13px; }
 .mermaid-code { margin: 0; padding: 16px; background: #1e1e1e; color: #9cdcfe; font-size: 12px; white-space: pre-wrap; }
 .mermaid-note { background: #252526; color: #888; padding: 6px 12px; font-size: 11px; font-style: italic; border-top: 1px solid #444; }
 """
-        return """
-body { font-family: "Segoe UI", Arial; font-size: 14px; line-height: 1.5;
-       color: #000; background: #fff; margin: 20px; }
-h1, h2, h3, h4, h5, h6 { margin-top: 20px; margin-bottom: 10px; font-weight: bold; color: #000; }
+        return shared + """
+body { font-family: "Segoe UI", -apple-system, Arial, sans-serif; font-size: 14px; line-height: 1.6;
+       color: #24292e; background: #fff; margin: 20px; max-width: 900px; }
+h1, h2, h3, h4, h5, h6 { margin-top: 24px; margin-bottom: 12px; font-weight: 600; color: #1a1a1a; }
 h1 { font-size: 28px; border-bottom: 2px solid #eaecef; padding-bottom: 8px; }
 h2 { font-size: 22px; border-bottom: 1px solid #eaecef; padding-bottom: 6px; }
 h3 { font-size: 18px; } h4 { font-size: 16px; }
-p { margin: 0 0 16px 0; } a { color: #0366d6; }
-code { font-family: Consolas, monospace; background: #f6f8fa; padding: 2px 6px; font-size: 13px; }
-pre { font-family: Consolas, monospace; background: #f6f8fa; padding: 16px; font-size: 13px; border: 1px solid #e1e4e8; }
-blockquote { margin: 0 0 16px 0; padding-left: 16px; color: #6a737d; border-left: 4px solid #dfe2e5; }
-table { border-collapse: collapse; margin-bottom: 16px; }
-th, td { border: 1px solid #dfe2e5; padding: 8px 12px; }
-th { background: #f6f8fa; font-weight: bold; }
+p { margin: 0 0 16px 0; } a { color: #0366d6; text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { font-family: "Cascadia Code", Consolas, monospace; background: #f6f8fa; padding: 2px 6px;
+       font-size: 13px; border-radius: 3px; }
+pre { font-family: "Cascadia Code", Consolas, monospace; background: #f6f8fa; padding: 16px;
+      font-size: 13px; border: 1px solid #e1e4e8; border-radius: 6px; overflow-x: auto; }
+pre code { background: transparent; padding: 0; }
+blockquote { margin: 0 0 16px 0; padding: 12px 16px; color: #57606a; border-left: 4px solid #0078d4;
+             background: #f8f9fa; border-radius: 0 4px 4px 0; }
+table { border-collapse: collapse; margin-bottom: 16px; width: 100%; }
+th, td { border: 1px solid #dfe2e5; padding: 10px 14px; }
+th { background: #f6f8fa; font-weight: 600; }
+tr:nth-child(even) { background: #f8f9fa; }
 ul, ol { margin: 0 0 16px 0; padding-left: 24px; }
-hr { border: none; border-top: 2px solid #e1e4e8; margin: 24px 0; }
-img { max-width: 100%; }
+hr { border: none; border-top: 2px solid #e1e4e8; margin: 32px 0; }
+img { max-width: 100%; border-radius: 4px; }
+.code-label { background: #0078d4; color: #fff; }
 .mermaid-container { background: #f8f9fa; border: 2px solid #0078d4; border-radius: 8px; margin: 16px 0; overflow: hidden; }
 .mermaid-header { background: #0078d4; color: #fff; padding: 8px 12px; font-weight: bold; font-size: 13px; }
 .mermaid-code { margin: 0; padding: 16px; background: #fff; color: #24292e; font-size: 12px; white-space: pre-wrap; }

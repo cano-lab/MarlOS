@@ -17,10 +17,24 @@ import uuid
 import json
 import sqlite3
 import threading
+import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 from enum import Enum
 from pathlib import Path
+
+
+def get_default_db_path() -> str:
+    """Get the default database path for persistent storage."""
+    # Use user's data directory
+    if os.name == 'nt':  # Windows
+        base = Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData' / 'Local'))
+    else:  # Unix/Linux/Mac
+        base = Path(os.environ.get('XDG_DATA_HOME', Path.home() / '.local' / 'share'))
+
+    data_dir = base / 'semantic_os'
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return str(data_dir / 'kernel.db')
 
 
 class MemoryType(str, Enum):
@@ -107,14 +121,22 @@ class SemanticMemory:
         related = memory.get_related(entry_id)
     """
 
-    def __init__(self, db_path: str = None, embedder=None):
+    def __init__(self, db_path: str = None, embedder=None, persistent: bool = True):
         """Initialize semantic memory.
 
         Args:
-            db_path: Path to SQLite database (None for in-memory)
+            db_path: Path to SQLite database (None for default persistent path)
             embedder: Embedding model (lazy-loaded if None)
+            persistent: If True and db_path is None, use default persistent path.
+                        If False, use in-memory database.
         """
-        self.db_path = db_path or ":memory:"
+        if db_path is not None:
+            self.db_path = db_path
+        elif persistent:
+            self.db_path = get_default_db_path()
+        else:
+            self.db_path = ":memory:"
+
         self._embedder = embedder
         self._lock = threading.RLock()
 
@@ -170,6 +192,22 @@ class SemanticMemory:
                 INSERT INTO memory_fts(id, content, metadata)
                 VALUES (new.id, new.content, new.metadata);
             END;
+
+            -- Semantic relations table (for RelationGraph persistence)
+            CREATE TABLE IF NOT EXISTS relations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_path TEXT NOT NULL,
+                target_path TEXT NOT NULL,
+                relation TEXT NOT NULL,
+                label TEXT,
+                metadata TEXT,
+                created_at REAL,
+                UNIQUE(source_path, target_path, relation)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_relations_source ON relations(source_path);
+            CREATE INDEX IF NOT EXISTS idx_relations_target ON relations(target_path);
+            CREATE INDEX IF NOT EXISTS idx_relations_type ON relations(relation);
         """)
         self.conn.commit()
 
@@ -597,12 +635,106 @@ class SemanticMemory:
             ).fetchall():
                 by_type[row[0]] = row[1]
 
+            # Count relations
+            relation_count = self.conn.execute("SELECT COUNT(*) FROM relations").fetchone()[0]
+
         return {
             "total_entries": total,
             "by_type": by_type,
+            "relations": relation_count,
             "cache_size": len(self._cache),
             "has_embedder": self.embedder is not None,
+            "db_path": self.db_path,
         }
+
+    # ==================== RELATION PERSISTENCE ====================
+
+    def save_relation(self, source_path: str, target_path: str, relation: str,
+                      label: str = None, metadata: Dict = None) -> bool:
+        """Save a relation to persistent storage."""
+        with self._lock:
+            try:
+                self.conn.execute("""
+                    INSERT OR REPLACE INTO relations
+                    (source_path, target_path, relation, label, metadata, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    source_path,
+                    target_path,
+                    relation,
+                    label,
+                    json.dumps(metadata) if metadata else None,
+                    time.time(),
+                ))
+                self.conn.commit()
+                return True
+            except Exception:
+                return False
+
+    def delete_relation(self, source_path: str, target_path: str,
+                        relation: str = None) -> int:
+        """Delete relation(s) from persistent storage."""
+        with self._lock:
+            if relation:
+                cursor = self.conn.execute("""
+                    DELETE FROM relations
+                    WHERE source_path = ? AND target_path = ? AND relation = ?
+                """, (source_path, target_path, relation))
+            else:
+                cursor = self.conn.execute("""
+                    DELETE FROM relations
+                    WHERE source_path = ? AND target_path = ?
+                """, (source_path, target_path))
+            self.conn.commit()
+            return cursor.rowcount
+
+    def load_relations(self) -> List[Dict]:
+        """Load all relations from persistent storage."""
+        with self._lock:
+            rows = self.conn.execute("""
+                SELECT source_path, target_path, relation, label, metadata
+                FROM relations
+            """).fetchall()
+
+        return [
+            {
+                "source": row[0],
+                "target": row[1],
+                "relation": row[2],
+                "label": row[3],
+                "metadata": json.loads(row[4]) if row[4] else {},
+            }
+            for row in rows
+        ]
+
+    def get_relations_for_path(self, path: str) -> List[Dict]:
+        """Get all relations involving a path (as source or target)."""
+        with self._lock:
+            rows = self.conn.execute("""
+                SELECT source_path, target_path, relation, label, metadata
+                FROM relations
+                WHERE source_path = ? OR target_path = ?
+            """, (path, path)).fetchall()
+
+        return [
+            {
+                "source": row[0],
+                "target": row[1],
+                "relation": row[2],
+                "label": row[3],
+                "metadata": json.loads(row[4]) if row[4] else {},
+            }
+            for row in rows
+        ]
+
+    def clear_relations_for_path(self, path: str) -> int:
+        """Clear all relations involving a path."""
+        with self._lock:
+            cursor = self.conn.execute("""
+                DELETE FROM relations WHERE source_path = ?
+            """, (path,))
+            self.conn.commit()
+            return cursor.rowcount
 
     def close(self):
         """Close database connection."""

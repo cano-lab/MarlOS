@@ -31,8 +31,20 @@ Shell:
     semantic> what did I work on today
 """
 
-from .core import SemanticKernel, Handle, Process, Intent, get_kernel, init_kernel
-from .memory import SemanticMemory, MemoryEntry, MemoryType
+from .core import (
+    SemanticKernel,
+    Handle,
+    Process,
+    Intent,
+    get_kernel,
+    init_kernel,
+    # IDE compatibility
+    ContextPrimitives,
+    GlobalSpine,
+    GlobalSpineBase,
+    RelationGraph,
+)
+from .memory import SemanticMemory, MemoryEntry, MemoryType, get_default_db_path
 from .syscall import SyscallSimulator
 from .ai_providers import (
     get_provider,
@@ -57,6 +69,11 @@ __all__ = [
     "MemoryEntry",
     "MemoryType",
     "SyscallSimulator",
+    # IDE compatibility
+    "ContextPrimitives",
+    "GlobalSpine",
+    "GlobalSpineBase",
+    "RelationGraph",
     # AI Providers
     "get_provider",
     "AIProvider",

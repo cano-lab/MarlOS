@@ -31,7 +31,7 @@ from ide.commands import CommandRegistry, Command
 from ide.context import IDEContext
 from ide.document import Document
 from ide.events import EventsSpine
-from ide.kernel import init_kernel, get_kernel
+from kernel import init_kernel, get_kernel  # Unified semantic kernel
 from ide.ai import LocalAIClient, HybridAIClient
 from ide.lexicon import LocalLexicon
 from ide.tasks import TaskExtractor, TaskIndexStore
@@ -590,6 +590,253 @@ class LinkNavigatorPanel(QWidget):
         self.incoming_list.clear()
         self.related_list.clear()
         self.impact_list.clear()
+
+
+class SemanticPanel(QWidget):
+    """Panel showing semantic features - related files, recent, tags, search."""
+
+    file_requested = pyqtSignal(str)  # Emits path when file is clicked
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.kernel = None
+        self.current_file = None
+        self._file_access_times = {}  # Track access times for recent files
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        # Search section
+        search_label = QLabel("Semantic Search:")
+        search_label.setStyleSheet("font-weight: bold; color: #3d3929;")
+        layout.addWidget(search_label)
+
+        search_row = QHBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search files...")
+        self.search_input.returnPressed.connect(self._on_search)
+        search_row.addWidget(self.search_input)
+
+        search_btn = QPushButton("Search")
+        search_btn.clicked.connect(self._on_search)
+        search_row.addWidget(search_btn)
+        layout.addLayout(search_row)
+
+        self.search_results = QListWidget()
+        self.search_results.setMaximumHeight(100)
+        self.search_results.itemDoubleClicked.connect(self._on_file_clicked)
+        self.search_results.hide()
+        layout.addWidget(self.search_results)
+
+        # Related files section
+        related_label = QLabel("Related Files:")
+        related_label.setStyleSheet("font-weight: bold; color: #3d3929;")
+        layout.addWidget(related_label)
+
+        self.related_list = QListWidget()
+        self.related_list.setMaximumHeight(120)
+        self.related_list.itemDoubleClicked.connect(self._on_file_clicked)
+        layout.addWidget(self.related_list)
+
+        # Recent files section
+        recent_label = QLabel("Recent Files:")
+        recent_label.setStyleSheet("font-weight: bold; color: #3d3929;")
+        layout.addWidget(recent_label)
+
+        self.recent_list = QListWidget()
+        self.recent_list.setMaximumHeight(120)
+        self.recent_list.itemDoubleClicked.connect(self._on_file_clicked)
+        layout.addWidget(self.recent_list)
+
+        # Tags section
+        tags_label = QLabel("Tags:")
+        tags_label.setStyleSheet("font-weight: bold; color: #3d3929;")
+        layout.addWidget(tags_label)
+
+        self.tags_list = QListWidget()
+        self.tags_list.setMaximumHeight(80)
+        self.tags_list.itemClicked.connect(self._on_tag_clicked)
+        layout.addWidget(self.tags_list)
+
+        # File stats section
+        stats_label = QLabel("Current File:")
+        stats_label.setStyleSheet("font-weight: bold; color: #3d3929;")
+        layout.addWidget(stats_label)
+
+        self.stats_text = QLabel("No file selected")
+        self.stats_text.setWordWrap(True)
+        self.stats_text.setStyleSheet("color: #666; font-size: 11px;")
+        layout.addWidget(self.stats_text)
+
+        layout.addStretch()
+
+        # Styling
+        self.setStyleSheet("""
+            QWidget { background-color: #faf8f5; color: #3d3929; }
+            QLineEdit {
+                background-color: #ffffff;
+                border: 1px solid #d5d0c4;
+                padding: 4px;
+                border-radius: 3px;
+            }
+            QPushButton {
+                background-color: #ebe7df;
+                border: 1px solid #d5d0c4;
+                padding: 4px 8px;
+                border-radius: 3px;
+            }
+            QPushButton:hover { background-color: #e0dbd1; }
+            QListWidget {
+                background-color: #ffffff;
+                border: 1px solid #d5d0c4;
+                border-radius: 4px;
+            }
+            QListWidget::item { padding: 4px 8px; }
+            QListWidget::item:selected { background: #e8d5b5; color: #3d3929; }
+            QListWidget::item:hover { background: #f0ebe3; }
+        """)
+
+    def set_kernel(self, kernel):
+        """Set the semantic kernel reference."""
+        self.kernel = kernel
+
+    def record_file_access(self, path: str):
+        """Record that a file was accessed."""
+        import time
+        self._file_access_times[path] = time.time()
+        self._update_recent_files()
+
+    def update_for_file(self, path: str):
+        """Update panel for the current file."""
+        self.current_file = path
+        self.record_file_access(path)
+        self._update_related_files()
+        self._update_tags()
+        self._update_stats()
+
+    def _update_recent_files(self):
+        """Update the recent files list."""
+        self.recent_list.clear()
+        # Sort by access time, most recent first
+        sorted_files = sorted(
+            self._file_access_times.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:10]
+
+        for path, _ in sorted_files:
+            name = Path(path).name
+            item = QListWidgetItem(name)
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            item.setToolTip(path)
+            self.recent_list.addItem(item)
+
+    def _update_related_files(self):
+        """Update related files based on co-access patterns."""
+        self.related_list.clear()
+        if not self.current_file:
+            return
+
+        # Find files accessed around the same time as current file
+        import time
+        current_time = self._file_access_times.get(self.current_file, time.time())
+        related = []
+
+        for path, access_time in self._file_access_times.items():
+            if path != self.current_file:
+                # Within 60 seconds = related
+                if abs(access_time - current_time) < 60:
+                    related.append((path, abs(access_time - current_time)))
+
+        # Sort by time proximity
+        related.sort(key=lambda x: x[1])
+
+        for path, _ in related[:5]:
+            name = Path(path).name
+            item = QListWidgetItem(name)
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            item.setToolTip(path)
+            self.related_list.addItem(item)
+
+    def _update_tags(self):
+        """Update tags list from all tracked files."""
+        self.tags_list.clear()
+        all_tags = set()
+
+        # Collect tags from kernel if available
+        if self.kernel and hasattr(self.kernel, 'memory'):
+            # Get tags from documents
+            pass  # Kernel integration
+
+        # Add default tags based on file types
+        for path in self._file_access_times.keys():
+            ext = Path(path).suffix.lower()
+            if ext == '.md':
+                all_tags.add('markdown')
+            elif ext == '.py':
+                all_tags.add('python')
+            elif ext == '.js':
+                all_tags.add('javascript')
+            elif ext in ('.json', '.yaml', '.yml', '.toml'):
+                all_tags.add('config')
+            elif ext in ('.txt', '.log'):
+                all_tags.add('text')
+
+        for tag in sorted(all_tags):
+            item = QListWidgetItem(f"#{tag}")
+            item.setData(Qt.ItemDataRole.UserRole, tag)
+            self.tags_list.addItem(item)
+
+    def _update_stats(self):
+        """Update file statistics display."""
+        if not self.current_file:
+            self.stats_text.setText("No file selected")
+            return
+
+        path = Path(self.current_file)
+        if path.exists():
+            size = path.stat().st_size
+            access_count = sum(1 for p in self._file_access_times if p == self.current_file)
+            self.stats_text.setText(
+                f"{path.name}\n"
+                f"Size: {size:,} bytes\n"
+                f"Accesses this session: {access_count}"
+            )
+        else:
+            self.stats_text.setText(f"{path.name}\n(File not on disk)")
+
+    def _on_search(self):
+        """Handle search."""
+        query = self.search_input.text().strip()
+        if not query:
+            self.search_results.hide()
+            return
+
+        self.search_results.clear()
+        self.search_results.show()
+
+        # Search through tracked files
+        query_lower = query.lower()
+        for path in self._file_access_times.keys():
+            name = Path(path).name.lower()
+            if query_lower in name or query_lower in path.lower():
+                item = QListWidgetItem(Path(path).name)
+                item.setData(Qt.ItemDataRole.UserRole, path)
+                item.setToolTip(path)
+                self.search_results.addItem(item)
+
+    def _on_file_clicked(self, item):
+        """Handle file item click."""
+        path = item.data(Qt.ItemDataRole.UserRole)
+        if path:
+            self.file_requested.emit(path)
+
+    def _on_tag_clicked(self, item):
+        """Handle tag click - filter by tag."""
+        tag = item.data(Qt.ItemDataRole.UserRole)
+        self.search_input.setText(f"#{tag}")
+        self._on_search()
 
 
 class LLMWorker(QThread):
@@ -4049,6 +4296,13 @@ class MarkdownEditor(QMainWindow):
         self.links_action.triggered.connect(self.toggle_links_dock)
         view_menu.addAction(self.links_action)
 
+        self.semantic_action = QAction("Se&mantic", self)
+        self.semantic_action.setCheckable(True)
+        self.semantic_action.setChecked(False)
+        self.semantic_action.setShortcut(QKeySequence("Ctrl+M"))
+        self.semantic_action.triggered.connect(self.toggle_semantic_dock)
+        view_menu.addAction(self.semantic_action)
+
         view_menu.addSeparator()
 
         settings_action = QAction("&Settings...", self)
@@ -4258,10 +4512,21 @@ class MarkdownEditor(QMainWindow):
         self.links_dock.setVisible(False)
         self.links_dock.setMinimumWidth(250)
 
+        # Semantic panel - related files, recent, tags, search
+        self.semantic_dock = QDockWidget("Semantic", self)
+        self.semantic_dock.setStyleSheet(dock_style)
+        self.semantic_panel = SemanticPanel()
+        self.semantic_panel.setStyleSheet(panel_style)
+        self.semantic_panel.file_requested.connect(self.open_file)
+        self.semantic_dock.setWidget(self.semantic_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.semantic_dock)
+        self.semantic_dock.setVisible(False)
+        self.semantic_dock.setMinimumWidth(250)
+
     def _on_link_navigate(self, path):
         """Handle navigation to a linked document."""
         if os.path.exists(path):
-            self.open_document(path)
+            self.open_file(path)
         else:
             QMessageBox.warning(self, "Link Target Not Found",
                               f"Could not find: {path}")
@@ -4528,6 +4793,15 @@ class MarkdownEditor(QMainWindow):
         self.links_dock.setVisible(visible)
         if visible:
             self._update_links_panel()
+
+    def toggle_semantic_dock(self):
+        visible = self.semantic_action.isChecked()
+        self.semantic_dock.setVisible(visible)
+        if visible:
+            tab = self.tabs.currentWidget()
+            if isinstance(tab, MarkdownTab) and tab.file_path:
+                self.semantic_panel.record_file_access(tab.file_path)
+                self.semantic_panel.update_for_file(tab.file_path)
 
     def _update_links_panel(self):
         """Update the links panel for the current document."""
@@ -5356,6 +5630,10 @@ class MarkdownEditor(QMainWindow):
             # Update links panel if visible
             if self.links_dock.isVisible():
                 self._update_links_panel()
+            # Update semantic panel
+            if self.semantic_dock.isVisible() and tab.file_path:
+                self.semantic_panel.record_file_access(tab.file_path)
+                self.semantic_panel.update_for_file(tab.file_path)
         elif isinstance(tab, ReaderTab):
             name = Path(tab.file_path).name if tab.file_path else "Reader"
             self.setWindowTitle(f"Markdown Editor - {name}")
