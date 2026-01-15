@@ -1491,7 +1491,7 @@ class TerminalTab(QWidget):
         """Print welcome message."""
         welcome = f"""
 ╔═══════════════════════════════════════════════════════════════╗
-║           Semantic OS Terminal - Context-Aware Shell           ║
+║           MarlOS Terminal - Context-Aware Shell           ║
 ╠═══════════════════════════════════════════════════════════════╣
 ║  All commands are tracked semantically for AI context          ║
 ║  Type 'help' for available commands                            ║
@@ -3665,7 +3665,7 @@ class ContextLauncher(QWidget):
     """Workspace panel showing registered contexts.
 
     The launcher displays all contexts (files) that have been added
-    to the workspace. This is the "desktop" of the Semantic OS -
+    to the workspace. This is the "desktop" of the MarlOS -
     you curate what's here, not everything on disk.
     """
 
@@ -3952,7 +3952,7 @@ class ContextLauncher(QWidget):
 
 
 class DesktopView(QWidget):
-    """Desktop home screen for the Semantic OS.
+    """Desktop home screen for the MarlOS.
 
     Shows when no documents are open. Provides:
     - Context icons for quick access
@@ -3972,7 +3972,7 @@ class DesktopView(QWidget):
         layout.setSpacing(20)
 
         # Title
-        title = QLabel("Semantic OS")
+        title = QLabel("MarlOS")
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: #444;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
@@ -6446,7 +6446,7 @@ class MarkdownEditor(QMainWindow):
         self.workspace_config = {}
         self.load_settings()
 
-        # Initialize kernel (Semantic OS core)
+        # Initialize kernel (MarlOS core)
         self.kernel = init_kernel()
         self.kernel.spine.event_broadcast.connect(self._on_kernel_event)
 
@@ -6529,7 +6529,7 @@ class MarkdownEditor(QMainWindow):
         """Show the desktop/home tab."""
         self.tabs.setCurrentIndex(0)  # Home tab is always index 0
         self.desktop_view.refresh_icons()
-        self.setWindowTitle("Semantic OS")
+        self.setWindowTitle("MarlOS")
 
     def show_editor(self):
         """Show the most recent document tab (or stay if already on one)."""
@@ -6844,7 +6844,7 @@ class MarkdownEditor(QMainWindow):
             }
         """
 
-        # Context Launcher - the "desktop" of the Semantic OS
+        # Context Launcher - the "desktop" of the MarlOS
         self.workspace_dock = QDockWidget("Workspace", self)
         self.workspace_dock.setStyleSheet(dock_style)
         self.context_launcher = ContextLauncher()
