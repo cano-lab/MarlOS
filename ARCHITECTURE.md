@@ -1,8 +1,13 @@
-# Semantic OS Architecture Guide
+# Semantic OS - Architecture Documentation
 
 ## Overview
 
-Semantic OS is an experimental operating system where **everything is semantic memory**. Instead of traditional file systems and process isolation, all data exists as vectors in a unified semantic pool. This enables revolutionary features like natural language queries for system state, automatic relationship discovery between files, and semantic search across all system operations.
+**Semantic OS** is an experimental operating system environment where **everything is semantic memory**. The project has two main layers:
+
+1. **System Layer** (Linux/WSL): Syscall interception and semantic filesystem
+2. **Application Layer** (Cross-platform): Context-aware IDE with AI integration
+
+Instead of traditional file systems and process isolation, all data exists as vectors in a unified semantic pool. This enables revolutionary features like natural language queries for system state, automatic relationship discovery between files, semantic search across all system operations, and AI assistants that understand your complete workflow context.
 
 ## Core Architecture
 
@@ -293,3 +298,438 @@ Key areas needing work:
 2. Semantic features (embeddings, AI analysis)
 3. Performance optimization
 4. Testing with more real-world applications
+
+---
+
+# Application Layer - Context-Aware IDE
+
+## Overview
+
+The Application Layer is a cross-platform, context-aware development environment that tracks your work, understands your projects, and provides AI assistants with complete context. It runs on Windows, macOS, and Linux.
+
+## What Problem Does This Solve?
+
+Traditional development tools treat files as isolated entities. They don't know that:
+- The README.md you're editing is related to the 3 Python files you just modified
+- You've been working on a "feature-X" project for 2 hours across 12 files
+- The research you did yesterday is relevant to the code you're writing today
+- You have a workflow pattern of: edit code → test → document → repeat
+
+**The Solution**: Semantic OS Application Layer tracks, understands, and aggregates context.
+
+## Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Application Layer                             │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  ┌──────────────────┐      ┌──────────────────┐                 │
+│  │  Markdown Viewer │      │   Browser Tabs   │                 │
+│  │  - Syntax High   │      │  - Web Browsing  │                 │
+│  │  - Live Preview  │      │  - Link Nav      │                 │
+│  │  - Task Extract  │      │  - Context Track │                 │
+│  └────────┬─────────┘      └────────┬─────────┘                 │
+│           │                          │                            │
+│           └──────────┬───────────────┘                            │
+│                      ▼                                            │
+│           ┌──────────────────────┐                               │
+│           │   Context Layer      │                               │
+│           │  - Focus Detection   │                               │
+│           │  - Workflow Infer    │                               │
+│           │  - Project Detection │                               │
+│           │  - Context Export    │                               │
+│           └──────────┬───────────┘                               │
+│                      │                                            │
+│                      ▼                                            │
+│           ┌──────────────────────┐                               │
+│           │   Semantic Kernel    │                               │
+│           │  - Memory Store      │                               │
+│           │  - Relation Graph    │                               │
+│           │  - Event Stream      │                               │
+│           │  - Actions System    │                               │
+│           └──────────┬───────────┘                               │
+│                      │                                            │
+│         ┌────────────┼────────────┐                               │
+│         ▼            ▼            ▼                                │
+│  ┌──────────┐ ┌──────────┐ ┌──────────────┐                      │
+│  │ Vectors  │ │ Graph DB │ │  File System │                      │
+│  │ (Chroma) │ │ (SQLite) │ │  (Watching)  │                      │
+│  └──────────┘ └──────────┘ └──────────────┘                      │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │              Provider System (Extensible)                │   │
+│  │  - TaskManager - LinkProvider - ContextInsights          │   │
+│  │  - AIProvider - ScreenMemory - PythonInterpreter         │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Core Components
+
+### 1. Semantic Kernel (`kernel/core.py`)
+
+The brain of the system. Coordinates all semantic operations.
+
+**Features:**
+- **Memory Storage**: Vector database (ChromaDB) + Graph database (SQLite)
+- **Event Tracking**: All user actions logged as events
+- **Action System**: Extensible command execution
+- **Provider Management**: Plugin-like architecture
+- **Signal Emission**: PyQt events for real-time updates
+
+```python
+kernel = SemanticKernel()
+
+# Store semantic memory
+kernel.memory.store(
+    content="Function that authenticates users",
+    metadata={"type": "function", "file": "auth.py"}
+)
+
+# Query by semantic similarity
+results = kernel.memory.query("user login")
+
+# Track events
+kernel.emit("file.edit", {"path": "auth.py", "lines": 10})
+
+# Execute actions
+kernel.execute_action("refactor", {"target": "auth.py"})
+```
+
+### 2. Context Layer (`ide/context_layer.py`)
+
+Understands what you're working on.
+
+#### FocusDetection
+Tracks document attention:
+- How long you've focused on each file
+- Edit counts and recency
+- Related documents
+
+```python
+# Get current focus
+focus_docs = kernel.get_current_focus(limit=10)
+# [
+#   DocumentFocus(path="auth.py", focus_duration=45.2, edit_count=23),
+#   DocumentFocus(path="login.html", focus_duration=12.0, edit_count=5)
+# ]
+```
+
+#### WorkflowInference
+Detects work patterns:
+- Groups events into sessions (>30min gap = new session)
+- Infers work type (coding, writing, research, debugging)
+- Identifies projects from file co-access patterns
+
+```python
+workflow = kernel.get_workflow_context(time_window="today")
+# WorkflowContext(
+#     current_focus=[...],
+#     recent_work=[
+#         WorkItem(work_type="coding", files_count=5, edit_count=32)
+#     ],
+#     active_projects=[
+#         Project(name="Authentication", core_files=["auth.py", ...])
+#     ]
+# )
+```
+
+#### ContextExporter
+Exports context for AI assistants in multiple formats:
+
+**Markdown Format** (for Claude, ChatGPT):
+```markdown
+## User's Current Context (2026-01-14 14:30)
+
+### Current Focus
+The user is actively working on:
+- **auth.py** (45min focus, 23 edits)
+- **login.html** (12min focus, 5 edits)
+
+### Recent Work (Last 24h)
+14:15 - Coding (5 files, 32 edits)
+13:30 - Writing (2 files, 8 edits)
+
+### Active Projects
+1. **Authentication System** (PRIMARY)
+   - Core: auth.py, login.html, user_model.py
+```
+
+**JSON Format** (programmatic access):
+```json
+{
+  "current_focus": [
+    {"path": "auth.py", "focus_duration": 45.2, "edit_count": 23}
+  ],
+  "active_projects": [
+    {"name": "Authentication", "core_files": ["auth.py"]}
+  ]
+}
+```
+
+### 3. Screen Memory (`ide/screen_memory.py`)
+
+Episodic visual memory of your work.
+
+Periodically captures screenshots with:
+- **Change Detection**: Only captures when screen changes significantly (>5% pixels)
+- **OCR Text Extraction**: Extracts text from screenshots
+- **AI Summarization**: Vision models summarize content
+- **Privacy Protection**: Blacklists passwords, secrets
+
+```python
+visual_memory = VisualMemoryCapture(kernel)
+visual_memory.start()
+
+# Query visual memory
+screenshots = visual_memory.query("authentication error")
+```
+
+**Use Cases:**
+- "What was that error I saw 2 hours ago?"
+- "Find the screenshot where I was debugging the login form"
+- "Show me what I was working on yesterday morning"
+
+### 4. Provider System (`ide/providers.py`)
+
+Extensible command and feature system.
+
+Providers add functionality through:
+- Console commands (`/focus`, `/export_context`)
+- UI panels (semantic panel, task panel)
+- Event handlers
+- Background services
+
+**Built-in Providers:**
+
+| Provider | Description |
+|----------|-------------|
+| `TaskManagerProvider` | Task tracking and management |
+| `LinkProvider` | Semantic link navigation |
+| `ContextInsightsProvider` | Context visualization and export |
+| `AIProvider` | AI-powered code assistance |
+| `ScreenMemoryProvider` | Visual memory management |
+| `PythonInterpreterProvider` | Python REPL integration |
+
+### 5. Markdown Viewer (`viewer.py`)
+
+The main UI application.
+
+**Features:**
+- Markdown editing with syntax highlighting
+- Live HTML preview
+- Task extraction and tracking
+- Semantic panel with related documents, tags, current focus
+- Browser tabs with semantic tracking
+- Dark mode support
+- Find/replace with regex
+
+## Browser Implementation
+
+### Web Engine: QtWebEngine (Chromium-based)
+
+The browser uses `QWebEngineView` from `PyQt6-WebEngine`, which embeds the **Chromium** browser engine.
+
+**This is NOT:**
+- ❌ Firefox (Gecko)
+- ❌ Chrome/Edge installation
+- ❌ System web browser
+
+**This IS:**
+- ✅ Chromium engine embedded directly in the app
+- ✅ Same rendering as Chrome
+- ✅ No external dependencies
+- ✅ Cross-platform
+- ✅ Full web standards support
+
+**Installation:**
+```bash
+pip install PyQt6-WebEngine
+```
+
+### Semantic Web Tracking
+
+The browser tracks:
+- URLs visited
+- Page titles
+- Navigation history
+- Time spent on each page
+- Links between web pages and files
+
+This web activity is integrated with the context layer, so research done in the browser is correlated with code written in files.
+
+## Key Features
+
+### 1. Automatic Project Detection
+
+**Problem**: Manually organizing files into projects is tedious.
+
+**Solution**: The system automatically detects projects from your work patterns:
+```python
+projects = kernel.get_workflow_context().active_projects
+# [Project(name="Authentication System", core_files=[...])]
+```
+
+### 2. Semantic Search
+
+**Problem**: Finding files by keyword doesn't capture intent.
+
+**Solution**: Search by meaning:
+```python
+results = kernel.memory.query("where is the user login code?")
+# Returns: auth.py:45-89 (92% similar)
+```
+
+### 3. Workflow Review
+
+**Problem**: "What did I work on yesterday?"
+
+**Solution**:
+```python
+workflow = kernel.get_workflow_context(time_window="this_week")
+# Shows sessions, patterns, projects, timeline
+```
+
+### 4. Context-Aware AI Assistance
+
+**Problem**: AI assistants don't know what you're working on.
+
+**Solution**:
+```python
+# Export current context
+context = kernel.export_context(format="markdown")
+
+# Send to Claude
+send_to_claude(f"{context}\n\n{my_question}")
+```
+
+Now Claude knows:
+- What files you're actively editing
+- What project you're working on
+- What you did in the last 24 hours
+- Related documents
+
+### 5. Visual Memory
+
+**Problem**: "I saw an error message earlier, what was it?"
+
+**Solution**:
+```python
+screenshots = visual_memory.query("error", limit=10)
+# Returns screenshots with OCR text, summaries
+```
+
+## File Organization
+
+```
+markdown_viewer/
+├── kernel/
+│   ├── core.py              # Semantic kernel (main)
+│   ├── memory.py            # Memory storage
+│   └── syscall_emulator.py  # System layer (Linux)
+│
+├── ide/
+│   ├── context_layer.py     # Context aggregation
+│   ├── screen_memory.py     # Visual memory capture
+│   ├── providers.py         # Provider system
+│   ├── manifest.py          # Document relations
+│   └── tasks.py             # Task extraction
+│
+├── viewer.py                # Main application
+├── semantic_explorer.py     # File explorer
+└── ARCHITECTURE.md          # This file
+```
+
+## Technology Stack
+
+| Component | Technology |
+|-----------|-----------|
+| UI Framework | PyQt6 |
+| Web Browser | QtWebEngine (Chromium) |
+| Vector Database | ChromaDB |
+| Graph Database | SQLite (custom schema) |
+| Embeddings | OpenAI / HuggingFace / Local |
+| Markdown | Python Markdown |
+| OCR | Tesseract (optional) |
+| Vision AI | OpenAI Vision / Local (optional) |
+
+## Use Cases
+
+### 1. Developer Workflow Tracking
+- Track what files you edit in a session
+- Automatically group related files into projects
+- Detect when you switch between projects
+- Export context for AI code review
+
+### 2. Research Integration
+- Browser tabs track web research
+- Correlate research with code changes
+- Find web pages related to current file
+- Visual memory of research sessions
+
+### 3. Task Management
+- Extract tasks from markdown files
+- Track task completion
+- Link tasks to implementation files
+- Generate progress reports
+
+### 4. Context-Aware AI
+- Give AI assistants full context
+- Include related files, recent work, focus
+- Export in multiple formats (Markdown, JSON)
+- Improve AI responses significantly
+
+## Future Roadmap
+
+### Phase 1: Core ✅ (Current)
+- Semantic kernel with memory and events
+- Context layer (focus, workflow, projects)
+- Provider system
+- Markdown viewer with semantic features
+- Browser tabs (Chromium-based)
+- Context export (Markdown/JSON)
+- Screen memory capture (basic)
+
+### Phase 2: Intelligence (Next)
+- AI-powered code understanding
+- Automatic refactoring suggestions
+- Work pattern optimization
+- Smart task prioritization
+- Cross-document refactoring
+
+### Phase 3: Autonomy (Future)
+- Autonomous task execution
+- Self-improving workflows
+- Predictive file loading
+- Automatic documentation generation
+- Code review assistant
+
+### Phase 4: Integration
+- VS Code extension
+- IntelliJ plugin
+- Browser extension (Chrome/Firefox)
+- CLI tools
+- API server
+
+## Running the Application
+
+```bash
+# Install dependencies
+pip install PyQt6 PyQt6-WebEngine chromadb markdown
+
+# Run the markdown viewer
+python viewer.py
+
+# Run semantic explorer
+python semantic_explorer.py
+```
+
+## Philosophy
+
+1. **Semantics Over Syntax**: Traditional tools care about file names. We care about meaning.
+2. **Context is King**: Your AI assistant is only as good as its context.
+3. **Privacy-First**: All data stored locally. You control what gets exported.
+4. **Extensibility**: Everything is a provider. Add functionality without modifying core.
+5. **Multi-Modal Intelligence**: Text + Code + Web + Visuals = Complete understanding

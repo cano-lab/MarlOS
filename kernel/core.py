@@ -547,6 +547,9 @@ class SemanticKernelBase:
         # Initialize built-in actions
         self._register_builtin_actions()
 
+        # Context layer (lazy loaded)
+        self._context_aggregator = None
+
         # Boot
         self._boot_time = time.time()
         self.emit("kernel.boot", {"time": self._boot_time})
@@ -996,6 +999,62 @@ class SemanticKernelBase:
             "actions": list(self._action_handlers.keys()),
         }
 
+    # ==================== CONTEXT LAYER METHODS ====================
+
+    def _get_context_aggregator(self):
+        """Lazy-load the context aggregator."""
+        if self._context_aggregator is None:
+            from ide.context_layer import ContextAggregator
+            self._context_aggregator = ContextAggregator(self)
+        return self._context_aggregator
+
+    def get_workflow_context(self, time_window: str = "today"):
+        """Get comprehensive workflow context for time period.
+
+        Args:
+            time_window: 'today', 'this_week', 'this_month', or 'all'
+
+        Returns:
+            WorkflowContext object with current focus, recent work, projects, etc.
+        """
+        aggregator = self._get_context_aggregator()
+        return aggregator.get_workflow_context(time_window)
+
+    def get_current_focus(self, limit: int = 10):
+        """Get currently focused documents ranked by attention.
+
+        Args:
+            limit: Maximum number of documents to return
+
+        Returns:
+            List of DocumentFocus objects
+        """
+        aggregator = self._get_context_aggregator()
+        return aggregator.get_current_focus(limit)
+
+    def export_context(self, format: str = "markdown", time_window: str = "today") -> str:
+        """Export context in specified format.
+
+        Args:
+            format: 'markdown', 'json', or 'compact'
+            time_window: 'today', 'this_week', 'this_month', or 'all'
+
+        Returns:
+            Formatted context string
+        """
+        aggregator = self._get_context_aggregator()
+        return aggregator.export_context(format, time_window)
+
+    def record_focus(self, doc_path: str):
+        """Record that user is focusing on a document."""
+        aggregator = self._get_context_aggregator()
+        aggregator.record_focus(doc_path)
+
+    def record_edit(self, doc_path: str, section: str = None):
+        """Record an edit to a document."""
+        aggregator = self._get_context_aggregator()
+        aggregator.record_edit(doc_path, section)
+
     def shutdown(self):
         """Shutdown the kernel."""
         self.emit("kernel.shutdown", {"uptime": time.time() - self._boot_time})
@@ -1066,6 +1125,11 @@ if HAS_PYQT:
         event_emitted = pyqtSignal(str, object) # event, data
         kernel_ready = pyqtSignal()
         kernel_shutdown_signal = pyqtSignal()
+
+        # Context layer signals
+        focus_changed = pyqtSignal(str)         # doc_path
+        session_started = pyqtSignal(object)    # Session object
+        pattern_detected = pyqtSignal(str)      # pattern description
 
         def __init__(self, db_path: str = None, enable_qt: bool = True):
             QObject.__init__(self)

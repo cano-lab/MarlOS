@@ -2339,3 +2339,375 @@ class PythonInterpreterProvider(Provider):
         self._history = []
         context.write_console_line("[Python] Interpreter reset. All variables cleared.", "success")
         return True
+
+
+class ContextInsightsProvider(Provider):
+    """Provider that analyzes and presents context insights from the Context Layer.
+
+    Provides commands to:
+    - Show current focus (what user is working on)
+    - Export context for AI assistants
+    - Show workflow patterns
+    - Display recent work sessions
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="context_insights",
+            category=ProviderCategory.ON_DEMAND
+        )
+
+    def activate(self, context):
+        """Register context insights commands."""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QPushButton, QLabel, QComboBox, QApplication
+        from PyQt6.QtCore import QTimer
+
+        # Get kernel from context
+        kernel = None
+        if hasattr(context.document, 'kernel'):
+            kernel = context.document.kernel
+        elif hasattr(context, 'kernel'):
+            kernel = context.kernel
+
+        if not kernel or not hasattr(kernel, 'get_workflow_context'):
+            # Context layer not available, skip registration
+            return
+
+        def _show_focus(ctx):
+            """Show current focus information."""
+            try:
+                focus_docs = kernel.get_current_focus(limit=10)
+                if not focus_docs:
+                    ctx.write_console_line("[Context] No focus data yet. Start working on documents!", "info")
+                    return
+
+                ctx.write_console_line("=== Current Focus ===", "command")
+                for i, doc in enumerate(focus_docs, 1):
+                    import os
+                    name = os.path.basename(doc.path)
+                    focus_time = int(doc.focus_duration)
+                    ctx.write_console_line(f"{i}. {name} ({focus_time}min, {doc.edit_count} edits)", "info")
+                    if doc.relations:
+                        ctx.write_console_line(f"   Related: {', '.join(doc.relations[:3])}", "info")
+            except Exception as e:
+                ctx.write_console_line(f"[Context] Error getting focus: {e}", "error")
+
+        def _show_context(ctx, time_window="today"):
+            """Show workflow context."""
+            try:
+                workflow_ctx = kernel.get_workflow_context(time_window)
+
+                lines = []
+                lines.append("=== Workflow Context ===")
+                lines.append(f"Generated: {__import__('datetime').datetime.fromtimestamp(workflow_ctx.generated_at).strftime('%Y-%m-%d %H:%M')}")
+                lines.append("")
+
+                # Current Focus
+                if workflow_ctx.current_focus:
+                    lines.append("Current Focus:")
+                    for doc in workflow_ctx.current_focus[:5]:
+                        import os
+                        name = os.path.basename(doc.path)
+                        lines.append(f"  - {name} ({int(doc.focus_duration)}min, {doc.edit_count} edits)")
+                    lines.append("")
+
+                # Recent Work
+                if workflow_ctx.recent_work:
+                    lines.append("Recent Work (Last 24h):")
+                    for item in workflow_ctx.recent_work:
+                        import time
+                        time_str = __import__('datetime').datetime.fromtimestamp(item.timestamp).strftime("%H:%M")
+                        lines.append(f"  {time_str} - {item.work_type.title()} ({item.files_count} files, {item.edit_count} edits)")
+                    lines.append("")
+
+                # Active Projects
+                if workflow_ctx.active_projects:
+                    lines.append("Active Projects:")
+                    for i, proj in enumerate(workflow_ctx.active_projects, 1):
+                        status = "PRIMARY" if i == 1 else "Active"
+                        import os
+                        core_files = [os.path.basename(f) for f in proj.core_files[:3]]
+                        lines.append(f"  {i}. {proj.name} ({status})")
+                        lines.append(f"     Core: {', '.join(core_files)}")
+                    lines.append("")
+
+                context_text = "\n".join(lines)
+                ctx.write_console(context_text, "info")
+
+            except Exception as e:
+                ctx.write_console_line(f"[Context] Error getting workflow context: {e}", "error")
+
+        def _export_context(ctx, format="markdown"):
+            """Export context in specified format."""
+            try:
+                context_str = kernel.export_context(format=format, time_window="today")
+
+                # Show dialog with context
+                dialog = QDialog()
+                dialog.setWindowTitle(f"Export Context ({format.upper()})")
+                dialog.setMinimumSize(600, 400)
+
+                layout = QVBoxLayout(dialog)
+
+                # Info label
+                info_label = QLabel("Copy this context and paste it into an AI assistant (Claude, ChatGPT, etc.):")
+                layout.addWidget(info_label)
+
+                # Text browser
+                browser = QTextBrowser()
+                browser.setPlainText(context_str)
+                layout.addWidget(browser)
+
+                # Copy button
+                copy_btn = QPushButton("Copy to Clipboard")
+                copy_btn.clicked.connect(lambda: (
+                    QApplication.clipboard().setText(context_str),
+                    copy_btn.setText("Copied!"),
+                    QTimer.singleShot(1000, lambda: copy_btn.setText("Copy to Clipboard"))
+                ))
+                layout.addWidget(copy_btn)
+
+                # Close button
+                close_btn = QPushButton("Close")
+                close_btn.clicked.connect(dialog.accept)
+                layout.addWidget(close_btn)
+
+                dialog.exec()
+
+            except Exception as e:
+                ctx.write_console_line(f"[Context] Error exporting context: {e}", "error")
+
+        def _show_projects(ctx):
+            """Show inferred projects."""
+            try:
+                workflow_ctx = kernel.get_workflow_context("today")
+
+                if not workflow_ctx.active_projects:
+                    ctx.write_console_line("[Context] No projects detected yet. Work on more files!", "info")
+                    return
+
+                ctx.write_console_line("=== Inferred Projects ===", "command")
+                for i, proj in enumerate(workflow_ctx.active_projects, 1):
+                    import os
+                    status = "PRIMARY" if i == 1 else "Active"
+                    ctx.write_console_line(f"{i}. {proj.name} ({status})", "info")
+                    ctx.write_console_line(f"   Core files: {len(proj.core_files)}", "info")
+                    ctx.write_console_line(f"   File types: {', '.join(proj.file_types)}", "info")
+                    if proj.inferred_tags:
+                        ctx.write_console_line(f"   Tags: {', '.join(proj.inferred_tags)}", "info")
+                    ctx.write_console_line("", "info")
+
+            except Exception as e:
+                ctx.write_console_line(f"[Context] Error getting projects: {e}", "error")
+
+        # Register commands
+        context.commands.register(
+            Command(
+                "context.show_focus",
+                "Context: Show Current Focus",
+                _show_focus,
+                description="Show what you're currently working on"
+            )
+        )
+
+        context.commands.register(
+            Command(
+                "context.show_workflow",
+                "Context: Show Workflow",
+                lambda ctx: _show_context(ctx, "today"),
+                description="Show workflow context summary"
+            )
+        )
+
+        context.commands.register(
+            Command(
+                "context.export_markdown",
+                "Context: Export (Markdown)",
+                lambda ctx: _export_context(ctx, "markdown"),
+                description="Export context as Markdown for AI assistants"
+            )
+        )
+
+        context.commands.register(
+            Command(
+                "context.export_json",
+                "Context: Export (JSON)",
+                lambda ctx: _export_context(ctx, "json"),
+                description="Export context as JSON"
+            )
+        )
+
+        context.commands.register(
+            Command(
+                "context.show_projects",
+                "Context: Show Projects",
+                _show_projects,
+                description="Show inferred project groupings"
+            )
+        )
+
+
+# ============================================================================
+# File Operation Providers
+# ============================================================================
+
+class FileReadProvider(Provider):
+    """Provider for reading files with semantic tracking.
+
+    This provider allows the LLM to read file contents and tracks
+    the operation for display in the chat.
+    """
+
+    def __init__(self):
+        super().__init__("file_read", ProviderCategory.ON_DEMAND)
+
+    def activate(self, context):
+        """Register the file read command."""
+
+        def _read_file(ctx, file_path):
+            """Read a file and return its contents."""
+            try:
+                import os
+                if not os.path.exists(file_path):
+                    return f"Error: File not found: {file_path}"
+
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+
+                # Track operation in context
+                ctx.emit_event("file.read", {
+                    "file_path": file_path,
+                    "size": len(content),
+                    "lines": len(content.splitlines())
+                })
+
+                return f"[Read file: {file_path}]\n\n{content}"
+
+            except Exception as e:
+                return f"Error reading file: {e}"
+
+        context.commands.register(
+            Command(
+                "file.read",
+                "File: Read File",
+                _read_file,
+                description="Read the contents of a file"
+            )
+        )
+
+
+class FileWriteProvider(Provider):
+    """Provider for writing files with diff tracking.
+
+    This provider allows the LLM to write files and shows
+    a diff of changes before applying them.
+    """
+
+    def __init__(self):
+        super().__init__("file_write", ProviderCategory.ON_DEMAND)
+
+    def activate(self, context):
+        """Register the file write command."""
+
+        def _write_file(ctx, file_path, content):
+            """Write content to a file, tracking the operation."""
+            try:
+                import os
+
+                # Read existing content if file exists
+                old_content = ""
+                if os.path.exists(file_path):
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        old_content = f.read()
+
+                # Track operation with diff info
+                ctx.emit_event("file.write", {
+                    "file_path": file_path,
+                    "old_size": len(old_content),
+                    "new_size": len(content),
+                    "has_changes": old_content != content
+                })
+
+                # Return structured result
+                if old_content:
+                    return {
+                        "operation": "write",
+                        "file_path": file_path,
+                        "old_content": old_content,
+                        "new_content": content,
+                        "message": f"Proposed changes to {file_path}"
+                    }
+                else:
+                    return {
+                        "operation": "create",
+                        "file_path": file_path,
+                        "old_content": "",
+                        "new_content": content,
+                        "message": f"Create new file: {file_path}"
+                    }
+
+            except Exception as e:
+                return f"Error writing file: {e}"
+
+        context.commands.register(
+            Command(
+                "file.write",
+                "File: Write File",
+                _write_file,
+                description="Write content to a file (shows diff for review)"
+            )
+        )
+
+
+class FileListProvider(Provider):
+    """Provider for listing files in a directory."""
+
+    def __init__(self):
+        super().__init__("file_list", ProviderCategory.ON_DEMAND)
+
+    def activate(self, context):
+        """Register the file list command."""
+
+        def _list_files(ctx, directory=".", pattern="*"):
+            """List files in a directory."""
+            try:
+                import os
+                import glob
+
+                if not os.path.isabs(directory):
+                    # Relative to current document
+                    if hasattr(ctx, 'document') and ctx.document.path:
+                        directory = os.path.join(os.path.dirname(ctx.document.path), directory)
+
+                files = glob.glob(os.path.join(directory, pattern))
+                files = [f for f in files if os.path.isfile(f)]
+
+                if not files:
+                    return f"No files found matching '{pattern}' in {directory}"
+
+                result = f"Files in {directory} matching '{pattern}':\n\n"
+                for f in sorted(files):
+                    size = os.path.getsize(f)
+                    result += f"  {f} ({size} bytes)\n"
+
+                return result
+
+            except Exception as e:
+                return f"Error listing files: {e}"
+
+        context.commands.register(
+            Command(
+                "file.list",
+                "File: List Files",
+                _list_files,
+                description="List files in a directory"
+            )
+        )
+
+
+# Register all file operation providers
+def register_file_providers(ide):
+    """Register file operation providers with the IDE."""
+    ide.register_provider(FileReadProvider())
+    ide.register_provider(FileWriteProvider())
+    ide.register_provider(FileListProvider())

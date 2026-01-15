@@ -8,12 +8,13 @@ import sys
 import os
 import json
 import re
+import time
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QFileSystemWatcher, QTimer, QRegularExpression, QDateTime, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QFileSystemWatcher, QTimer, QRegularExpression, QDateTime, QThread, pyqtSignal, QUrl, QSize
 from PyQt6.QtGui import (
     QAction, QKeySequence, QFont, QTextDocument, QTextCursor, QCursor,
-    QColor, QSyntaxHighlighter, QTextCharFormat, QBrush
+    QColor, QSyntaxHighlighter, QTextCharFormat, QBrush, QPixmap, QIcon
 )
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QFileDialog,
@@ -21,7 +22,7 @@ from PyQt6.QtWidgets import (
     QDialog, QSpinBox, QDialogButtonBox, QFormLayout,
     QCheckBox, QLineEdit, QPushButton, QPlainTextEdit, QStackedWidget,
     QLabel, QDockWidget, QListWidget, QListWidgetItem, QToolTip,
-    QComboBox, QDateTimeEdit, QScrollArea
+    QComboBox, QDateTimeEdit, QScrollArea, QFrame, QInputDialog, QGridLayout, QMenu
 )
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
 from PyQt6.QtGui import QPageLayout, QPageSize
@@ -38,8 +39,10 @@ from ide.tasks import TaskExtractor, TaskIndexStore
 
 try:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
+    from PyQt6.QtWebEngineCore import QWebEnginePage
 except Exception:
     QWebEngineView = None
+    QWebEnginePage = None
 try:
     import markdown as markdown_lib
 except Exception:
@@ -659,6 +662,16 @@ class SemanticPanel(QWidget):
         self.tags_list.itemClicked.connect(self._on_tag_clicked)
         layout.addWidget(self.tags_list)
 
+        # Current Focus section (Context Layer)
+        focus_label = QLabel("Current Focus:")
+        focus_label.setStyleSheet("font-weight: bold; color: #3d3929;")
+        layout.addWidget(focus_label)
+
+        self.focus_list = QListWidget()
+        self.focus_list.setMaximumHeight(120)
+        self.focus_list.itemDoubleClicked.connect(self._on_file_clicked)
+        layout.addWidget(self.focus_list)
+
         # File stats section
         stats_label = QLabel("Current File:")
         stats_label.setStyleSheet("font-weight: bold; color: #3d3929;")
@@ -806,6 +819,26 @@ class SemanticPanel(QWidget):
         else:
             self.stats_text.setText(f"{path.name}\n(File not on disk)")
 
+    def update_focus(self):
+        """Update current focus list from context layer."""
+        self.focus_list.clear()
+        if not self.kernel:
+            return
+
+        try:
+            # Get current focus from kernel
+            focus_docs = self.kernel.get_current_focus(limit=5)
+            for doc in focus_docs:
+                name = Path(doc.path).name
+                focus_time = int(doc.focus_duration)
+                item = QListWidgetItem(f"● {name} ({focus_time}min, {doc.edit_count} edits)")
+                item.setData(Qt.ItemDataRole.UserRole, doc.path)
+                item.setToolTip(doc.path)
+                self.focus_list.addItem(item)
+        except Exception as e:
+            # Context layer might not be available yet
+            pass
+
     def _on_search(self):
         """Handle search."""
         query = self.search_input.text().strip()
@@ -839,9 +872,2220 @@ class SemanticPanel(QWidget):
         self._on_search()
 
 
+class BrowserTab(QWidget):
+    """A browser tab with semantic tracking of web activity."""
+
+    def __init__(self, kernel=None, dark_mode=False, parent=None):
+        super().__init__(parent)
+        self.kernel = kernel
+        self.dark_mode = dark_mode
+        self.current_url = ""
+        self.current_title = ""
+        self.navigation_history = []
+        self.history_index = -1
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Toolbar
+        self.toolbar = QWidget()
+        toolbar_layout = QHBoxLayout(self.toolbar)
+        toolbar_layout.setContentsMargins(8, 6, 8, 6)
+        toolbar_layout.setSpacing(4)
+
+        # Navigation buttons
+        self.back_btn = QPushButton("←")
+        self.back_btn.setToolTip("Back")
+        self.back_btn.clicked.connect(self.go_back)
+        self.back_btn.setEnabled(False)
+        toolbar_layout.addWidget(self.back_btn)
+
+        self.forward_btn = QPushButton("→")
+        self.forward_btn.setToolTip("Forward")
+        self.forward_btn.clicked.connect(self.go_forward)
+        self.forward_btn.setEnabled(False)
+        toolbar_layout.addWidget(self.forward_btn)
+
+        self.refresh_btn = QPushButton("↻")
+        self.refresh_btn.setToolTip("Refresh")
+        self.refresh_btn.clicked.connect(self.refresh)
+        toolbar_layout.addWidget(self.refresh_btn)
+
+        toolbar_layout.addWidget(self._separator())
+
+        # URL bar
+        self.url_bar = QLineEdit()
+        self.url_bar.setPlaceholderText("Enter URL or search...")
+        self.url_bar.returnPressed.connect(self.navigate_to_url_bar)
+        toolbar_layout.addWidget(self.url_bar)
+
+        self.go_btn = QPushButton("Go")
+        self.go_btn.clicked.connect(self.navigate_to_url_bar)
+        toolbar_layout.addWidget(self.go_btn)
+
+        toolbar_layout.addWidget(self._separator())
+
+        # Search toggle
+        self.search_toggle = QPushButton("🔍")
+        self.search_toggle.setToolTip("Toggle Find")
+        self.search_toggle.setMaximumWidth(40)
+        self.search_toggle.clicked.connect(self.toggle_find)
+        toolbar_layout.addWidget(self.search_toggle)
+
+        layout.addWidget(self.toolbar)
+
+        # Web view (only if QWebEngineView is available)
+        if QWebEngineView:
+            self.web_view = QWebEngineView()
+            self.web_view.urlChanged.connect(self.on_url_changed)
+            self.web_view.titleChanged.connect(self.on_title_changed)
+            self.web_view.loadProgress.connect(self.on_load_progress)
+            layout.addWidget(self.web_view)
+
+            # Load start page
+            self.load_start_page()
+        else:
+            # Fallback if QtWebEngine is not available
+            error_label = QLabel(
+                "QtWebEngine is not available.\n\n"
+                "Please install PyQt6-WebEngine:\n"
+                "pip install PyQt6-WebEngine"
+            )
+            error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            error_label.setStyleSheet("color: #666; padding: 20px;")
+            layout.addWidget(error_label)
+            self.web_view = None
+
+        # Status bar
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet("padding: 2px 8px; color: #666; font-size: 10px;")
+        layout.addWidget(self.status_label)
+
+        # Apply dark mode styling
+        if self.dark_mode:
+            self._apply_dark_mode()
+
+    def _separator(self):
+        """Create a separator widget."""
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        return sep
+
+    def load_start_page(self):
+        """Load the semantic OS start page."""
+        if not self.web_view:
+            return
+
+        html = """
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            line-height: 1.6;
+            color: #333;
+        }
+        h1 { color: #2563eb; }
+        .shortcut {
+            background: #f0f9ff;
+            border: 1px solid #bae6fd;
+            border-radius: 8px;
+            padding: 16px;
+            margin: 10px 0;
+        }
+        .shortcut h3 { margin-top: 0; color: #0369a1; }
+        .shortcut a { color: #2563eb; text-decoration: none; }
+        .shortcut a:hover { text-decoration: underline; }
+        input {
+            width: 100%;
+            padding: 12px;
+            font-size: 16px;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            box-sizing: border-box;
+            margin: 10px 0;
+        }
+        input:focus {
+            outline: none;
+            border-color: #2563eb;
+        }
+        button {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            font-size: 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        button:hover { background: #1d4ed8; }
+    </style>
+</head>
+<body>
+    <h1>🌐 Semantic Browser</h1>
+    <p>Your web activity is tracked semantically alongside your file work.</p>
+
+    <div class="shortcut">
+        <h3>🔍 Quick Search</h3>
+        <input type="text" id="searchBox" placeholder="Search the web..." autofocus>
+        <button onclick="search()">Search</button>
+    </div>
+
+    <div class="shortcut">
+        <h3>📚 Quick Links</h3>
+        <p><a href="https://github.com">GitHub</a></p>
+        <p><a href="https://stackoverflow.com">Stack Overflow</a></p>
+        <p><a href="https://docs.python.org">Python Docs</a></p>
+        <p><a href="https://developer.mozilla.org">MDN Web Docs</a></p>
+    </div>
+
+    <script>
+        const searchBox = document.getElementById('searchBox');
+        searchBox.addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') search();
+        });
+
+        function search() {
+            const query = searchBox.value;
+            if (query) {
+                // Check if it's a URL
+                if (query.startsWith('http://') || query.startsWith('https://')) {
+                    window.location.href = query;
+                } else {
+                    // Treat as search query
+                    window.location.href = 'https://www.google.com/search?q=' + encodeURIComponent(query);
+                }
+            }
+        }
+    </script>
+</body>
+</html>
+"""
+        self.web_view.setHtml(html)
+
+    def navigate_to_url_bar(self):
+        """Navigate to the URL in the URL bar."""
+        url = self.url_bar.text().strip()
+        if not url:
+            return
+
+        # Check if it's a URL or a search query
+        if url.startswith('http://') or url.startswith('https://'):
+            self.navigate(url)
+        else:
+            # Treat as search query
+            search_url = f"https://www.google.com/search?q={url}"
+            self.navigate(search_url)
+
+    def navigate(self, url):
+        """Navigate to a URL."""
+        if not self.web_view:
+            return
+
+        # Add to history
+        if self.history_index < len(self.navigation_history) - 1:
+            # Truncate forward history
+            self.navigation_history = self.navigation_history[:self.history_index + 1]
+
+        self.navigation_history.append(url)
+        self.history_index = len(self.navigation_history) - 1
+
+        self._update_nav_buttons()
+        self.web_view.setUrl(QUrl(url))
+
+        # Track semantically
+        self._track_navigation(url)
+
+    def go_back(self):
+        """Go back in history."""
+        if self.history_index > 0:
+            self.history_index -= 1
+            url = self.navigation_history[self.history_index]
+            self.web_view.setUrl(QUrl(url))
+            self._update_nav_buttons()
+
+    def go_forward(self):
+        """Go forward in history."""
+        if self.history_index < len(self.navigation_history) - 1:
+            self.history_index += 1
+            url = self.navigation_history[self.history_index]
+            self.web_view.setUrl(QUrl(url))
+            self._update_nav_buttons()
+
+    def refresh(self):
+        """Refresh the current page."""
+        if self.web_view:
+            self.web_view.reload()
+
+    def toggle_find(self):
+        """Show find dialog."""
+        # QWebEngineView has built-in find
+        if self.web_view and QWebEnginePage:
+            self.web_view.triggerPageAction(QWebEnginePage.WebAction.Find)
+            self.url_bar.setFocus()
+            self.url_bar.selectAll()
+
+    def on_url_changed(self, url):
+        """Handle URL change."""
+        self.current_url = url.toString()
+        self.url_bar.setText(self.current_url)
+
+    def on_title_changed(self, title):
+        """Handle page title change."""
+        self.current_title = title
+        # Update window title if this is the current tab
+        parent = self.parent()
+        while parent:
+            if isinstance(parent, MarkdownEditor):
+                parent.setWindowTitle(f"Markdown Editor - {title[:50]}")
+                break
+            parent = parent.parent() if hasattr(parent, 'parent') else None
+
+    def on_load_progress(self, progress):
+        """Handle load progress."""
+        if progress < 100:
+            self.status_label.setText(f"Loading: {progress}%")
+        else:
+            self.status_label.setText(f"Done: {self.current_title or self.current_url}")
+
+            # Track page load completion
+            self._track_page_load()
+
+    def _update_nav_buttons(self):
+        """Update navigation button states."""
+        self.back_btn.setEnabled(self.history_index > 0)
+        self.forward_btn.setEnabled(self.history_index < len(self.navigation_history) - 1)
+
+    def _track_navigation(self, url):
+        """Track navigation semantically."""
+        if not self.kernel:
+            return
+
+        try:
+            # Store in semantic memory
+            self.kernel.memory.store(
+                content=f"Navigated to: {url}",
+                type="web_navigation",
+                metadata={
+                    "url": url,
+                    "timestamp": time.time(),
+                    "type": "navigation"
+                }
+            )
+
+            # Emit event
+            self.kernel.emit("web.navigation", {
+                "url": url,
+                "action": "navigate"
+            })
+
+            # Record focus for context layer
+            self.kernel.record_focus(url)
+
+        except Exception as e:
+            print(f"[Semantic Browser] Error tracking navigation: {e}")
+
+    def _track_page_load(self):
+        """Track completed page load semantically."""
+        if not self.kernel:
+            return
+
+        try:
+            self.kernel.memory.store(
+                content=f"Page loaded: {self.current_title or self.current_url}",
+                type="web_page_load",
+                metadata={
+                    "url": self.current_url,
+                    "title": self.current_title,
+                    "timestamp": time.time(),
+                    "type": "page_load"
+                }
+            )
+
+            # Emit event
+            self.kernel.emit("web.page_loaded", {
+                "url": self.current_url,
+                "title": self.current_title
+            })
+
+        except Exception as e:
+            print(f"[Semantic Browser] Error tracking page load: {e}")
+
+    def _apply_dark_mode(self):
+        """Apply dark mode styling."""
+        dark_style = """
+            QWidget {
+                background-color: #1e1e1e;
+                color: #d4d4d4;
+            }
+            QLineEdit {
+                background-color: #2d2d2d;
+                color: #d4d4d4;
+                border: 1px solid #444;
+                padding: 4px;
+                border-radius: 3px;
+            }
+            QPushButton {
+                background-color: #3d3d3d;
+                color: #d4d4d4;
+                border: 1px solid #555;
+                padding: 4px 12px;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #4d4d4d;
+            }
+            QPushButton:disabled {
+                background-color: #2d2d2d;
+                color: #666;
+            }
+        """
+        self.setStyleSheet(dark_style)
+
+    def set_url(self, url):
+        """Set and navigate to a URL."""
+        self.url_bar.setText(url)
+        self.navigate(url)
+
+
+class TerminalTab(QWidget):
+    """A terminal emulator with semantic tracking of command-line work.
+
+    Features:
+    - Full shell/terminal integration (cmd.exe, bash, zsh)
+    - Command history and tracking
+    - Semantic correlation with file edits
+    - Auto-completion
+    - Syntax highlighting for output
+    - Exportable command history for AI context
+    """
+
+    def __init__(self, kernel=None, dark_mode=False, parent=None):
+        super().__init__(parent)
+        self.kernel = kernel
+        self.dark_mode = dark_mode
+
+        # Terminal state
+        self.command_history = []
+        self.history_index = -1
+        self.current_directory = os.path.abspath(os.getcwd())
+        self.session_start = time.time()
+        self.commands_run = 0
+        self.failed_commands = 0
+
+        # Determine shell to use
+        self.shell = self._detect_shell()
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Toolbar
+        self._create_toolbar(layout)
+
+        # Terminal output area
+        self.terminal_output = QPlainTextEdit()
+        self.terminal_output.setReadOnly(True)
+        self.terminal_output.setStyleSheet(self._get_terminal_style())
+        layout.addWidget(self.terminal_output, 1)  # Give stretch factor 1
+
+        # Command input
+        input_layout = QHBoxLayout()
+        input_layout.setContentsMargins(8, 4, 8, 4)
+
+        self.prompt_label = QLabel(self._get_prompt())
+        self.prompt_label.setStyleSheet("font-family: Consolas, monospace; font-weight: bold;")
+        input_layout.addWidget(self.prompt_label)
+
+        self.command_input = QLineEdit()
+        self.command_input.setPlaceholderText("Enter command...")
+        self.command_input.setStyleSheet(self._get_input_style())
+        self.command_input.returnPressed.connect(self._execute_command)
+        self.command_input.textChanged.connect(self._on_input_changed)
+        input_layout.addWidget(self.command_input)
+
+        layout.addLayout(input_layout)
+
+        # Process for running shell
+        from PyQt6.QtCore import QProcess
+        self.shell_process = QProcess()
+        self.shell_process.readyReadStandardOutput.connect(self._on_stdout)
+        self.shell_process.readyReadStandardError.connect(self._on_stderr)
+        self.shell_process.finished.connect(self._on_process_finished)
+
+        # Initialize
+        self._print_welcome()
+        self._start_shell()
+
+        # Apply dark mode
+        if self.dark_mode:
+            self._apply_dark_mode()
+
+        # Track session in kernel
+        if self.kernel:
+            self.kernel.emit("terminal.session_started", {
+                "shell": self.shell,
+                "directory": self.current_directory,
+                "timestamp": self.session_start
+            })
+
+    def _detect_shell(self):
+        """Detect the appropriate shell for the platform."""
+        if sys.platform == 'win32':
+            # Check for PowerShell
+            try:
+                import subprocess
+                result = subprocess.run(['pwsh', '--version'], capture_output=True)
+                if result.returncode == 0:
+                    return 'pwsh'
+            except:
+                pass
+
+            # Check for Windows PowerShell
+            try:
+                import subprocess
+                result = subprocess.run(['powershell', '--version'], capture_output=True)
+                if result.returncode == 0:
+                    return 'powershell'
+            except:
+                pass
+
+            # Fallback to cmd.exe
+            return 'cmd'
+        else:
+            # On Unix-like systems, prefer bash but check for others
+            shells = ['zsh', 'bash', 'sh']
+            for shell in shells:
+                try:
+                    import subprocess
+                    result = subprocess.run(['which', shell], capture_output=True)
+                    if result.returncode == 0:
+                        return shell
+                except:
+                    pass
+            return 'sh'
+
+    def _create_toolbar(self, layout):
+        """Create terminal toolbar."""
+        toolbar = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(8, 6, 8, 6)
+        toolbar_layout.setSpacing(4)
+
+        # Clear button
+        clear_btn = QPushButton("Clear")
+        clear_btn.setToolTip("Clear terminal output")
+        clear_btn.clicked.connect(self._clear_output)
+        toolbar_layout.addWidget(clear_btn)
+
+        toolbar_layout.addWidget(self._separator())
+
+        # Shell indicator
+        shell_label = QLabel(f"Shell: {self.shell}")
+        shell_label.setStyleSheet("color: #666; font-size: 11px;")
+        toolbar_layout.addWidget(shell_label)
+
+        # Directory indicator
+        self.dir_label = QLabel(os.path.basename(self.current_directory))
+        self.dir_label.setStyleSheet("color: #666; font-size: 11px;")
+        self.dir_label.setToolTip(self.current_directory)
+        toolbar_layout.addWidget(self.dir_label)
+
+        toolbar_layout.addStretch()
+
+        # Stats
+        self.stats_label = QLabel("0 commands")
+        self.stats_label.setStyleSheet("color: #666; font-size: 11px;")
+        toolbar_layout.addWidget(self.stats_label)
+
+        # Export button
+        export_btn = QPushButton("Export History")
+        export_btn.setToolTip("Export command history for AI context")
+        export_btn.clicked.connect(self._export_history)
+        toolbar_layout.addWidget(export_btn)
+
+        layout.addWidget(toolbar)
+
+    def _separator(self):
+        """Create a separator widget."""
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        return sep
+
+    def _get_terminal_style(self):
+        """Get terminal output style."""
+        if self.dark_mode:
+            return """
+                QPlainTextEdit {
+                    background-color: #0c0c0c;
+                    color: #cccccc;
+                    font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+                    font-size: 13px;
+                    border: none;
+                    padding: 8px;
+                }
+            """
+        else:
+            return """
+                QPlainTextEdit {
+                    background-color: #ffffff;
+                    color: #000000;
+                    font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+                    font-size: 13px;
+                    border: 1px solid #ccc;
+                    padding: 8px;
+                }
+            """
+
+    def _get_input_style(self):
+        """Get command input style."""
+        if self.dark_mode:
+            return """
+                QLineEdit {
+                    background-color: #1e1e1e;
+                    color: #cccccc;
+                    font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+                    font-size: 13px;
+                    border: 1px solid #444;
+                    padding: 6px 8px;
+                    border-radius: 3px;
+                }
+                QLineEdit:focus {
+                    border: 1px solid #007acc;
+                }
+            """
+        else:
+            return """
+                QLineEdit {
+                    background-color: #ffffff;
+                    color: #000000;
+                    font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+                    font-size: 13px;
+                    border: 1px solid #ccc;
+                    padding: 6px 8px;
+                    border-radius: 3px;
+                }
+                QLineEdit:focus {
+                    border: 1px solid #007acc;
+                }
+            """
+
+    def _get_prompt(self):
+        """Get the current prompt string."""
+        if self.shell in ['bash', 'zsh', 'sh']:
+            return f"$ "
+        elif self.shell == 'powershell' or self.shell == 'pwsh':
+            return "PS> "
+        else:  # cmd
+            return "> "
+
+    def _print_welcome(self):
+        """Print welcome message."""
+        welcome = f"""
+╔═══════════════════════════════════════════════════════════════╗
+║           Semantic OS Terminal - Context-Aware Shell           ║
+╠═══════════════════════════════════════════════════════════════╣
+║  All commands are tracked semantically for AI context          ║
+║  Type 'help' for available commands                            ║
+║  Shell: {self.shell:<15} Working Dir: {os.path.basename(self.current_directory):<20}     ║
+╚═══════════════════════════════════════════════════════════════╝
+
+"""
+        self.terminal_output.appendPlainText(welcome.strip())
+
+    def _start_shell(self):
+        """Start the shell process."""
+        if sys.platform == 'win32':
+            if self.shell == 'powershell' or self.shell == 'pwsh':
+                self.shell_process.start(self.shell, ['-NoExit', '-NoLogo'])
+            else:
+                self.shell_process.start('cmd.exe', [])
+        else:
+            self.shell_process.start(self.shell, [])
+
+    def _execute_command(self):
+        """Execute a command."""
+        command = self.command_input.text().strip()
+        if not command:
+            return
+
+        # Add to history
+        self.command_history.append(command)
+        self.history_index = len(self.command_history)
+
+        # Display command
+        self.terminal_output.appendPlainText(f"\n{self._get_prompt()}{command}")
+
+        # Handle special commands
+        if command.lower() in ['clear', 'cls']:
+            self._clear_output()
+            self.command_input.clear()
+            return
+        elif command.lower() == 'history':
+            self._show_history()
+            self.command_input.clear()
+            return
+        elif command.lower() in ['exit', 'quit']:
+            self._close_session()
+            self.command_input.clear()
+            return
+        elif command.lower() == 'help':
+            self._show_help()
+            self.command_input.clear()
+            return
+        elif command.lower().startswith('cd '):
+            self._change_directory(command[3:].strip())
+            self.command_input.clear()
+            return
+
+        # Track command in kernel
+        self._track_command(command)
+
+        # Execute the command
+        try:
+            if sys.platform == 'win32':
+                # On Windows, use subprocess
+                import subprocess
+                result = subprocess.run(
+                    command,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    cwd=self.current_directory
+                )
+
+                if result.stdout:
+                    self.terminal_output.appendPlainText(result.stdout)
+
+                if result.stderr:
+                    self.terminal_output.appendPlainText(result.stderr)
+                    self.failed_commands += 1
+                else:
+                    self.commands_run += 1
+
+            else:
+                # On Unix, could use shell process
+                import subprocess
+                result = subprocess.run(
+                    command,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    cwd=self.current_directory
+                )
+
+                if result.stdout:
+                    self.terminal_output.appendPlainText(result.stdout)
+
+                if result.stderr:
+                    self.terminal_output.appendPlainText(result.stderr)
+                    self.failed_commands += 1
+                else:
+                    self.commands_run += 1
+
+        except Exception as e:
+            self.terminal_output.appendPlainText(f"Error: {e}")
+            self.failed_commands += 1
+
+        # Update stats
+        self._update_stats()
+
+        # Clear input
+        self.command_input.clear()
+
+        # Scroll to bottom
+        cursor = self.terminal_output.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.terminal_output.setTextCursor(cursor)
+
+    def _track_command(self, command):
+        """Track command in semantic kernel."""
+        if not self.kernel:
+            return
+
+        try:
+            # Store command in memory
+            self.kernel.memory.store(
+                content=f"Terminal command: {command}",
+                type="terminal_command",
+                metadata={
+                    "command": command,
+                    "directory": self.current_directory,
+                    "shell": self.shell,
+                    "timestamp": time.time(),
+                    "session_start": self.session_start
+                }
+            )
+
+            # Emit event
+            self.kernel.emit("terminal.command_executed", {
+                "command": command,
+                "directory": self.current_directory,
+                "shell": self.shell,
+                "timestamp": time.time()
+            })
+
+            # Try to extract files referenced
+            self._extract_file_references(command)
+
+        except Exception as e:
+            print(f"[Terminal] Error tracking command: {e}")
+
+    def _extract_file_references(self, command):
+        """Extract file references from command."""
+        import re
+        import pathlib
+
+        # Common patterns for file references
+        patterns = [
+            r'\b[\w\-./\\]+\.(py|js|ts|md|txt|json|yaml|yml|html|css)\b',
+            r'\b[\w\-./\\]+/[\w\-./\\]*\b',
+        ]
+
+        files_found = []
+        for pattern in patterns:
+            matches = re.findall(pattern, command)
+            files_found.extend(matches)
+
+        # If files found, record them
+        if files_found and self.kernel:
+            for file_path in files_found:
+                # Normalize path
+                if not os.path.isabs(file_path):
+                    file_path = os.path.join(self.current_directory, file_path)
+
+                self.kernel.emit("terminal.file_referenced", {
+                    "file_path": file_path,
+                    "command": command,
+                    "timestamp": time.time()
+                })
+
+    def _change_directory(self, path):
+        """Change current directory."""
+        try:
+            if path == '~':
+                new_dir = os.path.expanduser(path)
+            elif not os.path.isabs(path):
+                new_dir = os.path.join(self.current_directory, path)
+            else:
+                new_dir = path
+
+            new_dir = os.path.abspath(new_dir)
+
+            if os.path.isdir(new_dir):
+                self.current_directory = new_dir
+                self.dir_label.setText(os.path.basename(new_dir))
+                self.dir_label.setToolTip(new_dir)
+                self.prompt_label.setText(self._get_prompt())
+
+                # Track in kernel
+                if self.kernel:
+                    self.kernel.emit("terminal.directory_changed", {
+                        "directory": new_dir,
+                        "timestamp": time.time()
+                    })
+            else:
+                self.terminal_output.appendPlainText(f"cd: {path}: No such directory")
+
+        except Exception as e:
+            self.terminal_output.appendPlainText(f"cd: {e}")
+
+    def _clear_output(self):
+        """Clear terminal output."""
+        self.terminal_output.clear()
+
+    def _show_history(self):
+        """Show command history."""
+        self.terminal_output.appendPlainText("\n--- Command History ---")
+        for i, cmd in enumerate(self.command_history, 1):
+            self.terminal_output.appendPlainText(f"{i:4d}  {cmd}")
+
+    def _show_help(self):
+        """Show help message."""
+        help_text = """
+Semantic Terminal Commands:
+  help        - Show this help
+  history     - Show command history
+  clear/cls   - Clear terminal output
+  cd <path>   - Change directory
+  exit/quit   - Close terminal session
+
+All other commands are executed by the shell.
+"""
+        self.terminal_output.appendPlainText(help_text)
+
+    def _update_stats(self):
+        """Update statistics display."""
+        self.stats_label.setText(f"{self.commands_run} commands")
+
+    def _on_input_changed(self, text):
+        """Handle input text changes."""
+        # Could implement auto-completion here
+        pass
+
+    def _on_stdout(self):
+        """Handle stdout from shell process."""
+        data = self.shell_process.readAllStandardOutput()
+        text = bytes(data).decode('utf-8', errors='ignore')
+        self.terminal_output.appendPlainText(text)
+
+    def _on_stderr(self):
+        """Handle stderr from shell process."""
+        data = self.shell_process.readAllStandardError()
+        text = bytes(data).decode('utf-8', errors='ignore')
+        self.terminal_output.appendPlainText(text)
+
+    def _on_process_finished(self, exit_code, exit_status):
+        """Handle process completion."""
+        if exit_code != 0:
+            self.terminal_output.appendPlainText(f"\n[Process exited with code {exit_code}]")
+
+    def _export_history(self):
+        """Export command history."""
+        history = {
+            "shell": self.shell,
+            "session_start": self.session_start,
+            "duration_minutes": (time.time() - self.session_start) / 60,
+            "commands_run": self.commands_run,
+            "failed_commands": self.failed_commands,
+            "current_directory": self.current_directory,
+            "commands": self.command_history
+        }
+
+        # Show dialog with export options
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Export Terminal History")
+        layout = QVBoxLayout(dialog)
+
+        # Preview
+        preview = QPlainTextEdit()
+        preview.setReadOnly(True)
+        preview.setPlainText(json.dumps(history, indent=2))
+        layout.addWidget(QLabel("Command History (JSON):"))
+        layout.addWidget(preview)
+
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Close
+        )
+        buttons.closeRequested.connect(dialog.close)
+        buttons.addButton("Copy to Clipboard", QDialogButtonBox.ButtonRole.ActionRole).clicked.connect(
+            lambda: QApplication.clipboard().setText(json.dumps(history, indent=2))
+        )
+        layout.addWidget(buttons)
+
+        dialog.exec()
+
+    def _close_session(self):
+        """Close terminal session."""
+        # Track session end in kernel
+        if self.kernel:
+            duration = time.time() - self.session_start
+            self.kernel.emit("terminal.session_ended", {
+                "shell": self.shell,
+                "duration_seconds": duration,
+                "commands_run": self.commands_run,
+                "failed_commands": self.failed_commands,
+                "timestamp": time.time()
+            })
+
+        # Emit signal to close tab
+        self.parent().parent().tabs.removeTab(
+            self.parent().parent().tabs.indexOf(self)
+        )
+
+    def _apply_dark_mode(self):
+        """Apply dark mode styling."""
+        pass  # Already handled in individual components
+
+    def keyPressEvent(self, event):
+        """Handle key press events."""
+        # Handle up/down arrows for command history
+        if event.key() == Qt.Key.Key_Up:
+            if self.history_index > 0:
+                self.history_index -= 1
+                self.command_input.setText(self.command_history[self.history_index])
+        elif event.key() == Qt.Key.Key_Down:
+            if self.history_index < len(self.command_history) - 1:
+                self.history_index += 1
+                self.command_input.setText(self.command_history[self.history_index])
+            else:
+                self.history_index = len(self.command_history)
+                self.command_input.clear()
+        else:
+            super().keyPressEvent(event)
+
+    def closeEvent(self, event):
+        """Handle tab close - clean up shell process."""
+        try:
+            # Disconnect signals to prevent crashes
+            if hasattr(self, 'shell_process'):
+                self.shell_process.readyReadStandardOutput.disconnect()
+                self.shell_process.readyReadStandardError.disconnect()
+                self.shell_process.finished.disconnect()
+
+                # Kill the process if it's running
+                if self.shell_process.state() == QProcess.ProcessState.Running:
+                    self.shell_process.kill()
+                    self.shell_process.waitForFinished(1000)  # Wait up to 1 second
+
+            # Track session end
+            if self.kernel:
+                try:
+                    duration = time.time() - self.session_start
+                    self.kernel.emit("terminal.session_ended", {
+                        "shell": self.shell,
+                        "duration_seconds": duration,
+                        "commands_run": self.commands_run,
+                        "failed_commands": self.failed_commands,
+                        "timestamp": time.time()
+                    })
+                except:
+                    pass
+
+        except Exception as e:
+            print(f"[Terminal] Error during cleanup: {e}")
+
+        # Accept the close event
+        event.accept()
+
+
+class AppLauncherTab(QWidget):
+    """An application launcher that tracks external applications semantically.
+
+    Features:
+    - Launch any installed application
+    - Track application lifetime and usage
+    - Monitor window title changes
+    - Correlate app usage with files and projects
+    - Export app history for AI context
+    - Favorite apps for quick access
+    """
+
+    def __init__(self, kernel=None, dark_mode=False, parent=None):
+        super().__init__(parent)
+        self.kernel = kernel
+        self.dark_mode = dark_mode
+
+        # App tracking state
+        self.running_apps = {}  # {app_name: {pid, start_time, process}}
+        self.app_history = []
+        self.favorite_apps = []
+        self.session_start = time.time()
+
+        # Don't detect apps at startup - do it lazily in background
+        self.installed_apps = []
+        self.apps_loaded = False
+        self.loading_label = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Toolbar
+        self._create_toolbar(layout)
+
+        # Status bar
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet("padding: 2px 8px; color: #666; font-size: 10px;")
+
+        # Main content area
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(20, 20, 20, 20)
+
+        # Loading indicator
+        self.loading_label = QLabel("Scanning for applications...")
+        self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.loading_label.setStyleSheet("color: #666; font-size: 14px; padding: 40px;")
+        content_layout.addWidget(self.loading_label)
+
+        # Quick launch section
+        quick_launch_label = QLabel("Quick Launch")
+        quick_launch_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #333;")
+        content_layout.addWidget(quick_launch_label)
+
+        # Search/filter apps
+        search_layout = QHBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search applications...")
+        self.search_input.textChanged.connect(self._filter_apps)
+        search_layout.addWidget(self.search_input)
+        content_layout.addLayout(search_layout)
+
+        # Apps grid
+        self.apps_scroll = QScrollArea()
+        self.apps_scroll.setWidgetResizable(True)
+        self.apps_scroll.setMinimumHeight(400)
+
+        self.apps_widget = QWidget()
+        self.apps_layout = QGridLayout(self.apps_widget)
+        self.apps_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.apps_scroll.setWidget(self.apps_widget)
+
+        content_layout.addWidget(self.apps_scroll)
+
+        # Running apps section
+        running_label = QLabel("Running Applications")
+        running_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #333; margin-top: 20px;")
+        content_layout.addWidget(running_label)
+
+        self.running_list = QListWidget()
+        self.running_list.setMinimumHeight(150)
+        self.running_list.itemDoubleClicked.connect(self._focus_app)
+        content_layout.addWidget(self.running_list)
+
+        layout.addWidget(content)
+
+        # Start background app scanning when widget is shown
+        self.load_apps_timer = QTimer()
+        self.load_apps_timer.setSingleShot(True)
+        self.load_apps_timer.timeout.connect(self._load_apps_background)
+
+        # Start monitoring timer
+        self.monitor_timer = QTimer()
+        self.monitor_timer.timeout.connect(self._monitor_apps)
+        self.monitor_timer.start(2000)  # Check every 2 seconds
+
+        # Apply dark mode
+        if self.dark_mode:
+            self._apply_dark_mode()
+
+    def showEvent(self, event):
+        """Called when the widget is shown. Load apps in background if not loaded."""
+        super().showEvent(event)
+        # Start background loading when first shown
+        if not self.apps_loaded:
+            self.load_apps_timer.start(100)  # Small delay to let UI render first
+
+    def _load_apps_background(self):
+        """Load applications in background thread."""
+        if self.apps_loaded:
+            return
+
+        # Update loading label
+        if self.loading_label:
+            self.loading_label.setText("Scanning for applications...")
+
+        # Use QTimer to do scanning in small chunks, keeping UI responsive
+        QTimer.singleShot(50, self._detect_apps_step1)
+
+    def _detect_apps_step1(self):
+        """First step of app detection - update UI and start detection."""
+        # Load apps (custom + system)
+        self._refresh_apps()
+
+        # Hide loading label
+        if self.loading_label:
+            self.loading_label.hide()
+
+        self.apps_loaded = True
+
+        # Track session in kernel
+        if self.kernel:
+            self.kernel.emit("app_launcher.session_started", {
+                "installed_apps": len(self.installed_apps),
+                "timestamp": self.session_start
+            })
+
+    def _detect_installed_apps(self):
+        """Detect installed applications on the system."""
+        apps = []
+
+        if sys.platform == 'win32':
+            # Use shutil.which for fast lookup (uses system PATH)
+            import shutil
+            import os
+
+            # Common Windows apps - just check if they're in PATH
+            # Much faster than walking directories!
+            app_names = [
+                ("code.exe", "Visual Studio Code", "code"),
+                ("notepad++.exe", "Notepad++", "notepad++"),
+                ("notepad.exe", "Notepad", "notepad"),
+                ("mspaint.exe", "Paint", "paint"),
+                ("chrome.exe", "Google Chrome", "chrome"),
+                ("firefox.exe", "Mozilla Firefox", "firefox"),
+                ("msedge.exe", "Microsoft Edge", "edge"),
+                ("spotify.exe", "Spotify", "spotify"),
+                ("discord.exe", "Discord", "discord"),
+                ("slack.exe", "Slack", "slack"),
+                ("zoom.exe", "Zoom", "zoom"),
+                ("teams.exe", "Microsoft Teams", "teams"),
+                ("explorer.exe", "File Explorer", "explorer"),
+            ]
+
+            # Fast lookup using shutil.which (uses system PATH)
+            for exe_name, display_name, icon_name in app_names:
+                exe_path = shutil.which(exe_name)
+                if exe_path:
+                    apps.append({
+                        "name": display_name,
+                        "exe": exe_name,
+                        "path": exe_path,
+                        "icon": icon_name,
+                        "category": self._get_category(display_name)
+                    })
+
+            # Also add some hard-coded common paths for apps not in PATH
+            # This is instant - no scanning required
+            hardcoded_apps = [
+                (r"C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE", "Microsoft Excel", "excel"),
+                (r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE", "Microsoft Word", "word"),
+                (r"C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE", "Microsoft PowerPoint", "powerpoint"),
+            ]
+
+            for path, display_name, icon_name in hardcoded_apps:
+                if os.path.exists(path):
+                    apps.append({
+                        "name": display_name,
+                        "exe": os.path.basename(path),
+                        "path": path,
+                        "icon": icon_name,
+                        "category": self._get_category(display_name)
+                    })
+
+        elif sys.platform == 'darwin':
+            # macOS: Check /Applications
+            import os
+
+            apps_dir = "/Applications"
+            if os.path.exists(apps_dir):
+                for app in os.listdir(apps_dir):
+                    if app.endswith(".app"):
+                        app_name = app.replace(".app", "")
+                        app_path = os.path.join(apps_dir, app)
+                        apps.append({
+                            "name": app_name,
+                            "exe": app,
+                            "path": app_path,
+                            "icon": app_name.lower(),
+                            "category": self._get_category(app_name)
+                        })
+
+        else:
+            # Linux: Check common desktop files
+            import os
+
+            desktop_dirs = [
+                "/usr/share/applications",
+                os.path.expanduser("~/.local/share/applications"),
+            ]
+
+            for desktop_dir in desktop_dirs:
+                if os.path.exists(desktop_dir):
+                    for desktop_file in os.listdir(desktop_dir):
+                        if desktop_file.endswith(".desktop"):
+                            # Parse .desktop file
+                            desktop_path = os.path.join(desktop_dir, desktop_file)
+                            app_info = self._parse_desktop_file(desktop_path)
+                            if app_info:
+                                apps.append(app_info)
+
+        return apps
+
+    def _find_executable(self, exe_name, search_paths):
+        """Find executable in common paths."""
+        import os
+
+        for base_path in search_paths:
+            if not os.path.exists(base_path):
+                continue
+
+            for root, dirs, files in os.walk(base_path):
+                if exe_name in files:
+                    return os.path.join(root, exe_name)
+
+                # Limit depth to avoid long searches
+                if len(root.split(os.sep)) - len(base_path.split(os.sep)) > 3:
+                    dirs[:] = []  # Don't recurse further
+
+        # Try system PATH
+        import shutil
+        system_path = shutil.which(exe_name)
+        if system_path:
+            return system_path
+
+        return None
+
+    def _parse_desktop_file(self, desktop_path):
+        """Parse Linux .desktop file."""
+        try:
+            with open(desktop_path, 'r') as f:
+                name = None
+                exec_cmd = None
+                icon = None
+
+                for line in f:
+                    if line.startswith('Name='):
+                        name = line.split('=', 1)[1].strip()
+                    elif line.startswith('Exec='):
+                        exec_cmd = line.split('=', 1)[1].strip()
+                    elif line.startswith('Icon='):
+                        icon = line.split('=', 1)[1].strip()
+
+                if name and exec_cmd:
+                    return {
+                        "name": name,
+                        "exe": exec_cmd.split()[0] if exec_cmd else "",
+                        "path": exec_cmd,
+                        "icon": icon or name.lower(),
+                        "category": self._get_category(name)
+                    }
+        except:
+            pass
+
+        return None
+
+    def _get_category(self, app_name):
+        """Categorize application."""
+        app_name_lower = app_name.lower()
+
+        if any(x in app_name_lower for x in ['code', 'vim', 'emacs', 'intellij', 'pycharm', 'sublime']):
+            return 'Development'
+        elif any(x in app_name_lower for x in ['chrome', 'firefox', 'edge', 'safari']):
+            return 'Web'
+        elif any(x in app_name_lower for x in ['word', 'excel', 'powerpoint', 'office']):
+            return 'Office'
+        elif any(x in app_name_lower for x in ['photoshop', 'illustrator', 'paint', 'gimp']):
+            return 'Graphics'
+        elif any(x in app_name_lower for x in ['spotify', 'vlc', 'itunes']):
+            return 'Media'
+        elif any(x in app_name_lower for x in ['slack', 'discord', 'teams', 'zoom']):
+            return 'Communication'
+        else:
+            return 'Other'
+
+    def _create_toolbar(self, layout):
+        """Create toolbar."""
+        toolbar = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(8, 6, 8, 6)
+        toolbar_layout.setSpacing(4)
+
+        # Add app button
+        add_app_btn = QPushButton("Add App")
+        add_app_btn.setToolTip("Add any application to the launcher")
+        add_app_btn.clicked.connect(self._add_custom_app)
+        toolbar_layout.addWidget(add_app_btn)
+
+        toolbar_layout.addWidget(self._separator())
+
+        # Refresh button
+        refresh_btn = QPushButton("Refresh Apps")
+        refresh_btn.setToolTip("Re-scan installed applications")
+        refresh_btn.clicked.connect(self._refresh_apps)
+        toolbar_layout.addWidget(refresh_btn)
+
+        toolbar_layout.addStretch()
+
+        # Stats
+        self.stats_label = QLabel(f"{len(self.installed_apps)} apps")
+        self.stats_label.setStyleSheet("color: #666; font-size: 11px;")
+        toolbar_layout.addWidget(self.stats_label)
+
+        # Export button
+        export_btn = QPushButton("Export History")
+        export_btn.setToolTip("Export app usage history for AI context")
+        export_btn.clicked.connect(self._export_history)
+        toolbar_layout.addWidget(export_btn)
+
+        layout.addWidget(toolbar)
+
+    def _populate_apps(self, filter_text=""):
+        """Populate apps grid."""
+        # Clear existing
+        for i in reversed(range(self.apps_layout.count())):
+            self.apps_layout.itemAt(i).widget().setParent(None)
+
+        # Filter and sort apps
+        filtered_apps = [
+            app for app in self.installed_apps
+            if filter_text.lower() in app["name"].lower()
+        ]
+
+        # Sort by category, then name
+        filtered_apps.sort(key=lambda x: (x["category"], x["name"]))
+
+        # Group by category
+        categories = {}
+        for app in filtered_apps:
+            cat = app["category"]
+            if cat not in categories:
+                categories[cat] = []
+            categories[cat].append(app)
+
+        # Display
+        row, col = 0, 0
+        max_cols = 4
+
+        for category, apps in sorted(categories.items()):
+            # Category header
+            cat_label = QLabel(category)
+            cat_label.setStyleSheet("font-weight: bold; color: #666; margin-top: 10px;")
+            self.apps_layout.addWidget(cat_label, row, 0, 1, max_cols)
+            row += 1
+
+            # Apps in category
+            for app in apps:
+                app_btn = self._create_app_button(app)
+                self.apps_layout.addWidget(app_btn, row, col)
+                col += 1
+                if col >= max_cols:
+                    col = 0
+                    row += 1
+
+            # Add spacing after category
+            row += 1
+            col = 0
+
+    def _create_app_button(self, app):
+        """Create app launch button."""
+        btn = QPushButton()
+        btn.setMinimumSize(120, 100)
+        btn.setMaximumSize(120, 100)
+
+        # Simple layout with icon and name
+        layout = QVBoxLayout(btn)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Icon (using emoji for now)
+        icon_map = {
+            'Development': '',
+            'Web': '',
+            'Office': '',
+            'Graphics': "",
+            'Media': "",
+            'Communication': "",
+            'Other': ""
+        }
+        icon = icon_map.get(app['category'], "")
+
+        icon_label = QLabel(icon)
+        icon_label.setStyleSheet("font-size: 32px;")
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(icon_label)
+
+        # Name (wrapped)
+        name_label = QLabel(app["name"])
+        name_label.setWordWrap(True)
+        name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        name_label.setStyleSheet("font-size: 11px;")
+        layout.addWidget(name_label)
+
+        # Click handler
+        btn.clicked.connect(lambda: self._launch_app(app))
+
+        return btn
+
+    def _launch_app(self, app):
+        """Launch an application."""
+        pid = None
+        process = None
+
+        try:
+            import subprocess
+            import os
+
+            if sys.platform == 'win32':
+                # Windows: use start command or subprocess
+                if app["path"]:
+                    process = subprocess.Popen(
+                        app["path"],
+                        shell=True
+                    )
+                    pid = process.pid
+                else:
+                    # Fallback: use start command
+                    subprocess.Popen(["start", app["exe"]], shell=True)
+                    pid = None
+            elif sys.platform == 'darwin':
+                # macOS: use open command
+                process = subprocess.Popen(
+                    ["open", app["path"]],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                pid = process.pid
+            else:
+                # Linux: use app path directly
+                process = subprocess.Popen(
+                    app["path"].split(),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                pid = process.pid
+
+            # Track the launched app
+            if pid:
+                self.running_apps[app["name"]] = {
+                    "pid": pid,
+                    "start_time": time.time(),
+                    "process": process,
+                    "app_info": app
+                }
+
+                # Update running list
+                self._update_running_list()
+
+            # Track in kernel (with error handling)
+            try:
+                if self.kernel and pid:
+                    self.kernel.emit("app.launched", {
+                        "app_name": app["name"],
+                        "exe": app["exe"],
+                        "pid": pid,
+                        "timestamp": time.time()
+                    })
+
+                    # Store in memory
+                    self.kernel.memory.store(
+                        content=f"Launched application: {app['name']}",
+                        type="app_launch",
+                        metadata={
+                            "app_name": app["name"],
+                            "exe": app["exe"],
+                            "category": app["category"],
+                            "pid": pid,
+                            "timestamp": time.time()
+                        }
+                    )
+            except Exception as kernel_error:
+                print(f"[AppLauncher] Warning: Kernel tracking failed: {kernel_error}")
+
+            # Show feedback
+            if hasattr(self, 'status_label'):
+                self.status_label.setText(f"Launched {app['name']}")
+
+        except Exception as e:
+            import traceback
+            print(f"[AppLauncher] Launch error: {e}")
+            traceback.print_exc()
+
+            QMessageBox.warning(
+                self,
+                "Launch Error",
+                f"Failed to launch {app.get('name', 'application')}: {e}"
+            )
+
+    def _monitor_apps(self):
+        """Monitor running applications."""
+        import subprocess
+
+        still_running = {}
+
+        for app_name, app_info in self.running_apps.items():
+            pid = app_info["pid"]
+
+            # Check if process is still running
+            if sys.platform == 'win32':
+                try:
+                    # On Windows, use tasklist
+                    result = subprocess.run(
+                        ["tasklist", "/FI", f"PID eq {pid}"],
+                        capture_output=True,
+                        text=True
+                    )
+                    is_running = str(pid) in result.stdout
+                except:
+                    is_running = False
+            else:
+                try:
+                    # On Unix, use ps
+                    os.kill(pid, 0)  # Test if process exists
+                    is_running = True
+                except OSError:
+                    is_running = False
+
+            if is_running:
+                still_running[app_name] = app_info
+            else:
+                # App ended
+                duration = time.time() - app_info["start_time"]
+
+                # Track in kernel
+                if self.kernel:
+                    self.kernel.emit("app.closed", {
+                        "app_name": app_name,
+                        "pid": pid,
+                        "duration_seconds": duration,
+                        "timestamp": time.time()
+                    })
+
+                    # Store in memory
+                    self.kernel.memory.store(
+                        content=f"Closed application: {app_name} (ran for {duration:.1f} seconds)",
+                        type="app_close",
+                        metadata={
+                            "app_name": app_name,
+                            "duration": duration,
+                            "timestamp": time.time()
+                        }
+                    )
+
+        self.running_apps = still_running
+        self._update_running_list()
+
+    def _update_running_list(self):
+        """Update the running apps list."""
+        self.running_list.clear()
+
+        for app_name, app_info in self.running_apps.items():
+            duration = time.time() - app_info["start_time"]
+            item = QListWidgetItem(
+                f"{app_name} (PID: {app_info['pid']}, {int(duration)}s)"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, app_name)
+            self.running_list.addItem(item)
+
+    def _focus_app(self, item):
+        """Focus on a running application."""
+        app_name = item.data(Qt.ItemDataRole.UserRole)
+        # Could implement bringing app to foreground here
+        QMessageBox.information(
+            self,
+            "App Info",
+            f"{app_name} is running.\n\n"
+            f"PID: {self.running_apps[app_name]['pid']}\n"
+            f"Running for: {int(time.time() - self.running_apps[app_name]['start_time'])}s"
+        )
+
+    def _filter_apps(self, text):
+        """Filter apps by search text."""
+        self._populate_apps(text)
+
+    def _separator(self):
+        """Create a separator widget."""
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        return sep
+
+    def _add_custom_app(self):
+        """Add a custom application to the launcher."""
+        # Open file dialog to select executable
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Application",
+            "",
+            "Executables (*.exe *.bat *.cmd *.lnk);;All Files (*)"
+        )
+
+        if not file_path:
+            return
+
+        # Ask for app name
+        import os
+        default_name = os.path.splitext(os.path.basename(file_path))[0]
+        app_name, ok = QInputDialog.getText(
+            self,
+            "Add Application",
+            "Application name:",
+            text=default_name
+        )
+
+        if not ok or not app_name.strip():
+            return
+
+        # Add to installed apps
+        new_app = {
+            "name": app_name.strip(),
+            "exe": os.path.basename(file_path),
+            "path": file_path,
+            "icon": app_name.strip().lower(),
+            "category": self._get_category(app_name),
+            "custom": True  # Mark as custom app
+        }
+
+        self.installed_apps.append(new_app)
+        self._populate_apps()
+        self.stats_label.setText(f"{len(self.installed_apps)} apps")
+
+        # Save custom apps to file for persistence
+        self._save_custom_apps()
+
+    def _save_custom_apps(self):
+        """Save custom apps to a JSON file for persistence."""
+        import os
+        custom_apps = [app for app in self.installed_apps if app.get("custom", False)]
+
+        if not custom_apps:
+            return
+
+        try:
+            config_dir = os.path.expanduser("~/.semantic_os")
+            os.makedirs(config_dir, exist_ok=True)
+            config_file = os.path.join(config_dir, "custom_apps.json")
+
+            with open(config_file, 'w') as f:
+                json.dump(custom_apps, f, indent=2)
+
+        except Exception as e:
+            print(f"[AppLauncher] Failed to save custom apps: {e}")
+
+    def _load_custom_apps(self):
+        """Load custom apps from JSON file."""
+        import os
+
+        try:
+            config_dir = os.path.expanduser("~/.semantic_os")
+            config_file = os.path.join(config_dir, "custom_apps.json")
+
+            if not os.path.exists(config_file):
+                return []
+
+            with open(config_file, 'r') as f:
+                custom_apps = json.load(f)
+
+            return custom_apps
+
+        except Exception as e:
+            print(f"[AppLauncher] Failed to load custom apps: {e}")
+            return []
+
+    def _refresh_apps(self):
+        """Refresh installed apps list."""
+        # First, load custom apps
+        custom_apps = self._load_custom_apps()
+
+        # Then detect system apps
+        system_apps = self._detect_installed_apps()
+
+        # Combine (custom apps first, then system apps)
+        self.installed_apps = custom_apps + system_apps
+
+        # Remove duplicates based on path
+        seen_paths = set()
+        unique_apps = []
+        for app in self.installed_apps:
+            if app["path"] not in seen_paths:
+                unique_apps.append(app)
+                seen_paths.add(app["path"])
+
+        self.installed_apps = unique_apps
+        self._populate_apps()
+        self.stats_label.setText(f"{len(self.installed_apps)} apps")
+
+    def _export_history(self):
+        """Export app usage history."""
+        history = {
+            "session_start": self.session_start,
+            "duration_minutes": (time.time() - self.session_start) / 60,
+            "installed_apps": len(self.installed_apps),
+            "currently_running": len(self.running_apps),
+            "running_apps": [
+                {
+                    "name": name,
+                    "pid": info["pid"],
+                    "duration_seconds": time.time() - info["start_time"]
+                }
+                for name, info in self.running_apps.items()
+            ]
+        }
+
+        # Show dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Export App History")
+        layout = QVBoxLayout(dialog)
+
+        preview = QPlainTextEdit()
+        preview.setReadOnly(True)
+        preview.setPlainText(json.dumps(history, indent=2))
+        layout.addWidget(QLabel("App Usage History (JSON):"))
+        layout.addWidget(preview)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Close
+        )
+        buttons.closeRequested.connect(dialog.close)
+        buttons.addButton("Copy to Clipboard", QDialogButtonBox.ButtonRole.ActionRole).clicked.connect(
+            lambda: QApplication.clipboard().setText(json.dumps(history, indent=2))
+        )
+        layout.addWidget(buttons)
+
+        dialog.exec()
+
+    def _apply_dark_mode(self):
+        """Apply dark mode styling."""
+        dark_style = """
+            QWidget {
+                background-color: #1e1e1e;
+                color: #d4d4d4;
+            }
+            QLineEdit {
+                background-color: #2d2d2d;
+                color: #d4d4d4;
+                border: 1px solid #444;
+                padding: 6px;
+                border-radius: 3px;
+            }
+            QPushButton {
+                background-color: #3d3d3d;
+                color: #d4d4d4;
+                border: 1px solid #555;
+                padding: 8px;
+                border-radius: 4px;
+                min-height: 60px;
+            }
+            QPushButton:hover {
+                background-color: #4d4d4d;
+            }
+            QListWidget {
+                background-color: #2d2d2d;
+                color: #d4d4d4;
+                border: 1px solid #444;
+                border-radius: 3px;
+            }
+            QScrollArea {
+                border: none;
+            }
+        """
+        self.setStyleSheet(dark_style)
+
+
+class GridWindowManager(QWidget):
+    """A grid-based window manager with drag-and-drop functionality.
+
+    Allows arranging tabs/windows in a customizable grid layout.
+    You can drag tabs into different grid cells, resize cells, and
+    rearrange your workspace.
+    """
+
+    def __init__(self, kernel=None, dark_mode=False, rows=2, cols=2, parent=None):
+        super().__init__(parent)
+        self.kernel = kernel
+        self.dark_mode = dark_mode
+        self.rows = rows
+        self.cols = cols
+
+        # Store widgets in grid cells
+        self.grid_widgets = {}  # (row, col) -> widget
+
+        self.setAcceptDrops(True)
+        self.setup_ui()
+
+    def setup_ui(self):
+        """Setup the grid UI."""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Toolbar
+        toolbar = self._create_toolbar()
+        layout.addWidget(toolbar)
+
+        # Grid container
+        self.grid_widget = QWidget()
+        self.grid_layout = QGridLayout(self.grid_widget)
+        self.grid_layout.setSpacing(2)
+        self.grid_layout.setContentsMargins(2, 2, 2, 2)
+
+        # Create initial grid cells
+        self._create_grid_cells()
+
+        layout.addWidget(self.grid_widget)
+
+        # Apply styling
+        if self.dark_mode:
+            self._apply_dark_mode()
+
+    def _create_toolbar(self):
+        """Create toolbar for grid controls."""
+        from PyQt6.QtWidgets import QToolBar
+
+        toolbar = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(8, 6, 8, 6)
+
+        # Add row button
+        add_row_btn = QPushButton("+ Row")
+        add_row_btn.clicked.connect(self.add_row)
+        toolbar_layout.addWidget(add_row_btn)
+
+        # Add column button
+        add_col_btn = QPushButton("+ Column")
+        add_col_btn.clicked.connect(self.add_column)
+        toolbar_layout.addWidget(add_col_btn)
+
+        # Reset button
+        reset_btn = QPushButton("Reset Grid")
+        reset_btn.clicked.connect(lambda: self._reset_grid(2, 2))
+        toolbar_layout.addWidget(reset_btn)
+
+        toolbar_layout.addStretch()
+
+        # Info label
+        self.info_label = QLabel(f"Grid: {self.rows}x{self.cols}")
+        toolbar_layout.addWidget(self.info_label)
+
+        return toolbar
+
+    def _create_grid_cells(self):
+        """Create initial grid cells."""
+        # Clear existing
+        for i in reversed(range(self.grid_layout.count())):
+            self.grid_layout.itemAt(i).widget().setParent(None)
+
+        self.grid_widgets = {}
+
+        # Create cells
+        for row in range(self.rows):
+            for col in range(self.cols):
+                cell = GridCell(row, col, self.dark_mode, self)
+                cell.widget_dropped.connect(self._on_widget_dropped)
+                cell.widget_removed.connect(self._on_widget_removed)
+                self.grid_layout.addWidget(cell, row, col)
+                self.grid_widgets[(row, col)] = cell
+
+        # Make rows/columns resizable
+        for row in range(self.rows):
+            self.grid_layout.setRowStretch(row, 1)
+        for col in range(self.cols):
+            self.grid_layout.setColumnStretch(col, 1)
+
+    def _on_widget_dropped(self, row, col, widget):
+        """Handle widget dropped into a cell."""
+        self.grid_widgets[(row, col)].set_widget(widget)
+
+        # Track in kernel
+        if self.kernel:
+            self.kernel.emit("grid.widget_added", {
+                "row": row,
+                "col": col,
+                "widget_type": type(widget).__name__,
+                "timestamp": time.time()
+            })
+
+    def _on_widget_removed(self, row, col):
+        """Handle widget removed from a cell."""
+        if self.kernel:
+            self.kernel.emit("grid.widget_removed", {
+                "row": row,
+                "col": col,
+                "timestamp": time.time()
+            })
+
+    def add_row(self):
+        """Add a new row to the grid."""
+        # Remove old widgets
+        for col in range(self.cols):
+            widget = self.grid_widgets.get((self.rows - 1, col))
+            if widget:
+                self.grid_layout.removeWidget(widget)
+
+        self.rows += 1
+        self._create_grid_cells()
+        self.info_label.setText(f"Grid: {self.rows}x{self.cols}")
+
+    def add_column(self):
+        """Add a new column to the grid."""
+        self.cols += 1
+        self._create_grid_cells()
+        self.info_label.setText(f"Grid: {self.rows}x{self.cols}")
+
+    def _reset_grid(self, rows, cols):
+        """Reset grid to specified dimensions."""
+        self.rows = rows
+        self.cols = cols
+        self._create_grid_cells()
+        self.info_label.setText(f"Grid: {self.rows}x{self.cols}")
+
+    def _apply_dark_mode(self):
+        """Apply dark mode styling."""
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #1e1e1e;
+                color: #d4d4d4;
+            }
+            QPushButton {
+                background-color: #3d3d3d;
+                color: #d4d4d4;
+                border: 1px solid #555;
+                padding: 4px 8px;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #4d4d4d;
+            }
+        """)
+
+
+class GridCell(QFrame):
+    """A single cell in the grid that can hold a widget."""
+
+    widget_dropped = pyqtSignal(int, int, QWidget)  # row, col, widget
+    widget_removed = pyqtSignal(int, int)  # row, col
+
+    def __init__(self, row, col, dark_mode=False, parent=None):
+        super().__init__(parent)
+        self.row = row
+        self.col = col
+        self.dark_mode = dark_mode
+        self.widget = None
+
+        self.setAcceptDrops(True)
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setup_ui()
+
+    def setup_ui(self):
+        """Setup the cell UI."""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Placeholder when empty
+        self.placeholder = QLabel("Drop tab here")
+        self.placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.placeholder.setStyleSheet("color: #666; font-size: 11px;")
+        layout.addWidget(self.placeholder)
+
+        # Apply cell styling
+        self._update_style()
+
+    def _update_style(self):
+        """Update cell style based on state."""
+        if self.widget:
+            self.setStyleSheet("""
+                QFrame {
+                    border: 1px solid #444;
+                    background-color: #2d2d2d;
+                    border-radius: 4px;
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                QFrame {
+                    border: 2px dashed #666;
+                    background-color: #1e1e1e;
+                    border-radius: 4px;
+                }
+            """)
+
+    def set_widget(self, widget):
+        """Set the widget in this cell."""
+        # Remove existing widget if any
+        if self.widget:
+            self.layout().removeWidget(self.widget)
+            self.widget.setParent(None)
+
+        self.widget = widget
+        self.placeholder.setVisible(False)
+
+        # Add widget to layout
+        self.layout().addWidget(widget)
+
+        # Make sure widget is visible
+        widget.setVisible(True)
+        widget.show()
+
+        # Update the layout
+        self.layout().update()
+
+        self._update_style()
+
+    def remove_widget(self):
+        """Remove the widget from this cell."""
+        if self.widget:
+            self.layout().removeWidget(self.widget)
+            self.widget = None
+            self.placeholder.setVisible(True)
+            self._update_style()
+            self.widget_removed.emit(self.row, self.col)
+
+    def dragEnterEvent(self, event):
+        """Handle drag enter event."""
+        if event.mimeData().hasFormat("application/x-tab"):
+            event.acceptProposedAction()
+            self.setStyleSheet("""
+                QFrame {
+                    border: 2px dashed #007acc;
+                    background-color: #2a2d2e;
+                    border-radius: 4px;
+                }
+            """)
+
+    def dragLeaveEvent(self, event):
+        """Handle drag leave event."""
+        self._update_style()
+
+    def dropEvent(self, event):
+        """Handle drop event."""
+        # Get the widget data
+        data = event.mimeData().data("application/x-tab")
+        # For now, this is a placeholder - actual implementation would
+        # need to serialize/deserialize widgets
+
+        self._update_style()
+
+        # Emit signal (in real implementation, would pass actual widget)
+        self.widget_dropped.emit(self.row, self.col, None)
+
+
+class DiffViewer(QWidget):
+    """Widget to display file changes with before/after diff view."""
+
+    applied = pyqtSignal()  # Signal when changes are applied
+    rejected = pyqtSignal()  # Signal when changes are rejected
+
+    def __init__(self, file_path, old_content, new_content, parent=None):
+        super().__init__(parent)
+        self.file_path = file_path
+        self.old_content = old_content
+        self.new_content = new_content
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        # Header with file path
+        header = QLabel(f"📝 {file_path}")
+        header.setStyleSheet("font-weight: bold; font-size: 13px; color: #333;")
+        layout.addWidget(header)
+
+        # Diff view
+        self.diff_view = QPlainTextEdit()
+        self.diff_view.setReadOnly(True)
+        self.diff_view.setFont(QFont("Consolas", 10))
+        self.diff_view.setStyleSheet("""
+            QPlainTextEdit {
+                background-color: #f5f5f5;
+                border: 1px solid #ddd;
+                padding: 8px;
+            }
+        """)
+        self.diff_view.setPlainText(self._generate_diff())
+        layout.addWidget(self.diff_view)
+
+        # Button row
+        button_row = QHBoxLayout()
+        button_row.setSpacing(8)
+
+        self.apply_btn = QPushButton("✓ Apply Changes")
+        self.apply_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                padding: 6px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        self.apply_btn.clicked.connect(self._apply_changes)
+        button_row.addWidget(self.apply_btn)
+
+        self.reject_btn = QPushButton("✗ Reject")
+        self.reject_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f44336;
+                color: white;
+                padding: 6px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #da190b;
+            }
+        """)
+        self.reject_btn.clicked.connect(self._reject_changes)
+        button_row.addWidget(self.reject_btn)
+
+        button_row.addStretch()
+        layout.addLayout(button_row)
+
+    def _generate_diff(self):
+        """Generate a unified diff showing changes."""
+        import difflib
+        old_lines = self.old_content.splitlines(keepends=True)
+        new_lines = self.new_content.splitlines(keepends=True)
+
+        diff = difflib.unified_diff(
+            old_lines,
+            new_lines,
+            fromfile=f"Original: {self.file_path}",
+            tofile=f"Modified: {self.file_path}",
+            lineterm=""
+        )
+
+        return "".join(diff)
+
+    def _apply_changes(self):
+        """Apply the changes to the file."""
+        try:
+            # Write new content to file
+            with open(self.file_path, 'w', encoding='utf-8') as f:
+                f.write(self.new_content)
+
+            self.applied.emit()
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to apply changes: {e}")
+
+    def _reject_changes(self):
+        """Reject the changes."""
+        self.rejected.emit()
+
+
+class FileOperationWidget(QWidget):
+    """Widget to display a file operation in chat."""
+
+    def __init__(self, operation, file_path, details="", parent=None):
+        super().__init__(parent)
+        self.operation = operation  # "read", "write", "create", "delete"
+        self.file_path = file_path
+        self.details = details
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(4)
+
+        # Icon based on operation
+        icons = {
+            "read": "📖",
+            "write": "✏️",
+            "create": "📄",
+            "delete": "🗑️",
+            "ingest": "📦",
+        }
+        icon = icons.get(operation, "📁")
+
+        # Operation label
+        op_label = QLabel(f"{icon} {operation.upper()}: {file_path}")
+        op_label.setStyleSheet("font-weight: bold; font-size: 12px;")
+
+        # Color by operation type
+        colors = {
+            "read": "#2196F3",
+            "write": "#FF9800",
+            "create": "#4CAF50",
+            "delete": "#F44336",
+            "ingest": "#9C27B0",
+        }
+        color = colors.get(operation, "#666")
+        op_label.setStyleSheet(f"font-weight: bold; font-size: 12px; color: {color};")
+
+        layout.addWidget(op_label)
+
+        # Details if provided
+        if details:
+            details_label = QLabel(details)
+            details_label.setStyleSheet("color: #666; font-size: 11px; padding-left: 20px;")
+            details_label.setWordWrap(True)
+            layout.addWidget(details_label)
+
+
 class LLMWorker(QThread):
     """Background worker for LLM API calls."""
-    finished = pyqtSignal(str)
+    finished = pyqtSignal(object)  # Changed from str to object to support dict
     error = pyqtSignal(str)
 
     def __init__(self, call_fn, messages, parent=None):
@@ -868,22 +3112,12 @@ class ChatPanel(QWidget):
     - Slash commands for power users
     """
 
-    # Slash commands mapped to provider actions
+    # Slash commands - only essential file operations
     SLASH_COMMANDS = {
-        "/intent": ("intent_map", "Generate Intent Map"),
-        "/cite": ("citation_helper", "Find claims without citations"),
-        "/diff": ("diff_narrator", "Describe changes since last save"),
-        "/outline": ("outline_enhancer", "Suggest outline improvements"),
-        "/actions": ("action_extractor", "Extract action items"),
-        "/typos": ("typo_fixer", "Fix typos in document"),
-        "/suggest": ("suggestions", "Get text suggestions"),
-        "/complete": ("code_complete", "Complete code at cursor"),
-        "/explain": ("code_explain", "Explain selected code"),
-        "/edit": ("code_edit", "Edit code with instruction"),
-        "/generate": ("code_generate", "Generate code from description"),
-        "/history": (None, "Show spine event history (episodic memory)"),
-        "/kernel": (None, "Show kernel state (contexts, events)"),
-        "/manifest": (None, "Show/edit document manifest (permissions)"),
+        "/read": ("file_read", "Read a file"),
+        "/write": ("file_write", "Write to a file"),
+        "/ingest": ("file_ingest", "Ingest a large file into context"),
+        "/ls": ("file_list", "List files"),
         "/help": (None, "Show available commands"),
     }
 
@@ -901,41 +3135,6 @@ class ChatPanel(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        # Provider quick actions row
-        provider_row = QHBoxLayout()
-        provider_row.setSpacing(4)
-
-        provider_label = QLabel("Quick:")
-        provider_label.setStyleSheet("color: #666; font-size: 11px;")
-        provider_row.addWidget(provider_label)
-
-        self.intent_btn = QPushButton("Intent")
-        self.intent_btn.setToolTip("Generate Intent Map of document")
-        self.intent_btn.setMaximumWidth(60)
-        self.intent_btn.clicked.connect(lambda: self._run_provider("intent_map"))
-        provider_row.addWidget(self.intent_btn)
-
-        self.explain_btn = QPushButton("Explain")
-        self.explain_btn.setToolTip("Explain selected code/text")
-        self.explain_btn.setMaximumWidth(60)
-        self.explain_btn.clicked.connect(lambda: self._run_provider("code_explain"))
-        provider_row.addWidget(self.explain_btn)
-
-        self.complete_btn = QPushButton("Complete")
-        self.complete_btn.setToolTip("Complete code at cursor")
-        self.complete_btn.setMaximumWidth(70)
-        self.complete_btn.clicked.connect(lambda: self._run_provider("code_complete"))
-        provider_row.addWidget(self.complete_btn)
-
-        self.actions_btn = QPushButton("Actions")
-        self.actions_btn.setToolTip("Extract action items")
-        self.actions_btn.setMaximumWidth(60)
-        self.actions_btn.clicked.connect(lambda: self._run_provider("action_extractor"))
-        provider_row.addWidget(self.actions_btn)
-
-        provider_row.addStretch()
-        layout.addLayout(provider_row)
-
         # Chat display area
         self.chat_display = QTextBrowser()
         self.chat_display.setOpenExternalLinks(True)
@@ -949,36 +3148,12 @@ class ChatPanel(QWidget):
         """)
         layout.addWidget(self.chat_display, stretch=1)
 
-        # Context buttons row
-        context_row = QHBoxLayout()
-        context_row.setSpacing(4)
-
-        self.include_selection_btn = QPushButton("+ Selection")
-        self.include_selection_btn.setToolTip("Include selected text in your message")
-        self.include_selection_btn.setCheckable(True)
-        self.include_selection_btn.setMaximumWidth(100)
-        context_row.addWidget(self.include_selection_btn)
-
-        self.include_doc_btn = QPushButton("+ Document")
-        self.include_doc_btn.setToolTip("Include full document in your message")
-        self.include_doc_btn.setCheckable(True)
-        self.include_doc_btn.setMaximumWidth(100)
-        context_row.addWidget(self.include_doc_btn)
-
-        self.clear_btn = QPushButton("Clear")
-        self.clear_btn.setMaximumWidth(50)
-        self.clear_btn.clicked.connect(self.clear_chat)
-        context_row.addWidget(self.clear_btn)
-
-        context_row.addStretch()
-        layout.addLayout(context_row)
-
         # Input area
         input_row = QHBoxLayout()
         input_row.setSpacing(4)
 
         self.input_field = QPlainTextEdit()
-        self.input_field.setPlaceholderText("Type message or /help for commands... (Ctrl+Enter to send)")
+        self.input_field.setPlaceholderText("Ask anything about your files...")
         self.input_field.setMaximumHeight(80)
         self.input_field.setFont(QFont("Segoe UI", 10))
         input_row.addWidget(self.input_field, stretch=1)
@@ -988,6 +3163,13 @@ class ChatPanel(QWidget):
         self.send_btn.setMinimumHeight(40)
         self.send_btn.clicked.connect(self.send_message)
         input_row.addWidget(self.send_btn)
+
+        self.clear_chat_btn = QPushButton("Clear")
+        self.clear_chat_btn.setToolTip("Clear conversation history")
+        self.clear_chat_btn.setMinimumWidth(50)
+        self.clear_chat_btn.setMinimumHeight(40)
+        self.clear_chat_btn.clicked.connect(self.clear_chat)
+        input_row.addWidget(self.clear_chat_btn)
 
         layout.addLayout(input_row)
 
@@ -1055,13 +3237,53 @@ class ChatPanel(QWidget):
         """Add an error message to the display."""
         self.chat_display.append(f'<p style="color: #d32f2f;"><b>Error:</b> {text}</p>')
 
+    def show_file_operation(self, operation, file_path, details=""):
+        """Show a file operation in the chat."""
+        widget = FileOperationWidget(operation, file_path, details)
+
+        # Insert as a widget in the chat
+        cursor = self.chat_display.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.chat_display.setTextCursor(cursor)
+
+        # Insert the widget
+        self.chat_display.insertPlainText("\n")
+        cursor.insertText(f"[{operation.upper()}] {file_path}")
+        if details:
+            cursor.insertText(f"\n{details}")
+        self.chat_display.insertPlainText("\n")
+
+    def show_file_diff(self, file_path, old_content, new_content):
+        """Show a diff viewer for file changes."""
+        # Create a dialog with the diff viewer
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Review Changes: {file_path}")
+        dialog.setMinimumSize(700, 500)
+
+        layout = QVBoxLayout(dialog)
+
+        diff_viewer = DiffViewer(file_path, old_content, new_content)
+        layout.addWidget(diff_viewer)
+
+        # Handle apply/reject
+        diff_viewer.applied.connect(lambda: self._on_diff_applied(dialog, file_path))
+        diff_viewer.rejected.connect(dialog.reject)
+
+        dialog.exec()
+
+    def _on_diff_applied(self, dialog, file_path):
+        """Handle when diff changes are applied."""
+        dialog.accept()
+        self._append_system_message(f"✓ Changes applied to {file_path}")
+        self._scroll_to_bottom()
+
     def clear_chat(self):
         """Clear the chat history."""
         self.messages = []
         self.chat_display.clear()
         self._append_system_message("Chat cleared. Ready for new conversation.")
 
-    def _run_provider(self, provider_name):
+    def _run_provider(self, provider_name, args=""):
         """Run a provider and display the result in chat."""
         if not self.execute_provider_callback:
             self._append_error_message("Provider execution not available.")
@@ -1072,7 +3294,7 @@ class ChatPanel(QWidget):
 
         # Run provider in background thread
         self.current_worker = LLMWorker(
-            lambda _: self.execute_provider_callback(provider_name),
+            lambda _: self.execute_provider_callback(provider_name, args),
             None
         )
         self.current_worker.finished.connect(self._on_provider_response)
@@ -1083,7 +3305,31 @@ class ChatPanel(QWidget):
         """Handle provider result."""
         self._stop_loading()
         if result:
-            self._append_assistant_message(result)
+            # Check if result is a file operation
+            if isinstance(result, dict):
+                operation = result.get("operation")
+                file_path = result.get("file_path")
+                old_content = result.get("old_content", "")
+                new_content = result.get("new_content", "")
+                message = result.get("message", "")
+
+                if operation in ("write", "create"):
+                    # Show diff for file changes
+                    self._append_assistant_message(message or f"Proposed changes to {file_path}")
+                    self.show_file_diff(file_path, old_content, new_content)
+                elif operation == "read":
+                    self.show_file_operation("read", file_path)
+                    self._append_assistant_message(new_content)
+                elif operation == "ingest":
+                    # Show file ingestion summary
+                    self._append_assistant_message(message)
+                    self.show_file_operation("ingest", file_path, "File stored in semantic memory for AI context")
+                else:
+                    # Unknown operation, just show the message
+                    self._append_assistant_message(str(result))
+            else:
+                # Regular text result
+                self._append_assistant_message(result)
         else:
             self._append_system_message(f"Provider returned no output.")
         self._scroll_to_bottom()
@@ -1223,37 +3469,51 @@ class ChatPanel(QWidget):
 
         # Check for slash commands
         if user_text.startswith("/"):
-            cmd = user_text.split()[0].lower()
+            parts = user_text.split(" ", 1)
+            cmd = parts[0].lower()
+            args = parts[1] if len(parts) > 1 else ""
+
             if cmd in self.SLASH_COMMANDS:
                 self.input_field.clear()
                 provider_name, desc = self.SLASH_COMMANDS[cmd]
                 if cmd == "/help":
                     self._show_help()
-                elif cmd == "/history":
-                    self._show_history()
-                elif cmd == "/kernel":
-                    self._show_kernel()
-                elif cmd == "/manifest":
-                    self._show_manifest()
                 elif provider_name:
                     self._append_user_message(user_text)
-                    self._run_provider(provider_name)
+                    self._run_provider(provider_name, args)
                 return
 
-        # Build the full message with context
+        # Build the full message with automatic context
         full_message = user_text
         context_parts = []
 
+        # Automatically include semantic memory if available
+        if self.get_kernel_callback:
+            try:
+                main_window = self.window()
+                if hasattr(main_window, 'tabs'):
+                    for i in range(main_window.tabs.count()):
+                        tab = main_window.tabs.widget(i)
+                        if hasattr(tab, 'kernel') and tab.kernel:
+                            results = tab.kernel.memory.search(user_text, limit=3)  # Get 3 results for better context
+                            if results:
+                                context_parts.append("=== RELEVANT CODE FROM YOUR FILES ===")
+                                for result in results:
+                                    metadata = result.get('metadata', {})
+                                    file_path = metadata.get('file_path', 'Unknown')
+                                    chunk_idx = metadata.get('chunk_index', '?')
+                                    content = result.get('content', '')[:1000]  # More context
+                                    context_parts.append(f"\n--- File: {os.path.basename(file_path)} (chunk {chunk_idx}) ---\n{content}")
+                                context_parts.append("=== END CONTEXT ===\n")
+                            break
+            except:
+                pass  # Silent fail if memory search doesn't work
+
+        # Automatically include selection if there is one
         if self.get_context_callback:
             selection, document = self.get_context_callback()
-
-            if self.include_selection_btn.isChecked() and selection:
+            if selection:
                 context_parts.append(f"[Selected text]\n{selection}\n[/Selected text]")
-                self.include_selection_btn.setChecked(False)
-
-            if self.include_doc_btn.isChecked() and document:
-                context_parts.append(f"[Document]\n{document}\n[/Document]")
-                self.include_doc_btn.setChecked(False)
 
         if context_parts:
             full_message = "\n\n".join(context_parts) + "\n\n" + user_text
@@ -1332,8 +3592,18 @@ class ChatPanel(QWidget):
         import urllib.request
         import re
 
-        # Build system prompt with lightweight document context
-        system_prompt = "You are a helpful assistant integrated into a document editor. Help the user with writing, coding, analysis, and any questions they have. Be concise but thorough."
+        # Build system prompt with explicit context instructions
+        system_prompt = """You are an AI coding assistant with access to the user's files through semantic search.
+
+**IMPORTANT: Use the provided context from the user's files to answer accurately.**
+
+When you see [Relevant context from your files], this is actual code/content from the user's project. Use it to:
+- Answer questions about their code
+- Explain how things work
+- Help with debugging
+- Make informed suggestions
+
+Be precise and reference the actual code shown in the context."""
 
         # Add lightweight document context (just structure, not full content)
         if self.get_context_callback:
@@ -1365,8 +3635,8 @@ class ChatPanel(QWidget):
                     {"role": "system", "content": system_prompt},
                     *messages
                 ],
-                "temperature": 0.7,
-                "max_tokens": 2048,
+                "temperature": 0.3,  # Lower for more accurate, deterministic answers
+                "max_tokens": 4096,  # Allow longer responses
                 "stream": False
             }
             if client.model:
@@ -1462,11 +3732,23 @@ class ContextLauncher(QWidget):
         add_btn.setToolTip("Add context to workspace")
         add_btn.clicked.connect(self._add_context)
         header.addWidget(add_btn)
+
+        remove_btn = QPushButton("-")
+        remove_btn.setMaximumWidth(30)
+        remove_btn.setToolTip("Remove selected from workspace")
+        remove_btn.clicked.connect(self._remove_selected)
+        header.addWidget(remove_btn)
+
         layout.addLayout(header)
 
         # Context list
         self.context_list = QListWidget()
         self.context_list.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self.context_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.context_list.customContextMenuRequested.connect(self._show_context_menu)
+        self.context_list.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # Install event filter for delete key
+        self.context_list.installEventFilter(self)
         layout.addWidget(self.context_list)
 
         # Status bar
@@ -1490,8 +3772,10 @@ class ContextLauncher(QWidget):
     def _normalize_path(self, path):
         """Normalize path to prevent duplicates from different path formats."""
         from pathlib import Path
-        # Resolve to absolute, normalize slashes, and lowercase on Windows
-        normalized = str(Path(path).resolve())
+        # Resolve to absolute, normalize slashes
+        resolved = str(Path(path).resolve())
+        # Convert backslashes to forward slashes and lowercase everything on Windows
+        normalized = resolved.replace('\\', '/')
         if sys.platform == "win32":
             normalized = normalized.lower()
         return normalized
@@ -1501,13 +3785,16 @@ class ContextLauncher(QWidget):
         from pathlib import Path
         normalized = self._normalize_path(path)
 
-        # Skip if already exists
+        # Check if already exists
         if normalized in self._contexts:
             # Just update status if already present
+            old_status = self._contexts[normalized]["status"]
             self._contexts[normalized]["status"] = status
             if context_id:
                 self._contexts[normalized]["context_id"] = context_id
-            self._refresh_list()
+            # Only refresh if status changed
+            if old_status != status:
+                self._refresh_list()
             return
 
         name = Path(path).name
@@ -1529,10 +3816,21 @@ class ContextLauncher(QWidget):
 
     def remove_context(self, path):
         """Remove a context from the workspace."""
-        normalized = self._normalize_path(path)
-        if normalized in self._contexts:
-            del self._contexts[normalized]
+        from PyQt6.QtWidgets import QMessageBox
+
+        # Try exact match first
+        if path in self._contexts:
+            del self._contexts[path]
             self._refresh_list()
+            return
+
+        # Try case-insensitive match
+        normalized = self._normalize_path(path)
+        for stored_path in list(self._contexts.keys()):
+            if self._normalize_path(stored_path) == normalized:
+                del self._contexts[stored_path]
+                self._refresh_list()
+                return
 
     def _refresh_list(self):
         """Refresh the context list display."""
@@ -1565,6 +3863,64 @@ class ContextLauncher(QWidget):
         if path:
             self.context_selected.emit(path)
 
+    def _show_context_menu(self, position):
+        """Show right-click context menu for list items."""
+        from PyQt6.QtWidgets import QMenu
+
+        item = self.context_list.itemAt(position)
+        if not item:
+            return
+
+        path = item.data(Qt.ItemDataRole.UserRole)
+        menu = QMenu(self)
+
+        # Open action
+        open_action = menu.addAction("Open")
+        open_action.triggered.connect(lambda checked=False, p=path: self.context_selected.emit(p))
+
+        # Remove action
+        remove_action = menu.addAction("Remove from Workspace")
+        remove_action.triggered.connect(lambda checked=False, p=path: self._remove_from_workspace(p))
+
+        menu.exec(self.context_list.mapToGlobal(position))
+
+    def _remove_selected(self):
+        """Remove the currently selected item."""
+        from PyQt6.QtWidgets import QMessageBox
+
+        current_item = self.context_list.currentItem()
+        if current_item:
+            path = current_item.data(Qt.ItemDataRole.UserRole)
+            if path:
+                self._remove_from_workspace(path)
+            else:
+                QMessageBox.warning(self, "Error", "No path data on selected item")
+        else:
+            QMessageBox.warning(self, "Error", "No item selected")
+
+    def _remove_from_workspace(self, path):
+        """Remove a file from the workspace and close if open."""
+        # Get the main window to access tabs
+        main_window = self.window()
+
+        if main_window and hasattr(main_window, 'tabs'):
+            # Find and close the tab if open
+            for i in range(main_window.tabs.count()):
+                tab = main_window.tabs.widget(i)
+                if hasattr(tab, 'file_path'):
+                    try:
+                        normalized_tab = self._normalize_path(tab.file_path)
+                        normalized_path = self._normalize_path(path)
+                        if normalized_tab == normalized_path:
+                            # Close the tab
+                            main_window.tabs.removeTab(i)
+                            break
+                    except:
+                        pass
+
+        # Remove from workspace list
+        self.remove_context(path)
+
     def get_contexts(self):
         """Get all registered context paths."""
         return list(self._contexts.keys())
@@ -1580,6 +3936,19 @@ class ContextLauncher(QWidget):
         for path in self._contexts:
             self._contexts[path]["status"] = "closed"
         self._refresh_list()
+
+    def eventFilter(self, obj, event):
+        """Handle key press events for the context list."""
+        if obj == self.context_list and event.type() == event.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Delete:
+                # Get selected item
+                current_item = self.context_list.currentItem()
+                if current_item:
+                    path = current_item.data(Qt.ItemDataRole.UserRole)
+                    if path:
+                        self._remove_from_workspace(path)
+                return True
+        return super().eventFilter(obj, event)
 
 
 class DesktopView(QWidget):
@@ -4081,6 +6450,10 @@ class MarkdownEditor(QMainWindow):
         self.kernel = init_kernel()
         self.kernel.spine.event_broadcast.connect(self._on_kernel_event)
 
+        # Initialize visual memory capture (screen recording)
+        self.visual_memory = None
+        self.visual_memory_running = False
+
         # Create shared AI client (LM Studio + local fallback)
         lm_studio_endpoint = self.workspace_config.get(
             "lm_studio_endpoint", "http://localhost:1234/v1"
@@ -4116,6 +6489,11 @@ class MarkdownEditor(QMainWindow):
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.setDocumentMode(True)
         self.tabs.currentChanged.connect(self.on_tab_changed)
+        self.tabs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tabs.customContextMenuRequested.connect(self.show_tab_context_menu)
+
+        # Track floating windows
+        self.floating_windows = []
 
         # Desktop view as permanent Home tab
         self.desktop_view = DesktopView()
@@ -4305,10 +6683,96 @@ class MarkdownEditor(QMainWindow):
 
         view_menu.addSeparator()
 
+        # Visual Memory controls
+        self.visual_memory_start_action = QAction("&Start Visual Memory", self)
+        self.visual_memory_start_action.setToolTip("Start capturing screenshots of your work")
+        self.visual_memory_start_action.triggered.connect(self.start_visual_memory)
+        view_menu.addAction(self.visual_memory_start_action)
+
+        self.visual_memory_stop_action = QAction("St&op Visual Memory", self)
+        self.visual_memory_stop_action.setToolTip("Stop capturing screenshots")
+        self.visual_memory_stop_action.setEnabled(False)
+        self.visual_memory_stop_action.triggered.connect(self.stop_visual_memory)
+        view_menu.addAction(self.visual_memory_stop_action)
+
+        self.visual_memory_browse_action = QAction("&Browse Visual Memory", self)
+        self.visual_memory_browse_action.setToolTip("Browse captured screenshots")
+        self.visual_memory_browse_action.triggered.connect(self.browse_visual_memory)
+        view_menu.addAction(self.visual_memory_browse_action)
+
+        view_menu.addSeparator()
+
         settings_action = QAction("&Settings...", self)
         settings_action.setShortcut(QKeySequence("Ctrl+,"))
         settings_action.triggered.connect(self.show_settings)
         view_menu.addAction(settings_action)
+
+        # Web menu
+        web_menu = menubar.addMenu("&Web")
+
+        new_browser_action = QAction("&New Browser Tab", self)
+        new_browser_action.setShortcut(QKeySequence("Ctrl+Shift+B"))
+        new_browser_action.triggered.connect(self.new_browser_tab)
+        web_menu.addAction(new_browser_action)
+
+        open_url_action = QAction("&Open URL...", self)
+        open_url_action.setShortcut(QKeySequence("Ctrl+U"))
+        open_url_action.triggered.connect(self.open_url_dialog)
+        web_menu.addAction(open_url_action)
+
+        # Terminal menu
+        terminal_menu = menubar.addMenu("&Terminal")
+
+        new_terminal_action = QAction("&New Terminal Tab", self)
+        new_terminal_action.setShortcut(QKeySequence("Ctrl+Shift+T"))
+        new_terminal_action.triggered.connect(self.new_terminal_tab)
+        terminal_menu.addAction(new_terminal_action)
+
+        terminal_menu.addSeparator()
+
+        terminal_grid_action = QAction("Terminal &Grid (2x2)", self)
+        terminal_grid_action.setShortcut(QKeySequence("Ctrl+Shift+G"))
+        terminal_grid_action.triggered.connect(self.new_terminal_grid)
+        terminal_menu.addAction(terminal_grid_action)
+
+        terminal_quad_action = QAction("&4 Terminals (Quad)", self)
+        terminal_quad_action.triggered.connect(lambda: self.new_terminal_grid(2, 2))
+        terminal_menu.addAction(terminal_quad_action)
+
+        # Apps menu
+        apps_menu = menubar.addMenu("&Apps")
+
+        new_app_launcher_action = QAction("&App Launcher", self)
+        new_app_launcher_action.setShortcut(QKeySequence("Ctrl+Shift+A"))
+        new_app_launcher_action.triggered.connect(self.new_app_launcher_tab)
+        apps_menu.addAction(new_app_launcher_action)
+
+        # Settings menu
+        settings_menu = menubar.addMenu("&Settings")
+
+        settings_action = QAction("&Preferences...", self)
+        settings_action.setShortcut(QKeySequence("Ctrl+,"))
+        settings_action.triggered.connect(self.show_settings)
+        settings_menu.addAction(settings_action)
+
+        # Window menu
+        window_menu = menubar.addMenu("&Window")
+
+        undock_action = QAction("&Open Current Tab in New Window", self)
+        undock_action.setShortcut(QKeySequence("Ctrl+Shift+U"))
+        undock_action.triggered.connect(self.undock_current_tab)
+        window_menu.addAction(undock_action)
+
+        window_menu.addSeparator()
+
+        grid_workspace_action = QAction("New &Grid Workspace", self)
+        grid_workspace_action.setShortcut(QKeySequence("Ctrl+Shift+G"))
+        grid_workspace_action.triggered.connect(self.new_grid_workspace)
+        window_menu.addAction(grid_workspace_action)
+
+        grid_workspace_3x3_action = QAction("New 3x3 Grid", self)
+        grid_workspace_3x3_action.triggered.connect(lambda: self.new_grid_workspace(3, 3))
+        window_menu.addAction(grid_workspace_3x3_action)
 
     def setup_side_panels(self):
         # Consistent cream/warm theme for all side panels
@@ -4523,6 +6987,18 @@ class MarkdownEditor(QMainWindow):
         self.semantic_dock.setVisible(False)
         self.semantic_dock.setMinimumWidth(250)
 
+        # Connect semantic panel to kernel
+        self.semantic_panel.set_kernel(self.kernel)
+
+        # Connect context layer signals (if PyQt is available)
+        if hasattr(self.kernel, 'focus_changed'):
+            self.kernel.focus_changed.connect(self._on_focus_changed)
+
+        # Timer to periodically update focus display (every 30 seconds)
+        self.focus_update_timer = QTimer(self)
+        self.focus_update_timer.timeout.connect(self._update_focus_display)
+        self.focus_update_timer.start(30000)
+
     def _on_link_navigate(self, path):
         """Handle navigation to a linked document."""
         if os.path.exists(path):
@@ -4562,6 +7038,17 @@ class MarkdownEditor(QMainWindow):
             "ai_access": ctx.ai_access,
         }
 
+    def _on_focus_changed(self, doc_path: str):
+        """Handle focus changed signal from context layer."""
+        # Update the semantic panel focus display
+        if self.semantic_dock.isVisible():
+            self.semantic_panel.update_focus()
+
+    def _update_focus_display(self):
+        """Periodically update focus display in semantic panel."""
+        if self.semantic_dock.isVisible():
+            self.semantic_panel.update_focus()
+
     def _on_context_selected(self, path):
         """Handle context selection from the workspace launcher."""
         # Check if already open in a tab
@@ -4583,8 +7070,285 @@ class MarkdownEditor(QMainWindow):
         if hasattr(self, 'context_launcher'):
             self.context_launcher.update_context_status(path, status, context_id)
 
-    def _execute_chat_provider(self, provider_name):
+    def _ingest_python_file(self, kernel, file_path, content, chunk_size):
+        """Ingest a Python file with hierarchical structure parsing."""
+        import ast
+        import os
+
+        try:
+            # Parse the Python file
+            tree = ast.parse(content)
+
+            layers = {
+                "file": [],
+                "class": [],
+                "function": [],
+                "code": []
+            }
+
+            # File-level summary
+            file_info = f"File: {file_path}\n"
+
+            # Count components
+            classes = [node for node in tree.body if isinstance(node, ast.ClassDef)]
+            functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
+            imports = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))]
+
+            file_info += f"Classes: {len(classes)}\n"
+            file_info += f"Functions: {len(functions)}\n"
+            file_info += f"Imports: {len(imports)}\n"
+
+            # Store file summary
+            kernel.memory.store(
+                content=file_info,
+                type="file_summary",
+                metadata={
+                    "semantic_layer": "file",
+                    "file_path": file_path,
+                    "classes": [c.name for c in classes],
+                    "functions": [f.name for f in functions],
+                    "timestamp": time.time()
+                }
+            )
+
+            # Process each class
+            for cls in classes:
+                class_code = ast.get_source_segment(content, cls)
+                if class_code:
+                    # Store full class code
+                    kernel.memory.store(
+                        content=class_code,
+                        type="class_code",
+                        metadata={
+                            "semantic_layer": "class",
+                            "file_path": file_path,
+                            "class_name": cls.name,
+                            "methods": [m.name for m in cls.body if isinstance(m, ast.FunctionDef)],
+                            "timestamp": time.time()
+                        }
+                    )
+
+            # Process top-level functions
+            for func in functions:
+                func_code = ast.get_source_segment(content, func)
+                if func_code:
+                    kernel.memory.store(
+                        content=func_code,
+                        type="function_code",
+                        metadata={
+                            "semantic_layer": "function",
+                            "file_path": file_path,
+                            "function_name": func.name,
+                            "timestamp": time.time()
+                        }
+                    )
+
+            # Also store chunks for detailed code lookup
+            chunks = []
+            for i in range(0, len(content), chunk_size):
+                chunk = content[i:i+chunk_size]
+                chunks.append(chunk)
+                kernel.memory.store(
+                    content=chunk,
+                    type="code_chunk",
+                    metadata={
+                        "semantic_layer": "code",
+                        "file_path": file_path,
+                        "chunk_index": len(chunks) - 1,
+                        "timestamp": time.time()
+                    }
+                )
+
+            return {
+                "operation": "ingest",
+                "file_path": file_path,
+                "message": f"✓ Ingested {file_path}\n📊 {len(classes)} classes, {len(functions)} functions\n📦 {len(chunks)} code chunks stored"
+            }
+
+        except SyntaxError:
+            # If parsing fails, fall back to generic ingestion
+            return self._ingest_generic_file(kernel, file_path, content, chunk_size)
+        except Exception as e:
+            return f"Error parsing Python file: {e}"
+
+    def _ingest_generic_file(self, kernel, file_path, content, chunk_size):
+        """Ingest a non-Python file with simple chunking."""
+        import os
+
+        chunks = []
+        for i in range(0, len(content), chunk_size):
+            chunk = content[i:i+chunk_size]
+            chunks.append(chunk)
+            kernel.memory.store(
+                content=chunk,
+                type="file_chunk",
+                metadata={
+                    "semantic_layer": "code",
+                    "file_path": file_path,
+                    "chunk_index": len(chunks) - 1,
+                    "timestamp": time.time()
+                }
+            )
+
+        # Store summary
+        kernel.memory.store(
+            content=f"File: {file_path}\nSize: {len(content)} bytes\nChunks: {len(chunks)}",
+            type="file_summary",
+            metadata={
+                "semantic_layer": "file",
+                "file_path": file_path,
+                "timestamp": time.time()
+            }
+        )
+
+        return {
+            "operation": "ingest",
+            "file_path": file_path,
+            "message": f"✓ Ingested {file_path}\n📊 {len(content)} bytes\n📦 {len(chunks)} chunks"
+        }
+
+    def _execute_chat_provider(self, provider_name, args=""):
         """Execute a provider from the chat panel and return the result."""
+        # Handle file operations directly
+        if provider_name == "file_read":
+            if not args:
+                return "Usage: /read <file_path>"
+            try:
+                with open(args, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                return {
+                    "operation": "read",
+                    "file_path": args,
+                    "old_content": "",
+                    "new_content": content,
+                    "message": f"Read {len(content)} bytes from {args}"
+                }
+            except Exception as e:
+                return f"Error reading file: {e}"
+
+        elif provider_name == "file_write":
+            # Format: /write <file_path> <content>
+            parts = args.split(" ", 1)
+            if len(parts) < 2:
+                return "Usage: /write <file_path> <content>"
+
+            file_path, content = parts[0], parts[1]
+            try:
+                import os
+                old_content = ""
+                if os.path.exists(file_path):
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        old_content = f.read()
+
+                operation = "create" if not old_content else "write"
+                return {
+                    "operation": operation,
+                    "file_path": file_path,
+                    "old_content": old_content,
+                    "new_content": content,
+                    "message": f"{'Creating' if operation == 'create' else 'Modifying'} {file_path}"
+                }
+            except Exception as e:
+                return f"Error preparing file write: {e}"
+
+        elif provider_name == "file_list":
+            import os
+            import glob
+            directory = args if args else os.path.dirname(self.tabs.currentWidget().file_path) if hasattr(self.tabs.currentWidget(), 'file_path') else "."
+            try:
+                files = glob.glob(os.path.join(directory, "*"))
+                files = [f for f in files if os.path.isfile(f)]
+                if not files:
+                    return f"No files found in {directory}"
+
+                result = f"Files in {directory}:\n\n"
+                for f in sorted(files)[:20]:  # Limit to 20 files
+                    size = os.path.getsize(f)
+                    result += f"  {os.path.basename(f)} ({size} bytes)\n"
+                if len(files) > 20:
+                    result += f"\n... and {len(files) - 20} more files"
+                return result
+            except Exception as e:
+                return f"Error listing files: {e}"
+
+        elif provider_name == "file_ingest":
+            # Ingest a large file into semantic memory
+            if not args:
+                return "Usage: /ingest <file_path> [chunk_size]\nExample: /ingest viewer.py 50000"
+
+            parts = args.split()
+            file_path = parts[0]
+            chunk_size = int(parts[1]) if len(parts) > 1 else 50000  # Default 50KB chunks
+
+            try:
+                import os
+                if not os.path.exists(file_path):
+                    return f"Error: File not found: {file_path}"
+
+                file_size = os.path.getsize(file_path)
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+
+                # Store in semantic kernel with hierarchical structure
+                tab = self.tabs.currentWidget()
+                if hasattr(tab, 'kernel') and tab.kernel:
+                    # Check if it's a Python file for structured parsing
+                    if file_path.endswith('.py'):
+                        result = self._ingest_python_file(tab.kernel, file_path, content, chunk_size)
+                    else:
+                        result = self._ingest_generic_file(tab.kernel, file_path, content, chunk_size)
+
+                    return result
+                else:
+                    # No kernel available, just report the file stats
+                    return {
+                        "operation": "read",
+                        "file_path": file_path,
+                        "old_content": "",
+                        "new_content": content[:1000] + "\n... (truncated for display)" if len(content) > 1000 else content,
+                        "message": f"Read {file_size} bytes from {file_path}\n({len(content.splitlines())} lines)"
+                    }
+
+            except Exception as e:
+                return f"Error ingesting file: {e}"
+
+        elif provider_name == "file_query":
+            # Query the semantic memory for relevant context
+            if not args:
+                return "Usage: /query <search_query>\nExample: /query what does the TerminalTab class do?"
+
+            query = args
+            tab = self.tabs.currentWidget()
+
+            if not hasattr(tab, 'kernel') or not tab.kernel:
+                return "No semantic kernel available. Ingest files first with /ingest."
+
+            try:
+                # Search for relevant chunks
+                results = tab.kernel.memory.search(query, limit=5)
+
+                if not results:
+                    return f"No relevant information found for: {query}\n\nTry ingesting files first with /ingest <file_path>"
+
+                # Format results
+                response = f"🔍 Found {len(results)} relevant result(s) for: {query}\n\n"
+                for i, result in enumerate(results, 1):
+                    metadata = result.get('metadata', {})
+                    file_path = metadata.get('file_path', 'Unknown')
+                    chunk_idx = metadata.get('chunk_index', '?')
+
+                    response += f"--- Result {i} (from {file_path}, chunk {chunk_idx}) ---\n"
+                    response += result.get('content', '')[:500]  # Show first 500 chars
+                    if len(result.get('content', '')) > 500:
+                        response += "\n... (truncated)"
+                    response += "\n\n"
+
+                return response
+
+            except Exception as e:
+                return f"Error querying semantic memory: {e}"
+
+        # Handle regular AI providers
         tab = self.tabs.currentWidget()
         if not isinstance(tab, MarkdownTab):
             return "No document open. Please open a markdown file first."
@@ -5611,6 +8375,178 @@ class MarkdownEditor(QMainWindow):
         tab.events.document_closed.connect(self.on_document_closed)
         self.register_task_commands(tab)
 
+    def new_browser_tab(self, url=None):
+        """Create a new browser tab."""
+        if not QWebEngineView:
+            QMessageBox.warning(
+                self,
+                "WebEngine Not Available",
+                "PyQt6-WebEngine is not installed.\n\n"
+                "Please install it using:\n"
+                "pip install PyQt6-WebEngine"
+            )
+            return
+
+        tab = BrowserTab(
+            kernel=self.kernel,
+            dark_mode=self.dark_mode,
+        )
+
+        if url:
+            tab.set_url(url)
+
+        index = self.tabs.addTab(tab, "Browser")
+        self.tabs.setCurrentIndex(index)
+
+    def new_terminal_tab(self):
+        """Create a new terminal tab."""
+        tab = TerminalTab(
+            kernel=self.kernel,
+            dark_mode=self.dark_mode,
+        )
+
+        index = self.tabs.addTab(tab, "Terminal")
+        self.tabs.setCurrentIndex(index)
+
+    def new_terminal_grid(self, rows=2, cols=2):
+        """Create a grid of terminals in a new tab.
+
+        Args:
+            rows: Number of rows (default: 2)
+            cols: Number of columns (default: 2)
+        """
+        from PyQt6.QtWidgets import QSplitter
+
+        # Create a container widget for the grid
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        # Create rows
+        for row in range(rows):
+            row_splitter = QSplitter(Qt.Orientation.Horizontal)
+
+            # Create columns in this row
+            for col in range(cols):
+                terminal = TerminalTab(
+                    kernel=self.kernel,
+                    dark_mode=self.dark_mode,
+                )
+                terminal.setMinimumHeight(150)
+                row_splitter.addWidget(terminal)
+
+            layout.addWidget(row_splitter)
+
+        # Add as a new tab
+        index = self.tabs.addTab(container, f"Terminal Grid ({rows}x{cols})")
+        self.tabs.setCurrentIndex(index)
+
+    def new_app_launcher_tab(self):
+        """Create a new app launcher tab."""
+        tab = AppLauncherTab(
+            kernel=self.kernel,
+            dark_mode=self.dark_mode,
+        )
+
+        index = self.tabs.addTab(tab, "App Launcher")
+        self.tabs.setCurrentIndex(index)
+
+    def new_grid_workspace(self, rows=2, cols=2):
+        """Create a new drag-and-drop grid workspace tab.
+
+        Args:
+            rows: Number of rows (default: 2)
+            cols: Number of columns (default: 2)
+        """
+        grid_manager = GridWindowManager(
+            kernel=self.kernel,
+            dark_mode=self.dark_mode,
+            rows=rows,
+            cols=cols
+        )
+
+        # Pre-populate with terminals (only up to 2x2 for now)
+        for row in range(min(rows, 2)):
+            for col in range(min(cols, 2)):
+                terminal = TerminalTab(
+                    kernel=self.kernel,
+                    dark_mode=self.dark_mode
+                )
+                terminal.setMinimumSize(200, 150)
+                cell_key = (row, col)
+                if cell_key in grid_manager.grid_widgets:
+                    grid_manager.grid_widgets[cell_key].set_widget(terminal)
+
+        # Add as a new tab
+        index = self.tabs.addTab(grid_manager, f"Grid Workspace ({rows}x{cols})")
+        self.tabs.setCurrentIndex(index)
+
+    def open_url_dialog(self):
+        """Show dialog to open a URL."""
+        if not QWebEngineView:
+            QMessageBox.warning(
+                self,
+                "WebEngine Not Available",
+                "PyQt6-WebEngine is not installed.\n\n"
+                "Please install it using:\n"
+                "pip install PyQt6-WebEngine"
+            )
+            return
+
+        url, ok = QInputDialog.getText(
+            self,
+            "Open URL",
+            "Enter URL:",
+            QLineEdit.EchoMode.Normal
+        )
+
+        if ok and url.strip():
+            self.open_url(url.strip())
+
+    def open_url(self, url):
+        """Open a URL in a new browser tab."""
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+
+        # Check if there's already a browser tab
+        for i in range(self.tabs.count()):
+            tab = self.tabs.widget(i)
+            if isinstance(tab, BrowserTab):
+                # Reuse existing browser tab
+                tab.set_url(url)
+                self.tabs.setCurrentIndex(i)
+                return
+
+        # Create new browser tab
+        self.new_browser_tab(url)
+
+    def search_web(self, engine="google"):
+        """Open a search query dialog."""
+        if not QWebEngineView:
+            QMessageBox.warning(
+                self,
+                "WebEngine Not Available",
+                "PyQt6-WebEngine is not installed.\n\n"
+                "Please install it using:\n"
+                "pip install PyQt6-WebEngine"
+            )
+            return
+
+        query, ok = QInputDialog.getText(
+            self,
+            f"Search {engine.title()}",
+            "Enter search query:",
+            QLineEdit.EchoMode.Normal
+        )
+
+        if ok and query.strip():
+            if engine == "google":
+                url = f"https://www.google.com/search?q={query}"
+            else:
+                url = f"https://www.google.com/search?q={query}"
+            self.open_url(url)
+
     def toggle_current_mode(self):
         tab = self.tabs.currentWidget()
         if isinstance(tab, MarkdownTab):
@@ -5634,12 +8570,27 @@ class MarkdownEditor(QMainWindow):
             if self.semantic_dock.isVisible() and tab.file_path:
                 self.semantic_panel.record_file_access(tab.file_path)
                 self.semantic_panel.update_for_file(tab.file_path)
+                self.semantic_panel.update_focus()
+            # Record focus in context layer
+            if tab.file_path:
+                self.kernel.record_focus(tab.file_path)
         elif isinstance(tab, ReaderTab):
             name = Path(tab.file_path).name if tab.file_path else "Reader"
             self.setWindowTitle(f"Markdown Editor - {name}")
             self.reader_action.setChecked(True)
             if self.links_dock.isVisible():
                 self.links_panel.clear_panel()
+        elif isinstance(tab, BrowserTab):
+            # Browser tab - update window title with page title
+            title = tab.current_title or tab.current_url or "Browser"
+            self.setWindowTitle(f"Markdown Editor - {title[:50]}")
+            self.reader_action.setChecked(False)
+            # Update semantic panel focus display
+            if self.semantic_dock.isVisible():
+                self.semantic_panel.update_focus()
+            # Record focus in context layer
+            if tab.current_url:
+                self.kernel.record_focus(tab.current_url)
 
     def show_search(self):
         tab = self.tabs.currentWidget()
@@ -5838,6 +8789,120 @@ class MarkdownEditor(QMainWindow):
     def close_current_tab(self):
         self.close_tab(self.tabs.currentIndex())
 
+    def show_tab_context_menu(self, position):
+        """Show context menu for tabs."""
+        try:
+            # Get the tab at the clicked position
+            tab_index = self.tabs.tabBar().tabAt(position)
+
+            # If tabAt didn't work, use current tab
+            if tab_index == -1:
+                tab_index = self.tabs.currentIndex()
+
+            # Don't allow undocking Home tab (index 0)
+            if tab_index == 0:
+                return
+
+            tab = self.tabs.widget(tab_index)
+            if not tab:
+                return
+
+            # Create menu
+            menu = QMenu(self)
+            menu.setWindowTitle("Tab Menu")
+
+            # Undock/Floating action
+            undock_action = QAction("Open in New Window", self)
+            undock_action.setStatusTip("Undock this tab into a floating window")
+            undock_action.triggered.connect(lambda checked=False, idx=tab_index: self.undock_tab(idx))
+            menu.addAction(undock_action)
+
+            menu.addSeparator()
+
+            # Close action
+            close_action = QAction("Close", self)
+            close_action.triggered.connect(lambda checked=False, idx=tab_index: self.close_tab(idx))
+            menu.addAction(close_action)
+
+            # Show menu at cursor position
+            global_pos = self.tabs.tabBar().mapToGlobal(position)
+            menu.exec(global_pos)
+
+        except Exception as e:
+            print(f"[Error] Tab context menu failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def undock_tab(self, tab_index):
+        """Undock a tab into a floating window."""
+        tab = self.tabs.widget(tab_index)
+        if not tab or tab_index == 0:
+            return
+
+        # Get tab info
+        tab_text = self.tabs.tabText(tab_index)
+
+        # Remove from tab widget (but don't destroy)
+        self.tabs.removeTab(tab_index)
+
+        # Create new floating window
+        floating_window = QMainWindow(self)
+        floating_window.setWindowTitle(f"Floating - {tab_text}")
+        floating_window.setMinimumSize(400, 300)
+        floating_window.resize(800, 600)
+
+        # IMPORTANT: Reparent the widget to the new window
+        tab.setParent(floating_window)
+
+        # Set the tab as central widget
+        floating_window.setCentralWidget(tab)
+
+        # Ensure widget is visible
+        tab.setVisible(True)
+        tab.show()
+
+        # Force a repaint/refresh
+        tab.update()
+        tab.repaint()
+
+        # Show window AFTER setting up the widget
+        floating_window.show()
+
+        # Raise and activate the floating window
+        floating_window.raise_()
+        floating_window.activateWindow()
+
+        # Track floating window
+        self.floating_windows.append({
+            'window': floating_window,
+            'widget': tab,
+            'original_index': tab_index
+        })
+
+        # Override closeEvent properly
+        original_close = floating_window.closeEvent
+        def new_close_event(event):
+            self.on_floating_window_close(floating_window, tab, event)
+        floating_window.closeEvent = new_close_event
+
+    def undock_current_tab(self):
+        """Undock the current tab into a floating window."""
+        current_index = self.tabs.currentIndex()
+        if current_index > 0:  # Don't undock Home tab
+            self.undock_tab(current_index)
+
+    def on_floating_window_close(self, window, widget, event):
+        """Handle floating window close event."""
+        # Remove from tracking
+        self.floating_windows = [fw for fw in self.floating_windows if fw['window'] != window]
+
+        # Option: re-dock tab back to main window
+        # For now, just destroy the widget
+        widget.deleteLater()
+
+        window.close()
+        event.accept()
+
     def print_current(self):
         tab = self.tabs.currentWidget()
         if isinstance(tab, MarkdownTab):
@@ -5860,6 +8925,10 @@ class MarkdownEditor(QMainWindow):
                     self.open_file(f)
 
     def closeEvent(self, event):
+        # Stop visual memory capture
+        if self.visual_memory and self.visual_memory_running:
+            self.visual_memory.stop()
+
         for i in range(self.tabs.count()):
             tab = self.tabs.widget(i)
             if isinstance(tab, MarkdownTab) and tab.modified:
@@ -5929,6 +8998,164 @@ class MarkdownEditor(QMainWindow):
     def get_kernel_state(self):
         """Get the kernel state (useful for AI context)."""
         return self.kernel.get_system_state()
+
+    # ==================== VISUAL MEMORY METHODS ====================
+
+    def start_visual_memory(self):
+        """Start capturing visual memory (screenshots)."""
+        if self.visual_memory is None:
+            try:
+                from ide.screen_memory import VisualMemoryCapture
+                self.visual_memory = VisualMemoryCapture(
+                    kernel=self.kernel,
+                    capture_interval=30,  # 30 seconds
+                    change_threshold=0.05,  # 5% change
+                )
+            except ImportError as e:
+                QMessageBox.warning(
+                    self,
+                    "Missing Dependencies",
+                    f"Visual memory requires additional packages:\n\n{e}\n\n"
+                    "Install with: pip install Pillow opencv-python"
+                )
+                return
+
+        if not self.visual_memory_running:
+            self.visual_memory.start()
+            self.visual_memory_running = True
+            self.visual_memory_start_action.setEnabled(False)
+            self.visual_memory_stop_action.setEnabled(True)
+
+            # Show in status bar
+            self.statusBar().showMessage("Visual memory: Capturing screenshots every 30 seconds", 5000)
+
+    def stop_visual_memory(self):
+        """Stop capturing visual memory."""
+        if self.visual_memory and self.visual_memory_running:
+            self.visual_memory.stop()
+            self.visual_memory_running = False
+            self.visual_memory_start_action.setEnabled(True)
+            self.visual_memory_stop_action.setEnabled(False)
+
+            # Show in status bar
+            self.statusBar().showMessage("Visual memory: Stopped", 3000)
+
+    def browse_visual_memory(self):
+        """Browse captured visual memory."""
+        if not self.visual_memory:
+            QMessageBox.information(
+                self,
+                "No Visual Memory",
+                "Visual memory hasn't been initialized yet.\n\n"
+                "Click 'Start Visual Memory' in the View menu to begin capturing screenshots."
+            )
+            return
+
+        captures = self.visual_memory.get_captures(limit=100)
+
+        if not captures:
+            QMessageBox.information(
+                self,
+                "No Captures",
+                "No screenshots have been captured yet.\n\n"
+                "Start visual memory and work for a while, then check back!"
+            )
+            return
+
+        # Create simple browser dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Visual Memory Browser")
+        dialog.setMinimumSize(800, 600)
+
+        layout = QVBoxLayout(dialog)
+
+        # Info label
+        info = QLabel(f"Recent captures: {len(captures)}")
+        layout.addWidget(info)
+
+        # List widget for captures
+        capture_list = QListWidget()
+        capture_list.setIconSize(QSize(300, 200))
+        layout.addWidget(capture_list)
+
+        # Preview area
+        preview_layout = QHBoxLayout()
+
+        # Thumbnail preview
+        preview_label = QLabel("Select a capture to preview")
+        preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        preview_label.setMinimumSize(400, 300)
+        preview_label.setStyleSheet("border: 1px solid #ccc; background: #f5f5f5;")
+        preview_layout.addWidget(preview_label)
+
+        # Details
+        details_text = QTextEdit()
+        details_text.setReadOnly(True)
+        details_text.setMaximumWidth(300)
+        preview_layout.addWidget(details_text)
+
+        layout.addLayout(preview_layout)
+
+        # Populate list
+        for capture in captures:
+            from datetime import datetime
+            time_str = datetime.fromtimestamp(capture.timestamp).strftime("%Y-%m-%d %H:%M:%S")
+
+            # Load thumbnail
+            if capture.thumbnail_path and os.path.exists(capture.thumbnail_path):
+                from PyQt6.QtGui import QPixmap
+                pixmap = QPixmap(capture.thumbnail_path)
+                icon = QIcon(pixmap)
+            else:
+                icon = QIcon()
+
+            item = QListWidgetItem(icon, f"{time_str} - {capture.summary[:50]}")
+            item.setData(Qt.ItemDataRole.UserRole, capture)
+            capture_list.addItem(item)
+
+        # Show preview on selection
+        def show_preview(item):
+            capture = item.data(Qt.ItemDataRole.UserRole)
+            if not capture:
+                return
+
+            # Show image
+            if capture.image_path and os.path.exists(capture.image_path):
+                from PyQt6.QtGui import QPixmap
+                pixmap = QPixmap(capture.image_path)
+                scaled = pixmap.scaled(
+                    400, 300,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                preview_label.setPixmap(scaled)
+            else:
+                preview_label.setText("Image not found")
+
+            # Show details
+            from datetime import datetime
+            time_str = datetime.fromtimestamp(capture.timestamp).strftime("%Y-%m-%d %H:%M:%S")
+
+            details = f"""Timestamp: {time_str}
+Active Window: {capture.active_window}
+App: {capture.app_name}
+
+Summary:
+{capture.summary}
+
+OCR Text:
+{capture.ocr_text[:200]}...
+"""
+            details_text.setPlainText(details)
+
+        capture_list.itemClicked.connect(show_preview)
+
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn)
+
+        dialog.exec()
 
 
 def main():
