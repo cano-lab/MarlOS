@@ -225,9 +225,9 @@ class BulkImportDialog(QDialog):
 
         # Max depth
         self.max_depth = QSpinBox()
-        self.max_depth.setRange(1, 50)
-        self.max_depth.setValue(10)
-        self.max_depth.setToolTip("Maximum directory depth to scan")
+        self.max_depth.setRange(1, 100)
+        self.max_depth.setValue(50)  # High default = scan everything
+        self.max_depth.setToolTip("Maximum directory depth to scan (50 = practically unlimited)")
         options_layout.addRow("Max Depth:", self.max_depth)
 
         options_group.setLayout(options_layout)
