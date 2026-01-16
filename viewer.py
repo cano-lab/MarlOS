@@ -55,6 +55,7 @@ except Exception:
     markdown_lib = None
 from ide.license import get_license_manager, LicenseTier
 from ide.relation_explorer import create_relation_explorer_dock
+from ide.bulk_import import show_bulk_import_dialog
 from ide.providers import (
     DocumentCommandProvider,
     FormattingProvider,
@@ -6610,6 +6611,14 @@ class MarkdownEditor(QMainWindow):
 
         file_menu.addSeparator()
 
+        # Bulk import files into semantic memory
+        bulk_import_action = QAction("Bulk &Import Files...", self)
+        bulk_import_action.setStatusTip("Import entire directories into semantic memory")
+        bulk_import_action.triggered.connect(self.bulk_import_files)
+        file_menu.addAction(bulk_import_action)
+
+        file_menu.addSeparator()
+
         close_action = QAction("&Close Tab", self)
         close_action.setShortcut(QKeySequence("Ctrl+W"))
         close_action.triggered.connect(self.close_current_tab)
@@ -8160,6 +8169,10 @@ Available Features:
         clipboard = QApplication.clipboard()
         clipboard.setText(text)
         QMessageBox.information(self, "Copied", "Context copied to clipboard!\n\nPaste it into your AI chat.")
+
+    def bulk_import_files(self):
+        """Show bulk file import dialog."""
+        show_bulk_import_dialog(self.kernel, self)
 
     def _default_workspace_config(self):
         return {
