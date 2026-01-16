@@ -1101,3 +1101,23 @@ class SmartImporter(QThread):
                         self._link_config_to_sources(str(config_path), content, repo_info)
                     except Exception:
                         pass
+
+    def _link_config_to_sources(self, config_path: str, content: str, repo_info: RepoInfo):
+        """Link config file to source files it references."""
+        import re
+
+        # Look for Python module references
+        python_modules = re.findall(r'["\']([\w_]+)["\']', content)
+
+        for module in python_modules:
+            if len(module) < 3:  # Skip very short matches
+                continue
+
+            # Try to find matching Python file
+            for src_dir in repo_info.src_dirs:
+                src_path = Path(repo_info.root_path) / src_dir / f"{module}.py"
+                if src_path.exists():
+                    self.kernel.relations.add_link(
+                        config_path, str(src_path), "configures"
+                    )
+                    break
