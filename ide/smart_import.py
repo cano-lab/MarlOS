@@ -344,9 +344,31 @@ class ImportStrategy(ABC):
 
     def _store(self, content: str, metadata: Dict, doc_id: str = None):
         """Store content in memory."""
+        from kernel.memory import MemoryType
+
+        # Map metadata type to MemoryType enum
+        mem_type = metadata.get("type", "document")
+        type_map = {
+            "python_file": MemoryType.DOCUMENT,
+            "markdown_file": MemoryType.DOCUMENT,
+            "json_file": MemoryType.DOCUMENT,
+            "yaml_file": MemoryType.DOCUMENT,
+            "text_file": MemoryType.DOCUMENT,
+            "class": MemoryType.CHUNK,
+            "function": MemoryType.CHUNK,
+            "section": MemoryType.CHUNK,
+            "chunk": MemoryType.CHUNK,
+            "import": MemoryType.CHUNK,
+            "config_entry": MemoryType.CHUNK,
+            "dependency": MemoryType.LINK,
+        }
+
+        # Use mapped type or default to DOCUMENT
+        actual_type = type_map.get(mem_type, MemoryType.DOCUMENT)
+
         self.kernel.memory.store(
             content=content,
-            type=metadata.get("type", "document"),
+            type=actual_type,
             metadata=metadata,
             id=doc_id,
         )
@@ -968,60 +990,85 @@ class SmartImporter(QThread):
 
     def run(self):
         """Run the smart import process."""
-        start_time = time.time()
-        self.stats["total"] = len(self.files)
+        try:
+            start_time = time.time()
+            self.stats["total"] = len(self.files)
 
-        # Step 1: Analyze repository structure
-        if self.files:
-            # Find common root directory
-            root_dir = self._find_common_root(self.files)
-            if root_dir:
-                self.progress.emit(0, len(self.files), f"Analyzing repository: {root_dir}")
-                repo_info = RepositoryAnalyzer.analyze(root_dir)
+            # Step 1: Analyze repository structure
+            if self.files:
+                # Find common root directory
+                root_dir = self._find_common_root(self.files)
+                if root_dir:
+                    self.progress.emit(0, len(self.files), f"Analyzing repository: {root_dir}")
+                    repo_info = RepositoryAnalyzer.analyze(root_dir)
+                else:
+                    repo_info = None
             else:
                 repo_info = None
-        else:
-            repo_info = None
 
-        # Step 2: Import each file with appropriate strategy
-        for i, file_path in enumerate(self.files):
-            if self._should_stop:
-                break
+            # Step 2: Import each file with appropriate strategy
+            for i, file_path in enumerate(self.files):
+                if self._should_stop:
+                    break
 
-            self.progress.emit(i + 1, len(self.files), file_path)
+                self.progress.emit(i + 1, len(self.files), file_path)
 
-            # Check if file changed
-            if self._should_skip_file(file_path):
-                self.stats["skipped"] += 1
-                self.file_complete.emit(file_path, False, "Unchanged")
-                continue
+                # Check if file changed
+                if self._should_skip_file(file_path):
+                    self.stats["skipped"] += 1
+                    self.file_complete.emit(file_path, False, "Unchanged")
+                    continue
 
-            # Try each strategy until one handles it
-            imported = False
-            for strategy in self.strategies:
-                if strategy.can_handle(file_path):
-                    success, message = strategy.import_file(file_path, repo_info) if repo_info else strategy.import_file(file_path, RepoInfo("", file_path, "generic"))
-                    self.stats["strategies_used"][strategy.__class__.__name__] += 1
+                # Try each strategy until one handles it
+                imported = False
+                for strategy in self.strategies:
+                    if strategy.can_handle(file_path):
+                        try:
+                            success, message = strategy.import_file(file_path, repo_info) if repo_info else strategy.import_file(file_path, RepoInfo("", file_path, "generic"))
+                            self.stats["strategies_used"][strategy.__class__.__name__] += 1
 
-                    if success:
-                        self.stats["successful"] += 1
-                        imported = True
-                        self.file_complete.emit(file_path, True, message)
-                        break
-                    elif "skip" not in message.lower():
-                        # Try next strategy
-                        continue
+                            if success:
+                                self.stats["successful"] += 1
+                                imported = True
+                                self.file_complete.emit(file_path, True, message)
+                                break
+                            elif "skip" not in message.lower():
+                                # Try next strategy
+                                continue
+                        except Exception as e:
+                            # Strategy failed, try next one
+                            import traceback
+                            error_msg = f"Strategy error: {str(e)}"
+                            self.file_complete.emit(file_path, False, error_msg)
+                            # Log full traceback for debugging
+                            print(f"[Smart Import] Error importing {file_path}:")
+                            print(traceback.format_exc())
+                            continue
 
-            if not imported:
-                self.stats["failed"] += 1
-                self.file_complete.emit(file_path, False, "No strategy could handle this file")
+                if not imported:
+                    self.stats["failed"] += 1
+                    self.file_complete.emit(file_path, False, "No strategy could handle this file")
 
-        # Step 3: Extract repo-level relationships
-        if repo_info and not self._should_stop:
-            self._extract_repo_relationships(repo_info)
+            # Step 3: Extract repo-level relationships
+            if repo_info and not self._should_stop:
+                try:
+                    self._extract_repo_relationships(repo_info)
+                except Exception as e:
+                    import traceback
+                    print(f"[Smart Import] Error extracting relationships: {str(e)}")
+                    print(traceback.format_exc())
 
-        self.stats["duration"] = time.time() - start_time
-        self.finished.emit(self.stats)
+            self.stats["duration"] = time.time() - start_time
+            self.finished.emit(self.stats)
+
+        except Exception as e:
+            import traceback
+            # Catch-all error handler
+            error_msg = f"Import failed: {str(e)}\n\n{traceback.format_exc()}"
+            print(f"[Smart Import] Fatal error:\n{error_msg}")
+            self.stats["duration"] = time.time() - start_time if start_time > 0 else 0
+            self.stats["failed"] = self.stats.get("total", 0)
+            self.finished.emit(self.stats)
 
     def _should_skip_file(self, file_path: str) -> bool:
         """Check if file should be skipped (unchanged)."""
