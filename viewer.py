@@ -14,7 +14,7 @@ from pathlib import Path
 from datetime import datetime
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import base64
 
 from PyQt6.QtCore import Qt, QFileSystemWatcher, QTimer, QRegularExpression, QDateTime, QThread, pyqtSignal, QUrl, QSize
@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
     QDialog, QSpinBox, QDialogButtonBox, QFormLayout,
     QCheckBox, QLineEdit, QPushButton, QPlainTextEdit, QStackedWidget,
     QLabel, QDockWidget, QListWidget, QListWidgetItem, QToolTip,
-    QComboBox, QDateTimeEdit, QScrollArea, QFrame, QInputDialog, QGridLayout, QMenu
+    QComboBox, QDateTimeEdit, QScrollArea, QFrame, QInputDialog, QGridLayout, QMenu, QTextEdit
 )
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
 from PyQt6.QtGui import QPageLayout, QPageSize
@@ -7613,7 +7613,7 @@ class MarkdownEditor(QMainWindow):
             json_data = json.dumps(export_data, indent=2)
 
             # Generate encryption key from password
-            kdf = PBKDF2(
+            kdf = PBKDF2HMAC(
                 algorithm=hashes.SHA256(),
                 length=32,
                 salt=b'MarlOS Memory Export',  # Fixed salt for reproducibility
