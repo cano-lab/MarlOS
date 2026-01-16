@@ -736,6 +736,140 @@ class SemanticMemory:
             self.conn.commit()
             return cursor.rowcount
 
+    def export_all(self) -> Dict[str, Any]:
+        """Export all memory data for backup/transfer.
+
+        Returns:
+            Dictionary containing all memory entries, relations, and metadata
+        """
+        with self._lock:
+            # Export all memory entries
+            cursor = self.conn.execute("SELECT * FROM memory")
+            rows = cursor.fetchall()
+
+            entries = []
+            for row in rows:
+                entry = self._row_to_entry(row)
+                entries.append(entry.to_dict())
+
+            # Export all relations
+            cursor = self.conn.execute("SELECT * FROM relations")
+            relation_rows = cursor.fetchall()
+
+            relations = []
+            for row in relation_rows:
+                relations.append({
+                    "source_path": row[0],
+                    "target_path": row[1],
+                    "relation": row[2],
+                    "label": row[3],
+                    "metadata": json.loads(row[4]) if row[4] else {},
+                })
+
+            return {
+                "version": "1.0",
+                "entries": entries,
+                "relations": relations,
+                "stats": self.stats(),
+            }
+
+    def import_data(self, data: Dict[str, Any], merge: bool = True) -> Dict[str, int]:
+        """Import memory data from export.
+
+        Args:
+            data: Export data dictionary (from export_all)
+            merge: If True, merge with existing data; if False, replace all
+
+        Returns:
+            Dictionary with import counts
+        """
+        with self._lock:
+            if not merge:
+                # Clear existing data
+                self.conn.execute("DELETE FROM memory")
+                self.conn.execute("DELETE FROM relations")
+                self.conn.commit()
+
+            imported_entries = 0
+            imported_relations = 0
+            skipped_entries = 0
+
+            # Import entries
+            for entry_data in data.get("entries", []):
+                try:
+                    # Check if entry already exists
+                    existing = self.conn.execute(
+                        "SELECT id FROM memory WHERE id = ?",
+                        (entry_data["id"],)
+                    ).fetchone()
+
+                    if existing and merge:
+                        # Update existing entry
+                        self.conn.execute("""
+                            UPDATE memory
+                            SET type = ?, content = ?, vector = ?, metadata = ?,
+                                created_at = ?, updated_at = ?, version = ?, parent_id = ?
+                            WHERE id = ?
+                        """, (
+                            entry_data["type"],
+                            entry_data["content"],
+                            json.dumps(entry_data["vector"]) if entry_data.get("vector") else None,
+                            json.dumps(entry_data.get("metadata", {})),
+                            entry_data.get("created_at", time.time()),
+                            entry_data.get("updated_at", time.time()),
+                            entry_data.get("version", 1),
+                            entry_data.get("parent_id"),
+                            entry_data["id"],
+                        ))
+                    else:
+                        # Insert new entry
+                        self.conn.execute("""
+                            INSERT INTO memory (id, type, content, vector, metadata,
+                                             created_at, updated_at, version, parent_id)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            entry_data["id"],
+                            entry_data["type"],
+                            entry_data["content"],
+                            json.dumps(entry_data["vector"]) if entry_data.get("vector") else None,
+                            json.dumps(entry_data.get("metadata", {})),
+                            entry_data.get("created_at", time.time()),
+                            entry_data.get("updated_at", time.time()),
+                            entry_data.get("version", 1),
+                            entry_data.get("parent_id"),
+                        ))
+
+                    imported_entries += 1
+                except Exception as e:
+                    print(f"[Memory] Error importing entry {entry_data.get('id')}: {e}")
+                    skipped_entries += 1
+
+            # Import relations
+            for rel_data in data.get("relations", []):
+                try:
+                    self.conn.execute("""
+                        INSERT OR REPLACE INTO relations
+                        (source_path, target_path, relation, label, metadata)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (
+                        rel_data["source_path"],
+                        rel_data["target_path"],
+                        rel_data["relation"],
+                        rel_data.get("label"),
+                        json.dumps(rel_data.get("metadata", {})),
+                    ))
+                    imported_relations += 1
+                except Exception as e:
+                    print(f"[Memory] Error importing relation: {e}")
+
+            self.conn.commit()
+
+            return {
+                "entries_imported": imported_entries,
+                "relations_imported": imported_relations,
+                "entries_skipped": skipped_entries,
+            }
+
     def close(self):
         """Close database connection."""
         self.conn.close()

@@ -9,7 +9,13 @@ import os
 import json
 import re
 import time
+import platform
 from pathlib import Path
+from datetime import datetime
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2
+import base64
 
 from PyQt6.QtCore import Qt, QFileSystemWatcher, QTimer, QRegularExpression, QDateTime, QThread, pyqtSignal, QUrl, QSize
 from PyQt6.QtGui import (
@@ -47,6 +53,7 @@ try:
     import markdown as markdown_lib
 except Exception:
     markdown_lib = None
+from ide.license import get_license_manager, LicenseTier
 from ide.providers import (
     DocumentCommandProvider,
     FormattingProvider,
@@ -6446,6 +6453,9 @@ class MarkdownEditor(QMainWindow):
         self.workspace_config = {}
         self.load_settings()
 
+        # Initialize license manager
+        self.license = get_license_manager()
+
         # Initialize kernel (MarlOS core)
         self.kernel = init_kernel()
         self.kernel.spine.event_broadcast.connect(self._on_kernel_event)
@@ -6575,6 +6585,27 @@ class MarkdownEditor(QMainWindow):
         export_action.setShortcut(QKeySequence("Ctrl+Shift+E"))
         export_action.triggered.connect(self.export_pdf_current)
         file_menu.addAction(export_action)
+
+        file_menu.addSeparator()
+
+        # Export/Import semantic memory
+        export_memory_action = QAction("Export &Memory...", self)
+        export_memory_action.setStatusTip("Export your semantic memory to an encrypted file")
+        export_memory_action.triggered.connect(self.export_memory)
+        file_menu.addAction(export_memory_action)
+
+        import_memory_action = QAction("&Import Memory...", self)
+        import_memory_action.setStatusTip("Import semantic memory from an encrypted file")
+        import_memory_action.triggered.connect(self.import_memory)
+        file_menu.addAction(import_memory_action)
+
+        file_menu.addSeparator()
+
+        # Export context for cloud AI
+        export_context_action = QAction("Export Context for &AI...", self)
+        export_context_action.setStatusTip("Export your current context to share with cloud AI models")
+        export_context_action.triggered.connect(self.export_context_for_ai)
+        file_menu.addAction(export_context_action)
 
         file_menu.addSeparator()
 
@@ -6754,6 +6785,17 @@ class MarkdownEditor(QMainWindow):
         settings_action.setShortcut(QKeySequence("Ctrl+,"))
         settings_action.triggered.connect(self.show_settings)
         settings_menu.addAction(settings_action)
+
+        # License menu
+        license_menu = menubar.addMenu("&License")
+
+        license_info_action = QAction("&View License...", self)
+        license_info_action.triggered.connect(self.show_license_info)
+        license_menu.addAction(license_info_action)
+
+        license_activate_action = QAction("&Activate License...", self)
+        license_activate_action.triggered.connect(self.show_activate_license_dialog)
+        license_menu.addAction(license_activate_action)
 
         # Window menu
         window_menu = menubar.addMenu("&Window")
@@ -7520,6 +7562,589 @@ class MarkdownEditor(QMainWindow):
                 json.dump(data, handle, indent=2)
         except Exception:
             return
+
+    def export_memory(self):
+        """Export semantic memory to encrypted file for backup/transfer."""
+        from PyQt6.QtWidgets import QInputDialog, QLineEdit
+
+        # Let user choose where to save
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Semantic Memory",
+            str(Path.home() / f"marlos-memory-{datetime.now():%Y%m%d-%H%M%S}.marlos"),
+            "MarlOS Memory (*.marlos)"
+        )
+
+        if not file_path:
+            return
+
+        # Get password from user
+        password, ok = QInputDialog.getText(
+            self, "Encrypt Memory",
+            "Enter password to encrypt your memory:\n\n"
+            "This password will be required to import this file.\n"
+            "Keep it safe! There's no way to recover it if forgotten.",
+            QLineEdit.Password
+        )
+
+        if not ok or not password:
+            return
+
+        try:
+            # Export from kernel
+            memory_data = self.kernel.memory.export_all()
+
+            # Prepare export package
+            export_data = {
+                "version": "1.0",
+                "export_date": datetime.now().isoformat(),
+                "device": {
+                    "system": platform.system(),
+                    "node": platform.node(),
+                    "release": platform.release(),
+                    "version": platform.version(),
+                    "machine": platform.machine(),
+                },
+                "memory": memory_data,
+                "preferences": self.workspace_config,
+            }
+
+            # Serialize to JSON
+            json_data = json.dumps(export_data, indent=2)
+
+            # Generate encryption key from password
+            kdf = PBKDF2(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=b'MarlOS Memory Export',  # Fixed salt for reproducibility
+                iterations=100000,
+            )
+            key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
+            f = Fernet(key)
+
+            # Encrypt data
+            encrypted_data = f.encrypt(json_data.encode())
+
+            # Write to file
+            with open(file_path, 'wb') as f:
+                f.write(b'MarlOS encrypted memory v1\n')
+                f.write(encrypted_data)
+
+            QMessageBox.information(
+                self, "Export Complete",
+                f"Memory exported successfully!\n\n"
+                f"Location: {file_path}\n\n"
+                f"This file contains:\n"
+                f"  • {memory_data['stats']['total_entries']} memory entries\n"
+                f"  • {memory_data['stats'].get('total_relations', 0)} relations\n"
+                f"  • Your workspace preferences\n\n"
+                f"Keep this file safe and don't lose your password!"
+            )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Export Failed",
+                f"Failed to export memory:\n{str(e)}"
+            )
+
+    def import_memory(self):
+        """Import semantic memory from encrypted file."""
+        from PyQt6.QtWidgets import QInputDialog, QLineEdit
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Semantic Memory",
+            str(Path.home()),
+            "MarlOS Memory (*.marlos)"
+        )
+
+        if not file_path:
+            return
+
+        # Get password
+        password, ok = QInputDialog.getText(
+            self, "Decrypt Memory",
+            "Enter password for this memory file:",
+            QLineEdit.Password
+        )
+
+        if not ok or not password:
+            return
+
+        try:
+            # Read file
+            with open(file_path, 'rb') as f:
+                header = f.readline().decode().strip()
+                if header != 'MarlOS encrypted memory v1':
+                    raise ValueError("Invalid file format or version")
+
+                encrypted_data = f.read()
+
+            # Derive decryption key
+            kdf = PBKDF2(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=b'MarlOS Memory Export',
+                iterations=100000,
+            )
+            key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
+            fernet = Fernet(key)
+
+            # Decrypt data
+            decrypted_data = fernet.decrypt(encrypted_data)
+            export_data = json.loads(decrypted_data.decode())
+
+            # Validate format
+            if "version" not in export_data or "memory" not in export_data:
+                raise ValueError("Invalid export format")
+
+            # Show import confirmation
+            source_device = export_data.get("device", {}).get("system", "Unknown")
+            export_date = export_data.get("export_date", "Unknown")
+            memory_stats = export_data["memory"].get("stats", {})
+
+            reply = QMessageBox.question(
+                self, "Confirm Import",
+                f"Import memory from:\n"
+                f"  Device: {source_device}\n"
+                f"  Date: {export_date}\n"
+                f"  Entries: {memory_stats.get('total_entries', 0)}\n"
+                f"  Relations: {memory_stats.get('total_relations', 0)}\n\n"
+                f"Options:\n"
+                f"• Yes: Merge with current memory (keep existing)\n"
+                f"• No: Replace current memory (clear existing)\n\n"
+                f"Note: Work patterns may be different on this device.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+
+            merge = (reply == QMessageBox.StandardButton.Yes)
+
+            # Import into memory
+            result = self.kernel.memory.import_data(
+                export_data["memory"],
+                merge=merge
+            )
+
+            # Optionally import preferences
+            if "preferences" in export_data:
+                pref_reply = QMessageBox.question(
+                    self, "Import Preferences",
+                    "Would you like to import workspace preferences too?\n\n"
+                    "(This will update your settings with values from the imported file)",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+
+                if pref_reply == QMessageBox.StandardButton.Yes:
+                    # Merge preferences
+                    self.workspace_config.update(export_data["preferences"])
+                    self.save_settings()
+
+            QMessageBox.information(
+                self, "Import Complete",
+                f"Memory imported successfully!\n\n"
+                f"Results:\n"
+                f"  • Entries imported: {result['entries_imported']}\n"
+                f"  • Relations imported: {result['relations_imported']}\n"
+                f"  • Entries skipped: {result['entries_skipped']}\n\n"
+                f"Your semantic memory has been updated."
+            )
+
+            # Refresh UI
+            self.desktop_view.refresh_icons()
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Import Failed",
+                f"Failed to import memory:\n\n{str(e)}\n\n"
+                f"Common causes:\n"
+                f"• Wrong password\n"
+                f"• Corrupted file\n"
+                f"• Incompatible file format"
+            )
+
+    def check_pro_feature(self, feature: str) -> bool:
+        """Check if user has access to a Pro feature.
+
+        Returns True if feature is available, False if upgrade needed.
+        """
+        if self.license.has_feature(feature):
+            return True
+
+        # Show upgrade dialog
+        self.show_upgrade_dialog(feature)
+        return False
+
+    def show_upgrade_dialog(self, feature: str):
+        """Show upgrade to Pro dialog."""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Upgrade to MarlOS Pro")
+        dialog.setMinimumWidth(500)
+
+        layout = QVBoxLayout()
+
+        # Title
+        title = QLabel("🚀 Unlock Full Power")
+        title.setStyleSheet("font-size: 18px; font-weight: bold;")
+        layout.addWidget(title)
+
+        layout.addSpacing(10)
+
+        # Message
+        message = QLabel(self.license.get_upgrade_message(feature))
+        message.setWordWrap(True)
+        layout.addWidget(message)
+
+        layout.addSpacing(20)
+
+        # Feature list
+        features = QLabel(
+            "<b>Pro Features:</b><br>"
+            "• Full semantic memory with embeddings<br>"
+            "• Screen memory capture (visual history)<br>"
+            "• Workflow analytics & insights<br>"
+            "• Document focus tracking<br>"
+            "• File relationship graph<br>"
+            "• Advanced semantic search<br>"
+            "• Priority support<br><br>"
+            "<b>One-time purchase: $49</b>"
+        )
+        features.setWordWrap(True)
+        layout.addWidget(features)
+
+        layout.addSpacing(20)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+
+        buy_button = QPushButton("Buy Pro License")
+        buy_button.setMinimumHeight(40)
+        buy_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                font-size: 14px;
+                border-radius: 5px;
+                padding: 10px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        buy_button.clicked.connect(lambda: self.open_license_purchase())
+        button_layout.addWidget(buy_button)
+
+        activate_button = QPushButton("Enter License Key")
+        activate_button.setMinimumHeight(40)
+        activate_button.clicked.connect(lambda: self.show_activate_license_dialog())
+        button_layout.addWidget(activate_button)
+
+        layout.addLayout(button_layout)
+
+        # Close button
+        close_button = QPushButton("Continue with Free")
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button)
+
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def open_license_purchase(self):
+        """Open browser to purchase license."""
+        from PyQt6.QtGui import QDesktopServices
+        from PyQt6.QtCore import QUrl
+
+        # TODO: Replace with actual purchase URL
+        QDesktopServices.openUrl(QUrl("https://marlos.io/purchase"))
+
+    def show_activate_license_dialog(self):
+        """Show license activation dialog."""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QFormLayout
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Activate MarlOS Pro")
+        dialog.setMinimumWidth(400)
+
+        layout = QVBoxLayout()
+
+        # Title
+        title = QLabel("Enter Your License Key")
+        title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        layout.addWidget(title)
+
+        layout.addSpacing(10)
+
+        # Instructions
+        instructions = QLabel(
+            "Enter your license key to activate MarlOS Pro.\n\n"
+            "Your license key looks like: MARLOS-PRO-XXXX-XXXX-XXXX"
+        )
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+
+        layout.addSpacing(15)
+
+        # Form
+        form = QFormLayout()
+
+        email_input = QLineEdit()
+        email_input.setPlaceholderText("your@email.com")
+        form.addRow("Email:", email_input)
+
+        key_input = QLineEdit()
+        key_input.setPlaceholderText("MARLOS-PRO-XXXX-XXXX-XXXX")
+        form.addRow("License Key:", key_input)
+
+        layout.addLayout(form)
+
+        layout.addSpacing(15)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+
+        activate_btn = QPushButton("Activate")
+        activate_btn.setMinimumHeight(40)
+        activate_btn.clicked.connect(
+            lambda: self.activate_license(key_input.text(), email_input.text(), dialog)
+        )
+        button_layout.addWidget(activate_btn)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        button_layout.addWidget(cancel_btn)
+
+        layout.addLayout(button_layout)
+
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def activate_license(self, license_key: str, email: str, dialog: QDialog):
+        """Activate a license key."""
+        license_key = license_key.strip()
+        email = email.strip()
+
+        if not license_key or not email:
+            QMessageBox.warning(
+                self, "Missing Information",
+                "Please enter both your license key and email address."
+            )
+            return
+
+        success, message = self.license.activate_license(license_key, email)
+
+        if success:
+            QMessageBox.information(
+                self, "License Activated",
+                f"{message}\n\n"
+                f"Tier: {self.license.get_tier().value.title()}\n"
+                f"Email: {email}"
+            )
+            dialog.accept()
+            # Refresh UI to enable new features
+            self.refresh_ui_for_license()
+        else:
+            QMessageBox.critical(
+                self, "Activation Failed",
+                f"Could not activate license:\n\n{message}"
+            )
+
+    def refresh_ui_for_license(self):
+        """Refresh UI after license change."""
+        # Update window title to show tier
+        tier = self.license.get_tier()
+        if tier == LicenseTier.PRO:
+            self.setWindowTitle("MarlOS Pro")
+        elif tier == LicenseTier.TEAM:
+            self.setWindowTitle("MarlOS Team")
+        else:
+            self.setWindowTitle("MarlOS")
+
+        # Enable/disable features based on license
+        # (This is handled by check_pro_feature() calls throughout the app)
+
+    def show_license_info(self):
+        """Show current license information."""
+        tier = self.license.get_tier()
+        features = self.license.get_available_features()
+
+        info = f"""
+MarlOS License Information
+─────────────────────────
+
+Tier: {tier.value.title()}
+Installation ID: {self.license._installation_id}
+
+Available Features:
+"""
+        for feat_key, feat_desc in features.items():
+            info += f"  ✓ {feat_desc}\n"
+
+        if self.license.is_free_tier():
+            info += "\nUpgrade to Pro to unlock all features!"
+
+        QMessageBox.information(self, "License Info", info)
+
+    def export_context_for_ai(self):
+        """Export current context for cloud AI models."""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QComboBox, QPushButton, QLabel, QCheckBox
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Export Context for AI")
+        dialog.setMinimumWidth(700)
+        dialog.setMinimumHeight(500)
+
+        layout = QVBoxLayout()
+
+        # Title
+        title = QLabel("Export Your Context to Clipboard")
+        title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        layout.addWidget(title)
+
+        layout.addSpacing(10)
+
+        # Instructions
+        instructions = QLabel(
+            "This exports your current MarlOS context so you can paste it into "
+            "Claude, ChatGPT, or other cloud AI models. The AI will have full "
+            "context of what you're working on."
+        )
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+
+        layout.addSpacing(10)
+
+        # Options
+        options_layout = QHBoxLayout()
+
+        # Time window selector
+        options_layout.addWidget(QLabel("Time window:"))
+        time_window = QComboBox()
+        time_window.addItems(["Current session", "Last hour", "Today", "This week", "All time"])
+        time_window.setCurrentIndex(2)  # Default to "Today"
+        options_layout.addWidget(time_window)
+
+        layout.addLayout(options_layout)
+
+        layout.addSpacing(10)
+
+        # Include options
+        include_layout = QHBoxLayout()
+
+        include_focus = QCheckBox("Include focus")
+        include_focus.setChecked(True)
+        include_layout.addWidget(include_focus)
+
+        include_files = QCheckBox("Include file contents")
+        include_files.setChecked(True)
+        include_layout.addWidget(include_files)
+
+        include_relations = QCheckBox("Include file relations")
+        include_relations.setChecked(True)
+        include_layout.addWidget(include_relations)
+
+        layout.addLayout(include_layout)
+
+        layout.addSpacing(10)
+
+        # Format selector
+        format_layout = QHBoxLayout()
+        format_layout.addWidget(QLabel("Format:"))
+        format_combo = QComboBox()
+        format_combo.addItems(["Markdown", "JSON", "Compact"])
+        format_combo.setCurrentIndex(0)
+        format_layout.addWidget(format_combo)
+        layout.addLayout(format_layout)
+
+        layout.addSpacing(10)
+
+        # Preview text area
+        preview_label = QLabel("Preview:")
+        layout.addWidget(preview_label)
+
+        preview = QTextEdit()
+        preview.setReadOnly(True)
+        preview.setPlainText("Click 'Generate' to create context export...")
+        layout.addWidget(preview)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+
+        generate_btn = QPushButton("Generate Preview")
+        generate_btn.clicked.connect(
+            lambda: self.generate_context_preview(
+                time_window.currentText(),
+                include_focus.isChecked(),
+                include_files.isChecked(),
+                include_relations.isChecked(),
+                format_combo.currentText(),
+                preview
+            )
+        )
+        button_layout.addWidget(generate_btn)
+
+        copy_btn = QPushButton("Copy to Clipboard")
+        copy_btn.clicked.connect(lambda: self.copy_context_to_clipboard(preview.toPlainText()))
+        button_layout.addWidget(copy_btn)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        button_layout.addWidget(close_btn)
+
+        layout.addLayout(button_layout)
+
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def generate_context_preview(self, time_window: str, include_focus: bool,
+                               include_files: bool, include_relations: bool,
+                               format_type: str, preview: QTextEdit):
+        """Generate context preview."""
+        try:
+            # Map time window to kernel format
+            time_map = {
+                "Current session": "all",
+                "Last hour": "all",  # TODO: Implement hour filtering
+                "Today": "today",
+                "This week": "this_week",
+                "All time": "all"
+            }
+            kernel_window = time_map.get(time_window, "today")
+
+            # Get context from kernel
+            context = self.kernel.export_context(
+                format=format_type.lower(),
+                time_window=kernel_window
+            )
+
+            # Add file contents if requested
+            if include_files:
+                context += "\n\n## Open Files\n\n"
+                for tab_idx in range(self.tabs.count()):
+                    widget = self.tabs.widget(tab_idx)
+                    if hasattr(widget, 'file_path') and widget.file_path:
+                        try:
+                            with open(widget.file_path, 'r', encoding='utf-8') as f:
+                                content = f.read()
+                                # Limit content size
+                                if len(content) > 5000:
+                                    content = content[:5000] + "\n\n... (truncated)"
+                                context += f"\n### {widget.file_path}\n\n```\n{content}\n```\n\n"
+                        except Exception:
+                            pass
+
+            preview.setPlainText(context)
+
+        except Exception as e:
+            preview.setPlainText(f"Error generating context:\n{str(e)}")
+
+    def copy_context_to_clipboard(self, text: str):
+        """Copy context to clipboard."""
+        from PyQt6.QtWidgets import QApplication
+        clipboard = QApplication.clipboard()
+        clipboard.setText(text)
+        QMessageBox.information(self, "Copied", "Context copied to clipboard!\n\nPaste it into your AI chat.")
 
     def _default_workspace_config(self):
         return {
