@@ -8,8 +8,8 @@ Features:
 - Recursive directory scanning
 - File type filtering
 - Progress tracking
-- Chunked ingestion for large files
-- Incremental updates (skip unchanged)
+- Smart parsing based on file type
+- Repository-aware analysis
 - Background processing
 """
 
@@ -161,287 +161,8 @@ class FileScanner:
         return files
 
 
-class FileImporter(QThread):
-    """Background thread for importing files into semantic memory."""
-
-    # Signals
-    progress = pyqtSignal(int, int, str)  # current, total, current_file
-    file_complete = pyqtSignal(str, bool, str)  # file_path, success, message
-    finished = pyqtSignal(object)  # ImportStats
-    error = pyqtSignal(str)  # error_message
-
-    def __init__(
-        self,
-        kernel,
-        files: List[str],
-        chunk_size: int = 10000,
-        skip_unchanged: bool = True,
-        parent=None
-    ):
-        super().__init__(parent)
-        self.kernel = kernel
-        self.files = files
-        self.chunk_size = chunk_size
-        self.skip_unchanged = skip_unchanged
-        self._should_stop = False
-        self.stats = ImportStats()
-        self.stats.total_files = len(files)
-        self.stats.total_size = sum(os.path.getsize(f) for f in files if os.path.exists(f))
-
-    def stop(self):
-        """Stop the import process."""
-        self._should_stop = True
-
-    def _get_file_hash(self, file_path: str) -> str:
-        """Get hash of file for change detection."""
-        try:
-            with open(file_path, 'rb') as f:
-                # Read first and last 4KB for quick hash
-                start = f.read(4096)
-                f.seek(-4096, 2)
-                end = f.read()
-                return hashlib.md5(start + end).hexdigest()
-        except Exception:
-            return ""
-
-    def _should_import_file(self, file_path: str) -> Tuple[bool, str]:
-        """Check if file should be imported (not unchanged)."""
-        if not self.skip_unchanged:
-            return True, "Importing"
-
-        # Check if already in memory and unchanged
-        try:
-            doc_id = f"doc_{file_path.replace('/', '_').replace('.', '_').replace(':', '_')}"
-            existing = self.kernel.memory.get(doc_id)
-
-            if existing:
-                current_hash = self._get_file_hash(file_path)
-                stored_hash = existing.metadata.get("file_hash", "")
-
-                if current_hash == stored_hash:
-                    return False, "Unchanged"
-
-        except Exception:
-            pass
-
-        return True, "New or modified"
-
-    def _ingest_file(self, file_path: str) -> Tuple[bool, str]:
-        """Import a single file into semantic memory."""
-        try:
-            # Check if we should import
-            should_import, reason = self._should_import_file(file_path)
-            if not should_import:
-                return False, reason
-
-            # Read file
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-
-            # Get file hash
-            file_hash = self._get_file_hash(file_path)
-            file_size = len(content)
-
-            # Determine if Python file (for hierarchical parsing)
-            is_python = file_path.endswith('.py')
-
-            # Import based on file type and size
-            if is_python and file_size > 1000:
-                # Python files: use hierarchical parsing
-                self._ingest_python_file(file_path, content, file_hash)
-            elif file_size > self.chunk_size:
-                # Large files: chunk and import
-                self._ingest_chunked_file(file_path, content, file_hash)
-            else:
-                # Small files: import directly
-                self._ingest_simple_file(file_path, content, file_hash)
-
-            file_size = os.path.getsize(file_path)
-            self.stats.processed_size += file_size
-
-            return True, "Imported"
-
-        except Exception as e:
-            return False, str(e)
-
-    def _ingest_simple_file(self, file_path: str, content: str, file_hash: str):
-        """Import a small file directly."""
-        import ast
-
-        doc_id = f"doc_{file_path.replace('/', '_').replace('.', '_').replace(':', '_')}"
-
-        # Check if already exists
-        existing = self.kernel.memory.get(doc_id)
-        if existing:
-            self.kernel.memory.update(
-                doc_id,
-                content=content,
-                metadata={
-                    "path": file_path,
-                    "file_hash": file_hash,
-                    "file_size": len(content),
-                    "last_modified": os.path.getmtime(file_path)
-                }
-            )
-        else:
-            self.kernel.memory.store(
-                content=content,
-                type="document",
-                metadata={
-                    "path": file_path,
-                    "file_hash": file_hash,
-                    "file_size": len(content),
-                    "last_modified": os.path.getmtime(file_path)
-                },
-                id=doc_id,
-            )
-
-    def _ingest_python_file(self, file_path: str, content: str, file_hash: str):
-        """Import a Python file with hierarchical structure."""
-        import ast
-
-        try:
-            tree = ast.parse(content)
-        except Exception:
-            # If parsing fails, fall back to simple import
-            self._ingest_simple_file(file_path, content, file_hash)
-            return
-
-        # Count classes and functions
-        classes = [node for node in tree.body if isinstance(node, ast.ClassDef)]
-        functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
-
-        # File-level summary
-        file_info = (
-            f"Python file: {file_path}\n"
-            f"Classes: {len(classes)}\n"
-            f"Functions: {len(functions)}\n"
-            f"Lines: {len(content.splitlines())}"
-        )
-
-        doc_id = f"doc_{file_path.replace('/', '_').replace('.', '_').replace(':', '_')}"
-
-        # Store file summary
-        self.kernel.memory.store(
-            content=file_info,
-            type="document",
-            metadata={
-                "path": file_path,
-                "file_hash": file_hash,
-                "file_size": len(content),
-                "last_modified": os.path.getmtime(file_path),
-                "classes": [c.name for c in classes],
-                "functions": [f.name for f in functions],
-                "language": "python"
-            },
-            id=doc_id,
-        )
-
-        # Store classes
-        for cls in classes:
-            class_code = ast.get_source_segment(content, cls)
-            if class_code:
-                self.kernel.memory.store(
-                    content=f"Class: {cls.name}\n\n{class_code}",
-                    type="chunk",
-                    metadata={
-                        "path": file_path,
-                        "type": "class",
-                        "name": cls.name,
-                        "file_hash": file_hash,
-                    }
-                )
-
-        # Store functions
-        for func in functions:
-            func_code = ast.get_source_segment(content, func)
-            if func_code:
-                self.kernel.memory.store(
-                    content=f"Function: {func.name}\n\n{func_code}",
-                    type="chunk",
-                    metadata={
-                        "path": file_path,
-                        "type": "function",
-                        "name": func.name,
-                        "file_hash": file_hash,
-                    }
-                )
-
-    def _ingest_chunked_file(self, file_path: str, content: str, file_hash: str):
-        """Import a large file by chunking."""
-        chunks = []
-        lines = content.splitlines()
-        chunk_lines = []
-        chunk_num = 0
-
-        for i, line in enumerate(lines):
-            chunk_lines.append(line)
-
-            # Create chunk every N lines
-            if len(chunk_lines) >= 500:
-                chunk_content = "\n".join(chunk_lines)
-                chunks.append(chunk_content)
-                chunk_lines = []
-                chunk_num += 1
-
-        # Add remaining lines
-        if chunk_lines:
-            chunks.append("\n".join(chunk_lines))
-
-        # Store chunks
-        for i, chunk in enumerate(chunks):
-            self.kernel.memory.store(
-                content=f"Chunk {i+1}/{len(chunks)}\n\n{chunk}",
-                type="chunk",
-                metadata={
-                    "path": file_path,
-                    "chunk_index": i,
-                    "total_chunks": len(chunks),
-                    "file_hash": file_hash,
-                }
-            )
-
-        # Store file reference
-        doc_id = f"doc_{file_path.replace('/', '_').replace('.', '_').replace(':', '_')}"
-        self.kernel.memory.store(
-            content=f"File: {file_path}\nChunks: {len(chunks)}\nTotal lines: {len(lines)}",
-            type="document",
-            metadata={
-                "path": file_path,
-                "file_hash": file_hash,
-                "file_size": len(content),
-                "last_modified": os.path.getmtime(file_path),
-                "chunked": True
-            },
-            id=doc_id
-        )
-
-    def run(self):
-        """Run the import process."""
-        self.stats.start_time = time.time()
-
-        for i, file_path in enumerate(self.files):
-            if self._should_stop:
-                break
-
-            # Emit progress
-            self.progress.emit(i + 1, self.stats.total_files, file_path)
-
-            # Import file
-            success, message = self._ingest_file(file_path)
-
-            if success:
-                self.stats.successful += 1
-                self.file_complete.emit(file_path, True, message)
-            else:
-                if message == "Unchanged":
-                    self.stats.skipped += 1
-                else:
-                    self.stats.failed += 1
-                self.file_complete.emit(file_path, False, message)
-
-        self.stats.end_time = time.time()
-        self.finished.emit(self.stats)
+# Use the new SmartImporter
+from ide.smart_import import SmartImporter
 
 
 class BulkImportDialog(QDialog):
@@ -450,7 +171,7 @@ class BulkImportDialog(QDialog):
     def __init__(self, kernel, parent=None):
         super().__init__(parent)
         self.kernel = kernel
-        self.importer: Optional[FileImporter] = None
+        self.importer: Optional[SmartImporter] = None
         self.setup_ui()
 
     def setup_ui(self):
@@ -463,7 +184,7 @@ class BulkImportDialog(QDialog):
         # Instructions
         instructions = QLabel(
             "Import entire directories into semantic memory.\n"
-            "MarlOS will analyze and index your files for intelligent search."
+            "MarlOS will analyze your repo structure and intelligently import files."
         )
         instructions.setWordWrap(True)
         layout.addWidget(instructions)
@@ -508,21 +229,6 @@ class BulkImportDialog(QDialog):
         self.max_depth.setValue(10)
         self.max_depth.setToolTip("Maximum directory depth to scan")
         options_layout.addRow("Max Depth:", self.max_depth)
-
-        # Chunk size
-        self.chunk_size = QSpinBox()
-        self.chunk_size.setRange(1000, 100000)
-        self.chunk_size.setValue(10000)
-        self.chunk_size.setSingleStep(1000)
-        self.chunk_size.setSuffix(" bytes")
-        self.chunk_size.setToolTip("Files larger than this will be chunked")
-        options_layout.addRow("Chunk Size:", self.chunk_size)
-
-        # Skip unchanged
-        self.skip_unchanged = QCheckBox("Skip unchanged files")
-        self.skip_unchanged.setChecked(True)
-        self.skip_unchanged.setToolTip("Files already in memory that haven't changed")
-        options_layout.addRow("", self.skip_unchanged)
 
         options_group.setLayout(options_layout)
         layout.addWidget(options_group)
@@ -654,7 +360,7 @@ class BulkImportDialog(QDialog):
             self.log_message("No files to import")
             return
 
-        self.log_message(f"Starting import of {len(self.scanned_files)} files...")
+        self.log_message(f"Starting smart import of {len(self.scanned_files)} files...")
 
         # Disable controls
         self.import_btn.setEnabled(False)
@@ -665,19 +371,13 @@ class BulkImportDialog(QDialog):
         # Clear log
         self.log_text.clear()
 
-        # Create importer thread
-        self.importer = FileImporter(
-            self.kernel,
-            self.scanned_files,
-            chunk_size=self.chunk_size.value(),
-            skip_unchanged=self.skip_unchanged.isChecked()
-        )
+        # Create smart importer thread
+        self.importer = SmartImporter(self.kernel, self.scanned_files)
 
         # Connect signals
         self.importer.progress.connect(self.on_import_progress)
         self.importer.file_complete.connect(self.on_file_complete)
         self.importer.finished.connect(self.on_import_finished)
-        self.importer.error.connect(self.on_import_error)
 
         # Start import
         self.importer.start()
@@ -700,21 +400,32 @@ class BulkImportDialog(QDialog):
         icon = Path(file_path).name
         self.log_message(f"{status} {icon}: {message}")
 
-    def on_import_finished(self, stats: ImportStats):
+    def on_import_finished(self, stats: dict):
         """Handle import completion."""
-        duration = stats.duration()
-        rate = stats.successful / duration if duration > 0 else 0
+        duration = stats.get("duration", 0)
+        successful = stats.get("successful", 0)
+        total = stats.get("total", 0)
+        skipped = stats.get("skipped", 0)
+        failed = stats.get("failed", 0)
+        strategies_used = stats.get("strategies_used", {})
+
+        rate = successful / duration if duration > 0 else 0
 
         summary = f"""
-Import Complete!
-───────────────
-Files scanned: {stats.total_files}
-Successful: {stats.successful}
-Skipped: {stats.skipped}
-Failed: {stats.failed}
+Smart Import Complete!
+──────────────────────
+Files scanned: {total}
+Successful: {successful}
+Skipped: {skipped}
+Failed: {failed}
 Duration: {duration:.1f}s
 Rate: {rate:.1f} files/second
+
+Strategies Used:
 """
+        for strategy, count in strategies_used.items():
+            if "Strategy" not in strategy:
+                summary += f"  {strategy}: {count}\n"
 
         self.log_message(summary)
         self.status_label.setText("Import complete!")
@@ -726,10 +437,6 @@ Rate: {rate:.1f} files/second
         self.dir_input.setEnabled(True)
         self.file_type_combo.setEnabled(True)
 
-    def on_import_error(self, error: str):
-        """Handle import error."""
-        self.log_message(f"Error: {error}")
-
     def log_message(self, message: str):
         """Add message to log."""
         self.log_text.append(message)
@@ -739,3 +446,4 @@ def show_bulk_import_dialog(kernel, parent=None):
     """Show the bulk import dialog."""
     dialog = BulkImportDialog(kernel, parent)
     dialog.exec()
+
