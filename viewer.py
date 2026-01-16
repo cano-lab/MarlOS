@@ -54,6 +54,7 @@ try:
 except Exception:
     markdown_lib = None
 from ide.license import get_license_manager, LicenseTier
+from ide.relation_explorer import create_relation_explorer_dock
 from ide.providers import (
     DocumentCommandProvider,
     FormattingProvider,
@@ -6712,6 +6713,13 @@ class MarkdownEditor(QMainWindow):
         self.semantic_action.triggered.connect(self.toggle_semantic_dock)
         view_menu.addAction(self.semantic_action)
 
+        self.relation_action = QAction("Relation &Graph (Pro)", self)
+        self.relation_action.setCheckable(True)
+        self.relation_action.setChecked(False)
+        self.relation_action.setShortcut(QKeySequence("Ctrl+G"))
+        self.relation_action.triggered.connect(self.toggle_relation_dock)
+        view_menu.addAction(self.relation_action)
+
         view_menu.addSeparator()
 
         # Visual Memory controls
@@ -7031,6 +7039,13 @@ class MarkdownEditor(QMainWindow):
 
         # Connect semantic panel to kernel
         self.semantic_panel.set_kernel(self.kernel)
+
+        # Relation Graph panel (Pro feature) - visualize file relationships
+        self.relation_dock = create_relation_explorer_dock(self.kernel, self)
+        self.relation_dock.setStyleSheet(dock_style)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.relation_dock)
+        self.relation_dock.setVisible(False)
+        self.relation_dock.setMinimumWidth(400)
 
         # Connect context layer signals (if PyQt is available)
         if hasattr(self.kernel, 'focus_changed'):
@@ -8191,6 +8206,22 @@ Available Features:
             if isinstance(tab, MarkdownTab) and tab.file_path:
                 self.semantic_panel.record_file_access(tab.file_path)
                 self.semantic_panel.update_for_file(tab.file_path)
+
+    def toggle_relation_dock(self):
+        """Toggle relation graph dock (Pro feature)."""
+        # Check if user has Pro license
+        if not self.check_pro_feature("pro.relation_graph"):
+            self.relation_action.setChecked(False)
+            return
+
+        visible = self.relation_action.isChecked()
+        self.relation_dock.setVisible(visible)
+        if visible:
+            # Refresh the graph when shown
+            from ide.relation_explorer import RelationExplorer
+            explorer = self.relation_dock.widget()
+            if isinstance(explorer, RelationExplorer):
+                explorer.load_graph()
 
     def _update_links_panel(self):
         """Update the links panel for the current document."""
