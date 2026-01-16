@@ -1072,28 +1072,38 @@ class SmartImporter(QThread):
 
     def _should_skip_file(self, file_path: str) -> bool:
         """Check if file should be skipped (unchanged)."""
+        # Check database directly (not cache) to avoid stale data
         try:
             doc_id = f"doc_{file_path.replace('/', '_').replace('.', '_').replace(':', '_')}"
-            existing = self.kernel.memory.get(doc_id)
 
-            if existing:
-                # Get current hash
-                try:
-                    with open(file_path, 'rb') as f:
-                        start = f.read(4096)
-                        f.seek(-4096, 2)
-                        end = f.read()
+            # Get database path from kernel
+            if hasattr(self.kernel.memory, '_conn'):
+                conn = self.kernel.memory._conn
+                cursor = conn.execute(
+                    "SELECT metadata FROM memory WHERE id = ?", (doc_id,)
+                )
+                row = cursor.fetchone()
+
+                if row:
+                    # File exists in database, check hash
+                    import json
+                    metadata = json.loads(row[0]) if row[0] else {}
+                    stored_hash = metadata.get("file_hash", "")
+
+                    if stored_hash:
+                        # Get current hash
+                        with open(file_path, 'rb') as f:
+                            start = f.read(4096)
+                            f.seek(-4096, 2)
+                            end = f.read()
                         current_hash = hashlib.md5(start + end).hexdigest()
 
-                    stored_hash = existing.metadata.get("file_hash", "")
-                    return current_hash == stored_hash
-                except Exception:
-                    pass
+                        if current_hash == stored_hash:
+                            return True  # Skip unchanged file
+        except Exception as e:
+            print(f"[Smart Import] Error checking file {file_path}: {e}")
 
-        except Exception:
-            pass
-
-        return False
+        return False  # Import the file
 
     def _find_common_root(self, files: List[str]) -> Optional[str]:
         """Find common root directory of files."""
