@@ -44,6 +44,8 @@ class MemoryPoint:
     content: str
     metadata: Dict
     color: Tuple[float, float, float]
+    created_at: float = 0.0  # Unix timestamp
+    time_normalized: float = 0.0  # 0-1 normalized time (oldest=0, newest=1)
 
 
 class MemoryGraph3DWidget(QOpenGLWidget):
@@ -91,6 +93,12 @@ class MemoryGraph3DWidget(QOpenGLWidget):
         self.show_edges = True
         self.point_size = 8.0
         self.edge_alpha = 0.3
+
+        # Time dimension options
+        self.use_time_z_axis = False  # Use time as Z axis instead of PCA/t-SNE
+        self.color_by_time = False  # Color points by time (blue=old, red=new)
+        self.time_range = (0.0, 1.0)  # Filter to show only points in this time range
+        self.original_positions: Dict[int, np.ndarray] = {}  # Store original 3D positions
 
         # Animation
         self.auto_rotate = False
@@ -159,6 +167,18 @@ class MemoryGraph3DWidget(QOpenGLWidget):
         (0.9, 0.9, 0.5), (0.5, 0.9, 0.9),
     ]
 
+    def _get_time_color(self, time_normalized: float) -> Tuple[float, float, float]:
+        """Get color based on normalized time (0=old/blue, 1=new/red)."""
+        # Gradient from blue (old) through green/yellow to red (new)
+        if time_normalized < 0.5:
+            # Blue to green
+            t = time_normalized * 2
+            return (0.2, 0.3 + 0.5 * t, 1.0 - 0.6 * t)
+        else:
+            # Green to red
+            t = (time_normalized - 0.5) * 2
+            return (0.2 + 0.8 * t, 0.8 - 0.5 * t, 0.4 - 0.3 * t)
+
     def _draw_points(self):
         """Draw all memory points."""
         # Draw non-highlighted points first (dimmer)
@@ -170,11 +190,26 @@ class MemoryGraph3DWidget(QOpenGLWidget):
             if i in self.hidden_points:
                 continue
 
+            # Skip points outside time range
+            if not (self.time_range[0] <= point.time_normalized <= self.time_range[1]):
+                continue
+
+            # Determine position (use time Z-axis if enabled)
+            if self.use_time_z_axis:
+                pos = np.array([point.position[0], point.position[1],
+                               (point.time_normalized - 0.5) * 2])  # Map to [-1, 1]
+            else:
+                pos = point.position
+
             # Determine color
             if i == self.selected_point:
                 continue  # Draw selected separately
             elif i in self.highlighted_points:
                 continue  # Draw highlighted separately
+            elif self.color_by_time:
+                # Color by time (blue=old, red=new)
+                color = self._get_time_color(point.time_normalized)
+                alpha = 0.8
             elif self.cluster_labels is not None and i < len(self.cluster_labels):
                 # Use cluster color
                 cluster_id = self.cluster_labels[i]
@@ -185,7 +220,7 @@ class MemoryGraph3DWidget(QOpenGLWidget):
                 alpha = 0.4 if self.highlighted_points else 0.8
 
             glColor4f(*color, alpha)
-            glVertex3f(*point.position)
+            glVertex3f(*pos)
 
         glEnd()
 
@@ -196,19 +231,36 @@ class MemoryGraph3DWidget(QOpenGLWidget):
             for i in self.highlighted_points:
                 if i < len(self.points) and i not in self.hidden_points:
                     point = self.points[i]
+                    # Skip points outside time range
+                    if not (self.time_range[0] <= point.time_normalized <= self.time_range[1]):
+                        continue
+                    # Use time Z-axis if enabled
+                    if self.use_time_z_axis:
+                        pos = np.array([point.position[0], point.position[1],
+                                       (point.time_normalized - 0.5) * 2])
+                    else:
+                        pos = point.position
                     glColor4f(1.0, 1.0, 0.3, 1.0)  # Yellow for highlighted
-                    glVertex3f(*point.position)
+                    glVertex3f(*pos)
             glEnd()
 
         # Draw selected point (white, largest)
         if self.selected_point is not None and self.selected_point < len(self.points):
             if self.selected_point not in self.hidden_points:
                 point = self.points[self.selected_point]
-                glPointSize(self.point_size * 2)
-                glBegin(GL_POINTS)
-                glColor4f(1.0, 1.0, 1.0, 1.0)
-                glVertex3f(*point.position)
-                glEnd()
+                # Check time range
+                if self.time_range[0] <= point.time_normalized <= self.time_range[1]:
+                    # Use time Z-axis if enabled
+                    if self.use_time_z_axis:
+                        pos = np.array([point.position[0], point.position[1],
+                                       (point.time_normalized - 0.5) * 2])
+                    else:
+                        pos = point.position
+                    glPointSize(self.point_size * 2)
+                    glBegin(GL_POINTS)
+                    glColor4f(1.0, 1.0, 1.0, 1.0)
+                    glVertex3f(*pos)
+                    glEnd()
 
     def _draw_edges(self):
         """Draw relationship edges."""
@@ -472,6 +524,43 @@ class MemoryVisualizerDialog(QDialog):
 
         left_layout.addLayout(controls2)
 
+        # Third row of controls - Time dimension
+        controls3 = QHBoxLayout()
+
+        controls3.addWidget(QLabel("Time:"))
+
+        self.time_z_cb = QCheckBox("Z-axis = Time")
+        self.time_z_cb.toggled.connect(self._toggle_time_z)
+        controls3.addWidget(self.time_z_cb)
+
+        self.color_time_cb = QCheckBox("Color by Time")
+        self.color_time_cb.toggled.connect(self._toggle_color_time)
+        controls3.addWidget(self.color_time_cb)
+
+        controls3.addWidget(QLabel("Range:"))
+
+        self.time_min_slider = QSlider(Qt.Orientation.Horizontal)
+        self.time_min_slider.setRange(0, 100)
+        self.time_min_slider.setValue(0)
+        self.time_min_slider.setMaximumWidth(80)
+        self.time_min_slider.valueChanged.connect(self._update_time_range)
+        controls3.addWidget(self.time_min_slider)
+
+        self.time_range_label = QLabel("0% - 100%")
+        self.time_range_label.setMinimumWidth(80)
+        controls3.addWidget(self.time_range_label)
+
+        self.time_max_slider = QSlider(Qt.Orientation.Horizontal)
+        self.time_max_slider.setRange(0, 100)
+        self.time_max_slider.setValue(100)
+        self.time_max_slider.setMaximumWidth(80)
+        self.time_max_slider.valueChanged.connect(self._update_time_range)
+        controls3.addWidget(self.time_max_slider)
+
+        controls3.addStretch()
+
+        left_layout.addLayout(controls3)
+
         # Progress bar
         self.progress = QProgressBar()
         self.progress.setVisible(False)
@@ -592,6 +681,12 @@ class MemoryVisualizerDialog(QDialog):
             if max_range > 0:
                 positions = positions / max_range
 
+            # Calculate time range for normalization
+            timestamps = [e.get('created_at', 0) or 0 for e in entries]
+            time_min = min(timestamps) if timestamps else 0
+            time_max = max(timestamps) if timestamps else 1
+            time_range = time_max - time_min if time_max > time_min else 1
+
             # Create points
             self.points = []
             self.id_to_index = {}
@@ -606,6 +701,10 @@ class MemoryVisualizerDialog(QDialog):
                     MemoryGraph3DWidget.TYPE_COLORS['default']
                 )
 
+                # Calculate normalized time (0=oldest, 1=newest)
+                created_at = entry.get('created_at', 0) or 0
+                time_normalized = (created_at - time_min) / time_range if time_range > 0 else 0.5
+
                 point = MemoryPoint(
                     id=entry['id'],
                     position=positions[i],
@@ -613,7 +712,9 @@ class MemoryVisualizerDialog(QDialog):
                     entry_type=entry_type,
                     content=entry.get('content', '')[:500],
                     metadata=metadata,
-                    color=color
+                    color=color,
+                    created_at=created_at,
+                    time_normalized=time_normalized
                 )
                 self.points.append(point)
                 self.id_to_index[entry['id']] = i
@@ -634,6 +735,16 @@ class MemoryVisualizerDialog(QDialog):
 
             stats_text = f"Total entries: {len(self.points)}\n"
             stats_text += f"Relations: {len(edges)}\n\n"
+
+            # Time range info
+            if time_min > 0 and time_max > 0:
+                from datetime import datetime
+                dt_min = datetime.fromtimestamp(time_min)
+                dt_max = datetime.fromtimestamp(time_max)
+                stats_text += f"Time range:\n"
+                stats_text += f"  Oldest: {dt_min.strftime('%Y-%m-%d')}\n"
+                stats_text += f"  Newest: {dt_max.strftime('%Y-%m-%d')}\n\n"
+
             stats_text += "By type:\n"
             for t, c in sorted(type_counts.items(), key=lambda x: -x[1]):
                 stats_text += f"  {t}: {c}\n"
@@ -661,7 +772,7 @@ class MemoryVisualizerDialog(QDialog):
         cursor = conn.cursor()
 
         cursor.execute('''
-            SELECT id, type, content, metadata, vector
+            SELECT id, type, content, metadata, vector, created_at
             FROM memory
             WHERE vector IS NOT NULL
             LIMIT 5000
@@ -669,7 +780,7 @@ class MemoryVisualizerDialog(QDialog):
 
         entries = []
         for row in cursor.fetchall():
-            id_, type_, content, metadata_str, vector_blob = row
+            id_, type_, content, metadata_str, vector_blob, created_at = row
 
             if vector_blob:
                 # Decode vector from blob
@@ -680,7 +791,8 @@ class MemoryVisualizerDialog(QDialog):
                     'type': type_,
                     'content': content,
                     'metadata': json.loads(metadata_str) if metadata_str else {},
-                    'vector': vector
+                    'vector': vector,
+                    'created_at': created_at or 0.0
                 })
 
         conn.close()
@@ -725,6 +837,14 @@ class MemoryVisualizerDialog(QDialog):
 
         details = f"ID: {point.id[:50]}...\n\n"
         details += f"Type: {point.entry_type}\n\n"
+
+        # Show time info
+        if point.created_at > 0:
+            from datetime import datetime
+            dt = datetime.fromtimestamp(point.created_at)
+            details += f"Created: {dt.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            details += f"Time position: {point.time_normalized:.1%} (oldest to newest)\n\n"
+
         details += f"Content:\n{point.content[:1000]}\n\n"
         details += f"Metadata:\n"
 
@@ -742,6 +862,37 @@ class MemoryVisualizerDialog(QDialog):
     def _update_point_size(self, size: int):
         """Update point size."""
         self.gl_widget.point_size = float(size)
+        self.gl_widget.update()
+
+    def _toggle_time_z(self, enabled: bool):
+        """Toggle using time as Z axis."""
+        self.gl_widget.use_time_z_axis = enabled
+        self.gl_widget.update()
+
+    def _toggle_color_time(self, enabled: bool):
+        """Toggle coloring by time."""
+        self.gl_widget.color_by_time = enabled
+        # Clear cluster coloring when enabling time coloring
+        if enabled:
+            self.gl_widget.cluster_labels = None
+        self.gl_widget.update()
+
+    def _update_time_range(self):
+        """Update time range filter."""
+        min_val = self.time_min_slider.value() / 100.0
+        max_val = self.time_max_slider.value() / 100.0
+
+        # Ensure min <= max
+        if min_val > max_val:
+            if self.sender() == self.time_min_slider:
+                self.time_max_slider.setValue(int(min_val * 100))
+                max_val = min_val
+            else:
+                self.time_min_slider.setValue(int(max_val * 100))
+                min_val = max_val
+
+        self.gl_widget.time_range = (min_val, max_val)
+        self.time_range_label.setText(f"{int(min_val*100)}% - {int(max_val*100)}%")
         self.gl_widget.update()
 
     def _search_points(self):
