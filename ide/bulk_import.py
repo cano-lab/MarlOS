@@ -78,6 +78,10 @@ class FileScanner:
         "Scripts": [
             ".sh", ".bash", ".zsh", ".fish",
             ".bat", ".cmd", ".ps1"
+        ],
+        "Images": [
+            ".png", ".jpg", ".jpeg", ".gif", ".webp",
+            ".bmp", ".tiff", ".tif", ".svg"
         ]
     }
 
@@ -97,8 +101,11 @@ class FileScanner:
         max_depth: int = 10,
         max_files: int = 10000,
         exclude_dirs: Optional[Set[str]] = None,
-        progress_callback: Optional[Callable] = None
-    ) -> List[str]:
+        exclude_patterns: Optional[List[str]] = None,
+        max_file_size_mb: float = 5.0,
+        progress_callback: Optional[Callable] = None,
+        track_skipped: bool = False
+    ):
         """Scan directory for files matching criteria.
 
         Args:
@@ -107,11 +114,17 @@ class FileScanner:
             max_depth: Maximum directory depth
             max_files: Maximum files to return
             exclude_dirs: Directory names to exclude
+            exclude_patterns: File name patterns to exclude (e.g., ["*lexicon*"])
+            max_file_size_mb: Skip files larger than this (MB)
             progress_callback: Called with (current, total, path)
+            track_skipped: If True, also return list of skipped files with reasons
 
         Returns:
-            List of file paths
+            If track_skipped=False: List of file paths
+            If track_skipped=True: Tuple of (files, skipped) where skipped is [(path, reason, size_mb), ...]
         """
+        import fnmatch
+
         if exclude_dirs is None:
             exclude_dirs = {
                 "__pycache__", "node_modules", ".git", ".svn",
@@ -121,11 +134,23 @@ class FileScanner:
                 ".pytest_cache", ".mypy_cache"
             }
 
+        if exclude_patterns is None:
+            exclude_patterns = []
+
         files = []
+        skipped = []  # List of (path, reason, size_mb)
         root = Path(root_path)
+        max_size_bytes = max_file_size_mb * 1024 * 1024
 
         if not root.exists() or not root.is_dir():
-            return files
+            return (files, skipped) if track_skipped else files
+
+        def matches_exclude_pattern(filename: str) -> Optional[str]:
+            """Check if filename matches any exclude pattern. Returns matching pattern or None."""
+            for pattern in exclude_patterns:
+                if fnmatch.fnmatch(filename.lower(), pattern.lower()):
+                    return pattern
+            return None
 
         def scan_dir(current_dir: Path, current_depth: int):
             """Recursively scan directory."""
@@ -146,19 +171,44 @@ class FileScanner:
                         scan_dir(item, current_depth + 1)
                         continue
 
-                    # Check file extension
+                    # Check file
                     if item.is_file():
-                        if extensions is None or item.suffix.lower() in extensions:
-                            files.append(str(item))
-                            if progress_callback:
-                                progress_callback(len(files), max_files, str(item))
+                        # Check extension
+                        if extensions is not None and item.suffix.lower() not in extensions:
+                            continue
+
+                        # Check exclude patterns
+                        matched_pattern = matches_exclude_pattern(item.name)
+                        if matched_pattern:
+                            if track_skipped:
+                                try:
+                                    size_mb = item.stat().st_size / (1024 * 1024)
+                                except OSError:
+                                    size_mb = 0
+                                skipped.append((str(item), f"Pattern: {matched_pattern}", size_mb))
+                            continue
+
+                        # Check file size
+                        try:
+                            file_size = item.stat().st_size
+                            size_mb = file_size / (1024 * 1024)
+                            if file_size > max_size_bytes:
+                                if track_skipped:
+                                    skipped.append((str(item), f"Too large: {size_mb:.1f} MB", size_mb))
+                                continue
+                        except OSError:
+                            continue
+
+                        files.append(str(item))
+                        if progress_callback:
+                            progress_callback(len(files), max_files, str(item))
 
             except PermissionError:
                 # Skip directories we can't read
                 pass
 
         scan_dir(root, 0)
-        return files
+        return (files, skipped) if track_skipped else files
 
 
 # Use the new SmartImporter
@@ -171,6 +221,7 @@ class BulkImportDialog(QDialog):
     def __init__(self, kernel, parent=None):
         super().__init__(parent)
         self.kernel = kernel
+        self.main_window = parent  # Store reference to access workspace_config
         self.importer: Optional[SmartImporter] = None
         self.setup_ui()
 
@@ -218,6 +269,7 @@ class BulkImportDialog(QDialog):
             "Web Files (HTML/CSS/JS)",
             "Documentation (Markdown)",
             "Config Files (JSON/YAML)",
+            "Images Only",
             "All Files"
         ])
         self.file_type_combo.setCurrentIndex(0)
@@ -230,15 +282,24 @@ class BulkImportDialog(QDialog):
         self.max_depth.setToolTip("Maximum directory depth to scan (50 = practically unlimited)")
         options_layout.addRow("Max Depth:", self.max_depth)
 
+        # Max file size (to prevent importing huge files like lexicons)
+        self.max_file_size = QSpinBox()
+        self.max_file_size.setRange(1, 100)
+        default_max_mb = int(self._get_config("bulk_import_max_file_size_mb", 5) or 5)
+        self.max_file_size.setValue(default_max_mb)
+        self.max_file_size.setSuffix(" MB")
+        self.max_file_size.setToolTip("Skip files larger than this size (prevents huge dictionary/lexicon files)")
+        options_layout.addRow("Max File Size:", self.max_file_size)
+
         options_group.setLayout(options_layout)
         layout.addWidget(options_group)
 
         # Preview section
-        preview_group = QGroupBox("File Preview")
+        preview_group = QGroupBox("Files to Import")
         preview_layout = QVBoxLayout()
 
         self.file_list = QListWidget()
-        self.file_list.setMinimumHeight(150)
+        self.file_list.setMinimumHeight(120)
         preview_layout.addWidget(self.file_list)
 
         scan_btn = QPushButton("Scan Directory")
@@ -247,6 +308,22 @@ class BulkImportDialog(QDialog):
 
         preview_group.setLayout(preview_layout)
         layout.addWidget(preview_group)
+
+        # Skipped files section (files that were excluded)
+        skipped_group = QGroupBox("Skipped Files (check to include)")
+        skipped_layout = QVBoxLayout()
+
+        self.skipped_list = QListWidget()
+        self.skipped_list.setMinimumHeight(100)
+        self.skipped_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        skipped_layout.addWidget(self.skipped_list)
+
+        include_btn = QPushButton("Include Selected")
+        include_btn.clicked.connect(self.include_selected_skipped)
+        skipped_layout.addWidget(include_btn)
+
+        skipped_group.setLayout(skipped_layout)
+        layout.addWidget(skipped_group)
 
         # Progress section
         progress_group = QGroupBox("Import Progress")
@@ -289,6 +366,13 @@ class BulkImportDialog(QDialog):
 
         # Store scanned files
         self.scanned_files: List[str] = []
+        self.skipped_files: List[Tuple[str, str, float]] = []  # (path, reason, size_mb)
+
+    def _get_config(self, key: str, default=None):
+        """Get config value from parent's workspace_config."""
+        if self.main_window and hasattr(self.main_window, 'workspace_config'):
+            return self.main_window.workspace_config.get(key, default)
+        return default
 
     def browse_directory(self):
         """Browse for directory."""
@@ -318,32 +402,50 @@ class BulkImportDialog(QDialog):
         if file_type == "Python Only":
             extensions = {".py"}
         elif file_type == "Web Files (HTML/CSS/JS)":
-            extensions = FileScanner.CATEGORIES["Web"]
+            extensions = set(FileScanner.CATEGORIES["Web"])
         elif file_type == "Documentation (Markdown)":
             extensions = {".md", ".markdown", ".rst"}
         elif file_type == "Config Files (JSON/YAML)":
-            extensions = FileScanner.CATEGORIES["Data"]
+            extensions = set(FileScanner.CATEGORIES["Data"])
+        elif file_type == "Images Only":
+            extensions = set(FileScanner.CATEGORIES["Images"])
         elif file_type == "All Code Files":
-            extensions = FileScanner.CATEGORIES["Code"] | FileScanner.CATEGORIES["Scripts"]
+            extensions = set(FileScanner.CATEGORIES["Code"]) | set(FileScanner.CATEGORIES["Scripts"])
 
         # Scan directory
         max_depth = self.max_depth.value()
+        max_file_size_mb = self.max_file_size.value()
+        exclude_patterns = self._get_config("bulk_import_exclude_patterns", [
+            "*lexicon*", "*dictionary*", "*thesaurus*", "*wordnet*"
+        ])
 
         try:
-            files = FileScanner.scan_directory(
+            files, skipped = FileScanner.scan_directory(
                 dir_path,
                 extensions=extensions,
                 max_depth=max_depth,
-                progress_callback=lambda cur, tot, path: self.update_scan_progress(cur, tot, path)
+                exclude_patterns=exclude_patterns,
+                max_file_size_mb=max_file_size_mb,
+                progress_callback=lambda cur, tot, path: self.update_scan_progress(cur, tot, path),
+                track_skipped=True
             )
 
             self.scanned_files = files
+            self.skipped_files = skipped
             self.file_list.clear()
+            self.skipped_list.clear()
 
             for file_path in files:
                 self.file_list.addItem(Path(file_path).name)
 
-            self.log_message(f"Found {len(files)} files")
+            # Show skipped files with reason and size
+            for file_path, reason, size_mb in skipped:
+                item_text = f"{Path(file_path).name} ({size_mb:.1f} MB) - {reason}"
+                self.skipped_list.addItem(item_text)
+
+            self.log_message(f"Found {len(files)} files to import")
+            if skipped:
+                self.log_message(f"Skipped {len(skipped)} files (select to include)")
             self.import_btn.setEnabled(len(files) > 0)
 
         except Exception as e:
@@ -352,7 +454,38 @@ class BulkImportDialog(QDialog):
     def update_scan_progress(self, current: int, total: int, path: str):
         """Update scan progress."""
         self.status_label.setText(f"Scanning: {current} files found...")
-        self.log_message(f"Found: {Path(path).name}")
+        # Only log every 100 files to avoid UI freeze
+        if current % 100 == 0:
+            self.log_message(f"Found {current} files so far...")
+            # Process Qt events to keep UI responsive
+            from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()
+
+    def include_selected_skipped(self):
+        """Include selected skipped files in the import list."""
+        selected_indices = [self.skipped_list.row(item) for item in self.skipped_list.selectedItems()]
+        if not selected_indices:
+            self.log_message("No skipped files selected")
+            return
+
+        # Move selected files from skipped to scanned
+        included_count = 0
+        for idx in sorted(selected_indices, reverse=True):
+            if 0 <= idx < len(self.skipped_files):
+                file_path, reason, size_mb = self.skipped_files[idx]
+                self.scanned_files.append(file_path)
+                self.file_list.addItem(f"{Path(file_path).name} ({size_mb:.1f} MB)")
+                del self.skipped_files[idx]
+                included_count += 1
+
+        # Refresh skipped list
+        self.skipped_list.clear()
+        for file_path, reason, size_mb in self.skipped_files:
+            item_text = f"{Path(file_path).name} ({size_mb:.1f} MB) - {reason}"
+            self.skipped_list.addItem(item_text)
+
+        self.log_message(f"Included {included_count} files")
+        self.import_btn.setEnabled(len(self.scanned_files) > 0)
 
     def start_import(self):
         """Start the import process."""

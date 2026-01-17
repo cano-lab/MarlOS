@@ -6459,7 +6459,9 @@ class MarkdownEditor(QMainWindow):
         self.license = get_license_manager()
 
         # Initialize kernel (MarlOS core)
-        self.kernel = init_kernel()
+        # Use custom db_path if configured in workspace settings
+        memory_db_path = self.workspace_config.get("memory_db_path")
+        self.kernel = init_kernel(db_path=memory_db_path)
         self.kernel.spine.event_broadcast.connect(self._on_kernel_event)
 
         # Initialize visual memory capture (screen recording)
@@ -6747,6 +6749,14 @@ class MarkdownEditor(QMainWindow):
         self.visual_memory_browse_action.setToolTip("Browse captured screenshots")
         self.visual_memory_browse_action.triggered.connect(self.browse_visual_memory)
         view_menu.addAction(self.visual_memory_browse_action)
+
+        view_menu.addSeparator()
+
+        # 3D Memory Visualizer
+        memory_3d_action = QAction("3D Memory &Graph...", self)
+        memory_3d_action.setToolTip("Visualize semantic memory in 3D vector space")
+        memory_3d_action.triggered.connect(self.show_memory_visualizer)
+        view_menu.addAction(memory_3d_action)
 
         view_menu.addSeparator()
 
@@ -8185,6 +8195,12 @@ Available Features:
                 "tasks": "tasks_index.db",
             },
             "lexicon_pack_paths": ["lexicon_packs/*.json"],
+            # Memory database path - set to a drive with space (F: recommended)
+            # Leave empty/None to use default: %LOCALAPPDATA%/semantic_os/kernel.db
+            "memory_db_path": None,
+            # Bulk import settings
+            "bulk_import_max_file_size_mb": 5,  # Skip files larger than this
+            "bulk_import_exclude_patterns": ["*lexicon*", "*dictionary*", "*thesaurus*"],
             "panels": {
                 "tasks": False,
                 "outline": False,
@@ -9708,6 +9724,11 @@ Available Features:
 
             # Show in status bar
             self.statusBar().showMessage("Visual memory: Stopped", 3000)
+
+    def show_memory_visualizer(self):
+        """Show the 3D memory graph visualizer."""
+        from ide.memory_visualizer import show_memory_visualizer
+        self._memory_visualizer = show_memory_visualizer(self.kernel, self)
 
     def browse_visual_memory(self):
         """Browse captured visual memory."""

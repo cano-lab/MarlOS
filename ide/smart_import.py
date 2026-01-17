@@ -576,6 +576,492 @@ class PythonImportStrategy(ImportStrategy):
             return False, str(e)
 
 
+class JavaScriptImportStrategy(ImportStrategy):
+    """Import strategy for JavaScript/TypeScript files with regex-based parsing."""
+
+    JS_EXTENSIONS = ('.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs')
+
+    def can_handle(self, file_path: str) -> bool:
+        return file_path.lower().endswith(self.JS_EXTENSIONS)
+
+    def import_file(self, file_path: str, repo_info: RepoInfo) -> Tuple[bool, str]:
+        """Import JS/TS file with structural extraction."""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # Extract structural elements using regex
+            classes = self._extract_classes(content)
+            functions = self._extract_functions(content)
+            imports = self._extract_imports(content)
+            exports = self._extract_exports(content)
+            components = self._extract_react_components(content)
+
+            # Determine if it's TypeScript
+            is_typescript = file_path.lower().endswith(('.ts', '.tsx'))
+            is_react = file_path.lower().endswith(('.jsx', '.tsx')) or bool(components)
+
+            file_info = {
+                "path": file_path,
+                "type": "javascript_file",
+                "language": "typescript" if is_typescript else "javascript",
+                "is_react": is_react,
+                "file_hash": self._get_file_hash(file_path),
+                "file_size": len(content),
+                "lines": len(content.splitlines()),
+                "classes": [c['name'] for c in classes],
+                "functions": [f['name'] for f in functions],
+                "components": [c['name'] for c in components],
+                "imports": imports,
+                "exports": exports,
+                "repo": repo_info.name,
+                "is_test": any(x in file_path for x in ['test', 'spec', '__tests__']),
+            }
+
+            doc_id = self._get_doc_id(file_path)
+
+            # Store file summary
+            self._store(
+                content=f"{'TypeScript' if is_typescript else 'JavaScript'} file: {Path(file_path).name}\n"
+                       f"Classes: {len(classes)}\n"
+                       f"Functions: {len(functions)}\n"
+                       f"Components: {len(components)}\n"
+                       f"Lines: {file_info['lines']}",
+                metadata={**file_info, "role": "summary"},
+                doc_id=doc_id
+            )
+
+            # Store classes
+            for cls in classes:
+                self._store(
+                    content=f"Class: {cls['name']}\n\n{cls['code']}",
+                    metadata={
+                        **file_info,
+                        "type": "class",
+                        "class_name": cls['name'],
+                        "role": "code"
+                    }
+                )
+
+            # Store functions
+            for func in functions:
+                self._store(
+                    content=f"Function: {func['name']}\n\n{func['code']}",
+                    metadata={
+                        **file_info,
+                        "type": "function",
+                        "function_name": func['name'],
+                        "is_async": func.get('is_async', False),
+                        "is_arrow": func.get('is_arrow', False),
+                        "role": "code"
+                    }
+                )
+
+            # Store React components
+            for comp in components:
+                self._store(
+                    content=f"React Component: {comp['name']}\n\n{comp['code']}",
+                    metadata={
+                        **file_info,
+                        "type": "react_component",
+                        "component_name": comp['name'],
+                        "role": "code"
+                    }
+                )
+
+            return True, f"Imported JS/TS: {len(classes)} classes, {len(functions)} functions, {len(components)} components"
+
+        except Exception as e:
+            return False, str(e)
+
+    def _extract_classes(self, content: str) -> List[Dict]:
+        """Extract class definitions."""
+        classes = []
+        # Match: class Name { ... } or class Name extends Base { ... }
+        pattern = r'(?:export\s+)?class\s+(\w+)(?:\s+extends\s+\w+)?(?:\s+implements\s+[\w,\s]+)?\s*\{'
+
+        for match in re.finditer(pattern, content):
+            name = match.group(1)
+            start = match.start()
+            # Find matching closing brace
+            code = self._extract_block(content, start)
+            if code:
+                classes.append({'name': name, 'code': code})
+
+        return classes
+
+    def _extract_functions(self, content: str) -> List[Dict]:
+        """Extract function definitions."""
+        functions = []
+
+        # Regular functions: function name(...) { or async function name(...)
+        func_pattern = r'(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\([^)]*\)\s*(?::\s*\w+)?\s*\{'
+        for match in re.finditer(func_pattern, content):
+            name = match.group(1)
+            start = match.start()
+            code = self._extract_block(content, start)
+            if code:
+                functions.append({
+                    'name': name,
+                    'code': code,
+                    'is_async': 'async' in match.group(0),
+                    'is_arrow': False
+                })
+
+        # Arrow functions: const name = (...) => { or const name = async (...) =>
+        arrow_pattern = r'(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\([^)]*\)\s*(?::\s*[\w<>,\s]+)?\s*=>\s*\{'
+        for match in re.finditer(arrow_pattern, content):
+            name = match.group(1)
+            start = match.start()
+            code = self._extract_block(content, start)
+            if code:
+                functions.append({
+                    'name': name,
+                    'code': code,
+                    'is_async': 'async' in match.group(0),
+                    'is_arrow': True
+                })
+
+        return functions
+
+    def _extract_imports(self, content: str) -> List[str]:
+        """Extract import statements."""
+        imports = []
+        # import ... from '...'
+        pattern = r"import\s+.*?\s+from\s+['\"]([^'\"]+)['\"]"
+        for match in re.finditer(pattern, content):
+            imports.append(match.group(1))
+        # require('...')
+        pattern = r"require\s*\(\s*['\"]([^'\"]+)['\"]\s*\)"
+        for match in re.finditer(pattern, content):
+            imports.append(match.group(1))
+        return imports
+
+    def _extract_exports(self, content: str) -> List[str]:
+        """Extract export names."""
+        exports = []
+        # export { name1, name2 }
+        pattern = r'export\s*\{([^}]+)\}'
+        for match in re.finditer(pattern, content):
+            names = match.group(1).split(',')
+            exports.extend([n.strip().split(' as ')[0].strip() for n in names])
+        # export default
+        if 'export default' in content:
+            exports.append('default')
+        return exports
+
+    def _extract_react_components(self, content: str) -> List[Dict]:
+        """Extract React component definitions."""
+        components = []
+
+        # Function components: function ComponentName(...) { return <
+        # or const ComponentName = (...) => { return <
+        # or const ComponentName = (...) => (<
+
+        # Look for PascalCase function/const that returns JSX
+        pattern = r'(?:export\s+)?(?:const|function)\s+([A-Z]\w+)\s*[=:]\s*(?:(?:\([^)]*\)|[^=])*=>|\([^)]*\)\s*(?::\s*[\w<>]+)?\s*\{)'
+
+        for match in re.finditer(pattern, content):
+            name = match.group(1)
+            start = match.start()
+            code = self._extract_block(content, start)
+
+            # Verify it contains JSX (< followed by tag)
+            if code and re.search(r'<[A-Z]\w*|<[a-z]+[\s/>]', code):
+                components.append({'name': name, 'code': code})
+
+        return components
+
+    def _extract_block(self, content: str, start: int, max_length: int = 5000) -> Optional[str]:
+        """Extract a code block starting from position, matching braces."""
+        # Find the opening brace
+        brace_pos = content.find('{', start)
+        if brace_pos == -1:
+            return None
+
+        depth = 0
+        end = brace_pos
+        in_string = None
+        escaped = False
+
+        for i in range(brace_pos, min(len(content), start + max_length)):
+            char = content[i]
+
+            if escaped:
+                escaped = False
+                continue
+
+            if char == '\\':
+                escaped = True
+                continue
+
+            if in_string:
+                if char == in_string:
+                    in_string = None
+                continue
+
+            if char in '"\'`':
+                in_string = char
+                continue
+
+            if char == '{':
+                depth += 1
+            elif char == '}':
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+
+        if depth != 0:
+            return None
+
+        return content[start:end]
+
+
+class ImageImportStrategy(ImportStrategy):
+    """Import strategy for images using vision models."""
+
+    IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.tif')
+
+    def __init__(self, kernel):
+        super().__init__(kernel)
+        self._vision_available = None
+        self._vision_model = None
+
+    def can_handle(self, file_path: str) -> bool:
+        return file_path.lower().endswith(self.IMAGE_EXTENSIONS)
+
+    def import_file(self, file_path: str, repo_info: RepoInfo) -> Tuple[bool, str]:
+        """Import image with vision model description."""
+        try:
+            # Get image metadata
+            metadata = self._extract_metadata(file_path)
+
+            # Try to get vision description
+            description = self._get_vision_description(file_path)
+
+            file_info = {
+                "path": file_path,
+                "type": "image_file",
+                "file_hash": self._get_file_hash(file_path),
+                "repo": repo_info.name,
+                **metadata
+            }
+
+            doc_id = self._get_doc_id(file_path)
+
+            # Store image info
+            content_parts = [f"Image: {Path(file_path).name}"]
+            if metadata.get('width') and metadata.get('height'):
+                content_parts.append(f"Dimensions: {metadata['width']}x{metadata['height']}")
+            if metadata.get('format'):
+                content_parts.append(f"Format: {metadata['format']}")
+            if description:
+                content_parts.append(f"\nDescription:\n{description}")
+
+            self._store(
+                content='\n'.join(content_parts),
+                metadata={**file_info, "description": description, "role": "image"},
+                doc_id=doc_id
+            )
+
+            if description:
+                return True, f"Imported with vision description"
+            else:
+                return True, f"Imported metadata only (no vision model)"
+
+        except Exception as e:
+            return False, str(e)
+
+    def _extract_metadata(self, file_path: str) -> Dict:
+        """Extract image metadata."""
+        metadata = {}
+
+        try:
+            from PIL import Image
+            from PIL.ExifTags import TAGS
+
+            with Image.open(file_path) as img:
+                metadata['width'] = img.width
+                metadata['height'] = img.height
+                metadata['format'] = img.format
+                metadata['mode'] = img.mode
+
+                # Extract EXIF data
+                exif_data = img._getexif()
+                if exif_data:
+                    exif = {}
+                    for tag_id, value in exif_data.items():
+                        tag = TAGS.get(tag_id, tag_id)
+                        if isinstance(value, bytes):
+                            continue  # Skip binary data
+                        exif[tag] = str(value)[:100]  # Limit length
+
+                    if 'DateTime' in exif:
+                        metadata['date_taken'] = exif['DateTime']
+                    if 'Make' in exif:
+                        metadata['camera_make'] = exif['Make']
+                    if 'Model' in exif:
+                        metadata['camera_model'] = exif['Model']
+
+        except ImportError:
+            # PIL not available, get basic info
+            import os
+            stat = os.stat(file_path)
+            metadata['file_size'] = stat.st_size
+        except Exception as e:
+            metadata['metadata_error'] = str(e)
+
+        return metadata
+
+    def _get_vision_description(self, file_path: str) -> Optional[str]:
+        """Get description from vision model."""
+        # Try Ollama with llava first
+        description = self._try_ollama_vision(file_path)
+        if description:
+            return description
+
+        # Try LM Studio with vision model
+        description = self._try_lm_studio_vision(file_path)
+        if description:
+            return description
+
+        # Try local BLIP model
+        description = self._try_blip_local(file_path)
+        if description:
+            return description
+
+        return None
+
+    def _try_ollama_vision(self, file_path: str) -> Optional[str]:
+        """Try to use Ollama with llava or similar vision model."""
+        try:
+            import requests
+            import base64
+
+            # Check if Ollama is running
+            resp = requests.get('http://localhost:11434/api/tags', timeout=2)
+            if resp.status_code != 200:
+                return None
+
+            # Check for vision models
+            models = resp.json().get('models', [])
+            vision_models = [m['name'] for m in models if any(v in m['name'].lower() for v in ['llava', 'bakllava', 'vision', 'moondream'])]
+
+            if not vision_models:
+                return None
+
+            model = vision_models[0]
+
+            # Read and encode image
+            with open(file_path, 'rb') as f:
+                image_data = base64.b64encode(f.read()).decode('utf-8')
+
+            # Call Ollama vision API
+            resp = requests.post(
+                'http://localhost:11434/api/generate',
+                json={
+                    'model': model,
+                    'prompt': 'Describe this image in detail. Include: main subject, colors, composition, any text visible, and overall mood or purpose.',
+                    'images': [image_data],
+                    'stream': False
+                },
+                timeout=60
+            )
+
+            if resp.status_code == 200:
+                return resp.json().get('response', '')
+
+        except Exception as e:
+            print(f"[Vision] Ollama error: {e}")
+
+        return None
+
+    def _try_lm_studio_vision(self, file_path: str) -> Optional[str]:
+        """Try to use LM Studio with a vision model."""
+        try:
+            import requests
+            import base64
+
+            # Check if LM Studio is running
+            resp = requests.get('http://localhost:1234/v1/models', timeout=2)
+            if resp.status_code != 200:
+                return None
+
+            # Check for vision models
+            models = resp.json().get('data', [])
+            vision_models = [m['id'] for m in models if any(v in m['id'].lower() for v in ['llava', 'vision', 'bakllava', 'moondream'])]
+
+            if not vision_models:
+                return None
+
+            model = vision_models[0]
+
+            # Read and encode image
+            with open(file_path, 'rb') as f:
+                image_data = base64.b64encode(f.read()).decode('utf-8')
+
+            # Determine image type
+            ext = Path(file_path).suffix.lower()
+            mime_types = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp'}
+            mime_type = mime_types.get(ext, 'image/jpeg')
+
+            # Call LM Studio vision API (OpenAI compatible)
+            resp = requests.post(
+                'http://localhost:1234/v1/chat/completions',
+                json={
+                    'model': model,
+                    'messages': [{
+                        'role': 'user',
+                        'content': [
+                            {'type': 'text', 'text': 'Describe this image in detail. Include: main subject, colors, composition, any text visible, and overall mood or purpose.'},
+                            {'type': 'image_url', 'image_url': {'url': f'data:{mime_type};base64,{image_data}'}}
+                        ]
+                    }],
+                    'max_tokens': 500
+                },
+                timeout=60
+            )
+
+            if resp.status_code == 200:
+                return resp.json()['choices'][0]['message']['content']
+
+        except Exception as e:
+            print(f"[Vision] LM Studio error: {e}")
+
+        return None
+
+    def _try_blip_local(self, file_path: str) -> Optional[str]:
+        """Try to use local BLIP model via transformers."""
+        try:
+            from transformers import BlipProcessor, BlipForConditionalGeneration
+            from PIL import Image
+
+            # Load model (will be cached after first use)
+            if not hasattr(self, '_blip_processor'):
+                print("[Vision] Loading BLIP model (first time may take a while)...")
+                self._blip_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+                self._blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+
+            # Process image
+            image = Image.open(file_path).convert('RGB')
+            inputs = self._blip_processor(image, return_tensors="pt")
+
+            # Generate caption
+            out = self._blip_model.generate(**inputs, max_new_tokens=100)
+            caption = self._blip_processor.decode(out[0], skip_special_tokens=True)
+
+            return caption
+
+        except ImportError:
+            # transformers not available
+            pass
+        except Exception as e:
+            print(f"[Vision] BLIP error: {e}")
+
+        return None
+
+
 class MarkdownImportStrategy(ImportStrategy):
     """Import strategy for Markdown files with section-based parsing."""
 
@@ -969,6 +1455,8 @@ class SmartImporter(QThread):
         # Import strategies (ordered by priority)
         self.strategies = [
             PythonImportStrategy(kernel),
+            JavaScriptImportStrategy(kernel),
+            ImageImportStrategy(kernel),
             MarkdownImportStrategy(kernel),
             JsonImportStrategy(kernel),
             YamlImportStrategy(kernel),
@@ -1024,7 +1512,9 @@ class SmartImporter(QThread):
                 for strategy in self.strategies:
                     if strategy.can_handle(file_path):
                         try:
+                            print(f"[Smart Import] Attempting {strategy.__class__.__name__} for {file_path}")
                             success, message = strategy.import_file(file_path, repo_info) if repo_info else strategy.import_file(file_path, RepoInfo("", file_path, "generic"))
+                            print(f"[Smart Import] {strategy.__class__.__name__} result: success={success}, message={message}")
                             self.stats["strategies_used"][strategy.__class__.__name__] += 1
 
                             if success:
@@ -1034,6 +1524,7 @@ class SmartImporter(QThread):
                                 break
                             elif "skip" not in message.lower():
                                 # Try next strategy
+                                print(f"[Smart Import] {strategy.__class__.__name__} didn't handle it, trying next...")
                                 continue
                         except Exception as e:
                             # Strategy failed, try next one
@@ -1041,12 +1532,15 @@ class SmartImporter(QThread):
                             error_msg = f"Strategy error: {str(e)}"
                             self.file_complete.emit(file_path, False, error_msg)
                             # Log full traceback for debugging
-                            print(f"[Smart Import] Error importing {file_path}:")
+                            print(f"[Smart Import] Error importing {file_path} with {strategy.__class__.__name__}:")
                             print(traceback.format_exc())
                             continue
+                    else:
+                        print(f"[Smart Import] {strategy.__class__.__name__} can't handle {file_path}")
 
                 if not imported:
                     self.stats["failed"] += 1
+                    print(f"[Smart Import] No strategy could handle {file_path}")
                     self.file_complete.emit(file_path, False, "No strategy could handle this file")
 
             # Step 3: Extract repo-level relationships
@@ -1124,7 +1618,11 @@ class SmartImporter(QThread):
             else:
                 common = path
 
-        return str(common) if common.exists() else None
+        # If common is a file, use its parent directory
+        if common.exists() and common.is_file():
+            common = common.parent
+
+        return str(common) if common.exists() and common.is_dir() else None
 
     def _extract_repo_relationships(self, repo_info: RepoInfo):
         """Extract repository-level relationships."""
