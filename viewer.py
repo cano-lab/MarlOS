@@ -6758,6 +6758,12 @@ class MarkdownEditor(QMainWindow):
         memory_3d_action.triggered.connect(self.show_memory_visualizer)
         view_menu.addAction(memory_3d_action)
 
+        # Activity Collector
+        activity_action = QAction("&Activity Collector...", self)
+        activity_action.setToolTip("Monitor system activity (windows, clipboard, files, processes)")
+        activity_action.triggered.connect(self.show_activity_collector)
+        view_menu.addAction(activity_action)
+
         view_menu.addSeparator()
 
         settings_action = QAction("&Settings...", self)
@@ -9729,6 +9735,39 @@ Available Features:
         """Show the 3D memory graph visualizer."""
         from ide.memory_visualizer import show_memory_visualizer
         self._memory_visualizer = show_memory_visualizer(self.kernel, self)
+
+    def show_activity_collector(self):
+        """Show the activity collector panel."""
+        from ide.activity_collector import ActivityCollector, create_activity_panel
+
+        # Create collector if not exists
+        if not hasattr(self, '_activity_collector'):
+            self._activity_collector = ActivityCollector(self.kernel)
+
+            # Watch common directories
+            from pathlib import Path
+            home = Path.home()
+            docs = home / "Documents"
+            desktop = home / "Desktop"
+
+            if docs.exists():
+                self._activity_collector.watch_directory(str(docs), recursive=True)
+            if desktop.exists():
+                self._activity_collector.watch_directory(str(desktop), recursive=True)
+
+        # Create dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Activity Collector")
+        dialog.setMinimumSize(800, 500)
+
+        layout = QVBoxLayout(dialog)
+
+        # Add activity panel
+        panel = create_activity_panel(self._activity_collector)
+        layout.addWidget(panel)
+
+        dialog.show()
+        self._activity_dialog = dialog
 
     def browse_visual_memory(self):
         """Browse captured visual memory."""
