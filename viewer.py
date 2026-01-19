@@ -1265,16 +1265,7 @@ class BrowserTab(QWidget):
 
 
 class TerminalTab(QWidget):
-    """A terminal emulator with semantic tracking of command-line work.
-
-    Features:
-    - Full shell/terminal integration (cmd.exe, bash, zsh)
-    - Command history and tracking
-    - Semantic correlation with file edits
-    - Auto-completion
-    - Syntax highlighting for output
-    - Exportable command history for AI context
-    """
+    """A clean terminal emulator that looks and feels like a native terminal."""
 
     def __init__(self, kernel=None, dark_mode=False, parent=None):
         super().__init__(parent)
@@ -1288,6 +1279,7 @@ class TerminalTab(QWidget):
         self.session_start = time.time()
         self.commands_run = 0
         self.failed_commands = 0
+        self._prompt_position = 0  # Position where current prompt starts
 
         # Determine shell to use
         self.shell = self._detect_shell()
@@ -1296,46 +1288,15 @@ class TerminalTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Toolbar
-        self._create_toolbar(layout)
+        # Single terminal widget - type directly in it like a real terminal
+        self.terminal = QPlainTextEdit()
+        self.terminal.setStyleSheet(self._get_terminal_style())
+        self.terminal.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.terminal.keyPressEvent = self._handle_key_press
+        layout.addWidget(self.terminal)
 
-        # Terminal output area
-        self.terminal_output = QPlainTextEdit()
-        self.terminal_output.setReadOnly(True)
-        self.terminal_output.setStyleSheet(self._get_terminal_style())
-        layout.addWidget(self.terminal_output, 1)  # Give stretch factor 1
-
-        # Command input
-        input_layout = QHBoxLayout()
-        input_layout.setContentsMargins(8, 4, 8, 4)
-
-        self.prompt_label = QLabel(self._get_prompt())
-        self.prompt_label.setStyleSheet("font-family: Consolas, monospace; font-weight: bold;")
-        input_layout.addWidget(self.prompt_label)
-
-        self.command_input = QLineEdit()
-        self.command_input.setPlaceholderText("Enter command...")
-        self.command_input.setStyleSheet(self._get_input_style())
-        self.command_input.returnPressed.connect(self._execute_command)
-        self.command_input.textChanged.connect(self._on_input_changed)
-        input_layout.addWidget(self.command_input)
-
-        layout.addLayout(input_layout)
-
-        # Process for running shell
-        from PyQt6.QtCore import QProcess
-        self.shell_process = QProcess()
-        self.shell_process.readyReadStandardOutput.connect(self._on_stdout)
-        self.shell_process.readyReadStandardError.connect(self._on_stderr)
-        self.shell_process.finished.connect(self._on_process_finished)
-
-        # Initialize
-        self._print_welcome()
-        self._start_shell()
-
-        # Apply dark mode
-        if self.dark_mode:
-            self._apply_dark_mode()
+        # Show initial prompt
+        self._write_prompt()
 
         # Track session in kernel
         if self.kernel:
@@ -1344,6 +1305,91 @@ class TerminalTab(QWidget):
                 "directory": self.current_directory,
                 "timestamp": self.session_start
             })
+
+    def _write_prompt(self):
+        """Write the prompt to the terminal."""
+        prompt = self._get_prompt()
+        cursor = self.terminal.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.terminal.setTextCursor(cursor)
+        self.terminal.insertPlainText(prompt)
+        # Track where the prompt ends (where user input starts)
+        self._prompt_position = self.terminal.textCursor().position()
+
+    def _handle_key_press(self, event):
+        """Handle key presses in the terminal widget."""
+        cursor = self.terminal.textCursor()
+
+        if event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
+            # Execute the command
+            command = self._get_current_command()
+            self.terminal.insertPlainText("\n")
+            if command.strip():
+                self._execute_command(command.strip())
+            else:
+                self._write_prompt()
+            event.accept()
+            return
+
+        elif event.key() == Qt.Key.Key_Up:
+            # Navigate command history (older)
+            if self.command_history and self.history_index > 0:
+                self.history_index -= 1
+                self._replace_current_command(self.command_history[self.history_index])
+            event.accept()
+            return
+
+        elif event.key() == Qt.Key.Key_Down:
+            # Navigate command history (newer)
+            if self.history_index < len(self.command_history) - 1:
+                self.history_index += 1
+                self._replace_current_command(self.command_history[self.history_index])
+            elif self.history_index == len(self.command_history) - 1:
+                self.history_index = len(self.command_history)
+                self._replace_current_command("")
+            event.accept()
+            return
+
+        elif event.key() == Qt.Key.Key_Backspace:
+            # Don't allow backspace past the prompt
+            if cursor.position() <= self._prompt_position:
+                event.accept()
+                return
+
+        elif event.key() == Qt.Key.Key_Home:
+            # Move to start of input, not start of line
+            cursor.setPosition(self._prompt_position)
+            self.terminal.setTextCursor(cursor)
+            event.accept()
+            return
+
+        elif event.key() == Qt.Key.Key_Left:
+            # Don't move past prompt
+            if cursor.position() <= self._prompt_position:
+                event.accept()
+                return
+
+        # Prevent editing before the prompt
+        if cursor.position() < self._prompt_position:
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            self.terminal.setTextCursor(cursor)
+
+        # Default handling
+        QPlainTextEdit.keyPressEvent(self.terminal, event)
+
+    def _get_current_command(self):
+        """Get the current command text (after the prompt)."""
+        text = self.terminal.toPlainText()
+        return text[self._prompt_position:]
+
+    def _replace_current_command(self, new_command):
+        """Replace the current command with a new one."""
+        cursor = self.terminal.textCursor()
+        cursor.setPosition(self._prompt_position)
+        cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
+        cursor.removeSelectedText()
+        cursor.insertText(new_command)
+        self.terminal.setTextCursor(cursor)
 
     def _detect_shell(self):
         """Detect the appropriate shell for the platform."""
@@ -1381,54 +1427,6 @@ class TerminalTab(QWidget):
                     pass
             return 'sh'
 
-    def _create_toolbar(self, layout):
-        """Create terminal toolbar."""
-        toolbar = QWidget()
-        toolbar_layout = QHBoxLayout(toolbar)
-        toolbar_layout.setContentsMargins(8, 6, 8, 6)
-        toolbar_layout.setSpacing(4)
-
-        # Clear button
-        clear_btn = QPushButton("Clear")
-        clear_btn.setToolTip("Clear terminal output")
-        clear_btn.clicked.connect(self._clear_output)
-        toolbar_layout.addWidget(clear_btn)
-
-        toolbar_layout.addWidget(self._separator())
-
-        # Shell indicator
-        shell_label = QLabel(f"Shell: {self.shell}")
-        shell_label.setStyleSheet("color: #666; font-size: 11px;")
-        toolbar_layout.addWidget(shell_label)
-
-        # Directory indicator
-        self.dir_label = QLabel(os.path.basename(self.current_directory))
-        self.dir_label.setStyleSheet("color: #666; font-size: 11px;")
-        self.dir_label.setToolTip(self.current_directory)
-        toolbar_layout.addWidget(self.dir_label)
-
-        toolbar_layout.addStretch()
-
-        # Stats
-        self.stats_label = QLabel("0 commands")
-        self.stats_label.setStyleSheet("color: #666; font-size: 11px;")
-        toolbar_layout.addWidget(self.stats_label)
-
-        # Export button
-        export_btn = QPushButton("Export History")
-        export_btn.setToolTip("Export command history for AI context")
-        export_btn.clicked.connect(self._export_history)
-        toolbar_layout.addWidget(export_btn)
-
-        layout.addWidget(toolbar)
-
-    def _separator(self):
-        """Create a separator widget."""
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.VLine)
-        sep.setFrameShadow(QFrame.Shadow.Sunken)
-        return sep
-
     def _get_terminal_style(self):
         """Get terminal output style."""
         if self.dark_mode:
@@ -1454,105 +1452,31 @@ class TerminalTab(QWidget):
                 }
             """
 
-    def _get_input_style(self):
-        """Get command input style."""
-        if self.dark_mode:
-            return """
-                QLineEdit {
-                    background-color: #1e1e1e;
-                    color: #cccccc;
-                    font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
-                    font-size: 13px;
-                    border: 1px solid #444;
-                    padding: 6px 8px;
-                    border-radius: 3px;
-                }
-                QLineEdit:focus {
-                    border: 1px solid #007acc;
-                }
-            """
-        else:
-            return """
-                QLineEdit {
-                    background-color: #ffffff;
-                    color: #000000;
-                    font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
-                    font-size: 13px;
-                    border: 1px solid #ccc;
-                    padding: 6px 8px;
-                    border-radius: 3px;
-                }
-                QLineEdit:focus {
-                    border: 1px solid #007acc;
-                }
-            """
-
     def _get_prompt(self):
-        """Get the current prompt string."""
-        if self.shell in ['bash', 'zsh', 'sh']:
-            return f"$ "
-        elif self.shell == 'powershell' or self.shell == 'pwsh':
-            return "PS> "
-        else:  # cmd
-            return "> "
+        """Get the current prompt string with working directory."""
+        return f"{self.current_directory}> "
 
-    def _print_welcome(self):
-        """Print welcome message."""
-        welcome = f"""
-╔═══════════════════════════════════════════════════════════════╗
-║           MarlOS Terminal - Context-Aware Shell           ║
-╠═══════════════════════════════════════════════════════════════╣
-║  All commands are tracked semantically for AI context          ║
-║  Type 'help' for available commands                            ║
-║  Shell: {self.shell:<15} Working Dir: {os.path.basename(self.current_directory):<20}     ║
-╚═══════════════════════════════════════════════════════════════╝
-
-"""
-        self.terminal_output.appendPlainText(welcome.strip())
-
-    def _start_shell(self):
-        """Start the shell process."""
-        if sys.platform == 'win32':
-            if self.shell == 'powershell' or self.shell == 'pwsh':
-                self.shell_process.start(self.shell, ['-NoExit', '-NoLogo'])
-            else:
-                self.shell_process.start('cmd.exe', [])
-        else:
-            self.shell_process.start(self.shell, [])
-
-    def _execute_command(self):
+    def _execute_command(self, command):
         """Execute a command."""
-        command = self.command_input.text().strip()
-        if not command:
-            return
-
         # Add to history
         self.command_history.append(command)
         self.history_index = len(self.command_history)
 
-        # Display command
-        self.terminal_output.appendPlainText(f"\n{self._get_prompt()}{command}")
-
         # Handle special commands
         if command.lower() in ['clear', 'cls']:
             self._clear_output()
-            self.command_input.clear()
             return
         elif command.lower() == 'history':
             self._show_history()
-            self.command_input.clear()
             return
         elif command.lower() in ['exit', 'quit']:
             self._close_session()
-            self.command_input.clear()
             return
         elif command.lower() == 'help':
             self._show_help()
-            self.command_input.clear()
             return
         elif command.lower().startswith('cd '):
             self._change_directory(command[3:].strip())
-            self.command_input.clear()
             return
 
         # Track command in kernel
@@ -1560,60 +1484,39 @@ class TerminalTab(QWidget):
 
         # Execute the command
         try:
-            if sys.platform == 'win32':
-                # On Windows, use subprocess
-                import subprocess
-                result = subprocess.run(
-                    command,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    cwd=self.current_directory
-                )
+            import subprocess
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                cwd=self.current_directory
+            )
 
-                if result.stdout:
-                    self.terminal_output.appendPlainText(result.stdout)
+            if result.stdout:
+                self.terminal.insertPlainText(result.stdout)
+                if not result.stdout.endswith('\n'):
+                    self.terminal.insertPlainText('\n')
 
-                if result.stderr:
-                    self.terminal_output.appendPlainText(result.stderr)
-                    self.failed_commands += 1
-                else:
-                    self.commands_run += 1
-
+            if result.stderr:
+                self.terminal.insertPlainText(result.stderr)
+                if not result.stderr.endswith('\n'):
+                    self.terminal.insertPlainText('\n')
+                self.failed_commands += 1
             else:
-                # On Unix, could use shell process
-                import subprocess
-                result = subprocess.run(
-                    command,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    cwd=self.current_directory
-                )
-
-                if result.stdout:
-                    self.terminal_output.appendPlainText(result.stdout)
-
-                if result.stderr:
-                    self.terminal_output.appendPlainText(result.stderr)
-                    self.failed_commands += 1
-                else:
-                    self.commands_run += 1
+                self.commands_run += 1
 
         except Exception as e:
-            self.terminal_output.appendPlainText(f"Error: {e}")
+            self.terminal.insertPlainText(f"Error: {e}\n")
             self.failed_commands += 1
 
-        # Update stats
-        self._update_stats()
-
-        # Clear input
-        self.command_input.clear()
+        # Show next prompt
+        self._write_prompt()
 
         # Scroll to bottom
-        cursor = self.terminal_output.textCursor()
+        cursor = self.terminal.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
-        self.terminal_output.setTextCursor(cursor)
+        self.terminal.setTextCursor(cursor)
 
     def _track_command(self, command):
         """Track command in semantic kernel."""
@@ -1691,9 +1594,6 @@ class TerminalTab(QWidget):
 
             if os.path.isdir(new_dir):
                 self.current_directory = new_dir
-                self.dir_label.setText(os.path.basename(new_dir))
-                self.dir_label.setToolTip(new_dir)
-                self.prompt_label.setText(self._get_prompt())
 
                 # Track in kernel
                 if self.kernel:
@@ -1702,60 +1602,38 @@ class TerminalTab(QWidget):
                         "timestamp": time.time()
                     })
             else:
-                self.terminal_output.appendPlainText(f"cd: {path}: No such directory")
+                self.terminal.insertPlainText(f"cd: {path}: No such directory\n")
 
         except Exception as e:
-            self.terminal_output.appendPlainText(f"cd: {e}")
+            self.terminal.insertPlainText(f"cd: {e}\n")
+
+        self._write_prompt()
 
     def _clear_output(self):
         """Clear terminal output."""
-        self.terminal_output.clear()
+        self.terminal.clear()
+        self._write_prompt()
 
     def _show_history(self):
         """Show command history."""
-        self.terminal_output.appendPlainText("\n--- Command History ---")
+        self.terminal.insertPlainText("--- Command History ---\n")
         for i, cmd in enumerate(self.command_history, 1):
-            self.terminal_output.appendPlainText(f"{i:4d}  {cmd}")
+            self.terminal.insertPlainText(f"{i:4d}  {cmd}\n")
+        self._write_prompt()
 
     def _show_help(self):
         """Show help message."""
-        help_text = """
-Semantic Terminal Commands:
+        help_text = """Terminal Commands:
   help        - Show this help
   history     - Show command history
-  clear/cls   - Clear terminal output
+  clear/cls   - Clear terminal
   cd <path>   - Change directory
-  exit/quit   - Close terminal session
+  exit/quit   - Close terminal
 
 All other commands are executed by the shell.
 """
-        self.terminal_output.appendPlainText(help_text)
-
-    def _update_stats(self):
-        """Update statistics display."""
-        self.stats_label.setText(f"{self.commands_run} commands")
-
-    def _on_input_changed(self, text):
-        """Handle input text changes."""
-        # Could implement auto-completion here
-        pass
-
-    def _on_stdout(self):
-        """Handle stdout from shell process."""
-        data = self.shell_process.readAllStandardOutput()
-        text = bytes(data).decode('utf-8', errors='ignore')
-        self.terminal_output.appendPlainText(text)
-
-    def _on_stderr(self):
-        """Handle stderr from shell process."""
-        data = self.shell_process.readAllStandardError()
-        text = bytes(data).decode('utf-8', errors='ignore')
-        self.terminal_output.appendPlainText(text)
-
-    def _on_process_finished(self, exit_code, exit_status):
-        """Handle process completion."""
-        if exit_code != 0:
-            self.terminal_output.appendPlainText(f"\n[Process exited with code {exit_code}]")
+        self.terminal.insertPlainText(help_text)
+        self._write_prompt()
 
     def _export_history(self):
         """Export command history."""
@@ -1811,59 +1689,21 @@ All other commands are executed by the shell.
             self.parent().parent().tabs.indexOf(self)
         )
 
-    def _apply_dark_mode(self):
-        """Apply dark mode styling."""
-        pass  # Already handled in individual components
-
-    def keyPressEvent(self, event):
-        """Handle key press events."""
-        # Handle up/down arrows for command history
-        if event.key() == Qt.Key.Key_Up:
-            if self.history_index > 0:
-                self.history_index -= 1
-                self.command_input.setText(self.command_history[self.history_index])
-        elif event.key() == Qt.Key.Key_Down:
-            if self.history_index < len(self.command_history) - 1:
-                self.history_index += 1
-                self.command_input.setText(self.command_history[self.history_index])
-            else:
-                self.history_index = len(self.command_history)
-                self.command_input.clear()
-        else:
-            super().keyPressEvent(event)
-
     def closeEvent(self, event):
-        """Handle tab close - clean up shell process."""
-        try:
-            # Disconnect signals to prevent crashes
-            if hasattr(self, 'shell_process'):
-                self.shell_process.readyReadStandardOutput.disconnect()
-                self.shell_process.readyReadStandardError.disconnect()
-                self.shell_process.finished.disconnect()
-
-                # Kill the process if it's running
-                if self.shell_process.state() == QProcess.ProcessState.Running:
-                    self.shell_process.kill()
-                    self.shell_process.waitForFinished(1000)  # Wait up to 1 second
-
-            # Track session end
-            if self.kernel:
-                try:
-                    duration = time.time() - self.session_start
-                    self.kernel.emit("terminal.session_ended", {
-                        "shell": self.shell,
-                        "duration_seconds": duration,
-                        "commands_run": self.commands_run,
-                        "failed_commands": self.failed_commands,
-                        "timestamp": time.time()
-                    })
-                except:
-                    pass
-
-        except Exception as e:
-            print(f"[Terminal] Error during cleanup: {e}")
-
-        # Accept the close event
+        """Handle tab close."""
+        # Track session end
+        if self.kernel:
+            try:
+                duration = time.time() - self.session_start
+                self.kernel.emit("terminal.session_ended", {
+                    "shell": self.shell,
+                    "duration_seconds": duration,
+                    "commands_run": self.commands_run,
+                    "failed_commands": self.failed_commands,
+                    "timestamp": time.time()
+                })
+            except:
+                pass
         event.accept()
 
 
