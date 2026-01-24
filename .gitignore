@@ -2,3 +2,13 @@ nul
 __pycache__/
 *.pyc
 .workspace.json
+
+# Node
+node_modules/
+dist/
+
+# Rust
+src-tauri/target/
+
+# Libraries (downloaded)
+lib/
