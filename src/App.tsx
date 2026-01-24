@@ -5,6 +5,7 @@ import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import MarkdownEditor from "./components/MarkdownEditor";
 import Preview from "./components/Preview";
 import PdfViewer from "./components/PdfViewer";
+import PrintPreview from "./components/PrintPreview";
 import Sidebar from "./components/Sidebar";
 import Titlebar from "./components/Titlebar";
 import "./App.css";
@@ -34,6 +35,7 @@ function App() {
   const [viewMode, setViewMode] = createSignal<ViewMode>("split");
   const [appMode, setAppMode] = createSignal<AppMode>("markdown");
   const [pdfPath, setPdfPath] = createSignal<string | null>(null);
+  const [showPrintPreview, setShowPrintPreview] = createSignal(false);
 
   onMount(async () => {
     try {
@@ -201,6 +203,15 @@ function App() {
     return content.trim().split(/\s+/).filter(w => w.length > 0).length;
   };
 
+  const openPrintPreview = () => {
+    // Only open print preview if we have content to print
+    if (appMode() === "pdf" && pdfPath()) {
+      setShowPrintPreview(true);
+    } else if (appMode() === "markdown" && document()) {
+      setShowPrintPreview(true);
+    }
+  };
+
   // Keyboard shortcuts
   const handleKeyDown = (e: KeyboardEvent) => {
     if ((e.ctrlKey || e.metaKey) && e.key === "s") {
@@ -214,6 +225,10 @@ function App() {
     if ((e.ctrlKey || e.metaKey) && e.key === "n") {
       e.preventDefault();
       createNewDocument();
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === "p") {
+      e.preventDefault();
+      openPrintPreview();
     }
     if ((e.ctrlKey || e.metaKey) && e.key === "\\") {
       e.preventDefault();
@@ -234,9 +249,13 @@ function App() {
         setViewMode("preview");
       }
     }
-    // Escape to close PDF
-    if (e.key === "Escape" && appMode() === "pdf") {
-      closePdf();
+    // Escape to close print preview or PDF
+    if (e.key === "Escape") {
+      if (showPrintPreview()) {
+        setShowPrintPreview(false);
+      } else if (appMode() === "pdf") {
+        closePdf();
+      }
     }
   };
 
@@ -270,6 +289,8 @@ function App() {
             onNewDocument={createNewDocument}
             onOpenDocument={() => openDocument()}
             onOpenPdf={() => openPdf()}
+            onPrint={openPrintPreview}
+            canPrint={!!(document() || pdfPath())}
           />
         </Show>
 
@@ -304,6 +325,7 @@ function App() {
                       <span class="shortcut-key">Ctrl+N</span><span>New Document</span>
                       <span class="shortcut-key">Ctrl+O</span><span>Open File</span>
                       <span class="shortcut-key">Ctrl+S</span><span>Save</span>
+                      <span class="shortcut-key">Ctrl+P</span><span>Print</span>
                       <span class="shortcut-key">Ctrl+\</span><span>Toggle Sidebar</span>
                       <span class="shortcut-key">Ctrl+1</span><span>Editor Only</span>
                       <span class="shortcut-key">Ctrl+2</span><span>Split View</span>
@@ -364,6 +386,16 @@ function App() {
               : "Loading..."}
           </span>
         </footer>
+      </Show>
+
+      {/* Print Preview Dialog */}
+      <Show when={showPrintPreview()}>
+        <PrintPreview
+          type={appMode()}
+          content={appMode() === "markdown" ? document()?.content : undefined}
+          pdfPath={appMode() === "pdf" ? pdfPath() || undefined : undefined}
+          onClose={() => setShowPrintPreview(false)}
+        />
       </Show>
     </div>
   );

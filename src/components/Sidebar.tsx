@@ -5,6 +5,8 @@ interface SidebarProps {
   onNewDocument: () => void;
   onOpenDocument: () => void;
   onOpenPdf: () => void;
+  onPrint?: () => void;
+  canPrint?: boolean;
 }
 
 const Sidebar: Component<SidebarProps> = (props) => {
@@ -41,6 +43,20 @@ const Sidebar: Component<SidebarProps> = (props) => {
             <text x="8" y="11" text-anchor="middle" font-size="6" font-weight="bold" fill="currentColor">PDF</text>
           </svg>
           Open PDF
+        </button>
+        <button
+          class="sidebar-btn"
+          onClick={props.onPrint}
+          disabled={!props.canPrint}
+          title="Print (Ctrl+P)"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <rect x="3" y="8" width="10" height="6" rx="1" stroke="currentColor" stroke-width="1" fill="none" />
+            <rect x="4" y="2" width="8" height="5" stroke="currentColor" stroke-width="1" fill="none" />
+            <rect x="5" y="10" width="6" height="1" fill="currentColor" />
+            <rect x="5" y="12" width="4" height="1" fill="currentColor" />
+          </svg>
+          Print
         </button>
       </div>
 
