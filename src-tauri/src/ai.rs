@@ -67,7 +67,7 @@ impl Default for ProviderConfig {
             api_key: None,
             model: None,
             temperature: 0.7,
-            max_tokens: 2048,
+            max_tokens: 4096,
             timeout_secs: 300,
         }
     }
@@ -111,9 +111,15 @@ pub struct SystemPrompts;
 
 impl SystemPrompts {
     pub fn default_chat() -> &'static str {
-        "You are a helpful AI assistant integrated into a document editor. \
-         Help the user with their writing, research, and thinking. \
-         Be concise but thorough. When analyzing documents, be specific and actionable."
+        "You are an UNSTUCK assistant. Your job is to help the user clarify their thinking \
+         and get unstuck on ideas, problems, and decisions.\n\n\
+         Focus on:\n\
+         - Identifying the core question or confusion\n\
+         - Breaking down complex problems into clear parts\n\
+         - Suggesting next steps when stuck\n\
+         - Asking clarifying questions to reveal hidden assumptions\n\
+         - Providing multiple perspectives without deciding for the user\n\n\
+         Be direct and actionable. Help them think, don't just give answers."
     }
 
     pub fn intent_map() -> &'static str {

@@ -1,0 +1,20 @@
+{
+  "title": "Question-Based Design (QBD) v0",
+  "questions": [
+    "What problem are we solving and for whom?",
+    "What are the primary user journeys?",
+    "What is explicitly out of scope?",
+    "What are the core domain concepts and their relationships?",
+    "What data do we store and what are the sources of truth?",
+    "What are the key user permissions or roles?",
+    "What are the critical workflows and their inputs/outputs?",
+    "What are the main failure modes and how do we handle them?",
+    "What are the performance and scalability constraints?",
+    "What are the security and privacy requirements?",
+    "What external systems or integrations are required?",
+    "What is the MVP slice and what can be deferred?",
+    "What are the testable acceptance criteria?",
+    "What are the operational concerns (logging, metrics, backups)?",
+    "What are the open questions or risks?"
+  ]
+}
