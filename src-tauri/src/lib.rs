@@ -7,6 +7,7 @@ pub mod memory;
 pub mod document;
 pub mod commands;
 pub mod pdf;
+pub mod epub;
 
 use tauri::Manager;
 
@@ -38,6 +39,11 @@ pub fn run() {
                 }
             }
 
+            // Initialize EPUB manager
+            let epub_manager = epub::EpubManager::new();
+            log::info!("EPUB support enabled");
+            app.manage(epub_manager);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -53,6 +59,13 @@ pub fn run() {
             commands::pdf_measure_distance,
             commands::pdf_measure_area,
             commands::pdf_pixel_to_real,
+            // EPUB commands
+            commands::epub_open,
+            commands::epub_get_info,
+            commands::epub_get_chapter,
+            commands::epub_get_chapter_by_path,
+            commands::epub_search,
+            commands::epub_get_cover,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

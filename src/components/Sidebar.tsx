@@ -5,6 +5,7 @@ interface SidebarProps {
   onNewDocument: () => void;
   onOpenDocument: () => void;
   onOpenPdf: () => void;
+  onOpenEpub: () => void;
   onPrint?: () => void;
   canPrint?: boolean;
 }
@@ -43,6 +44,13 @@ const Sidebar: Component<SidebarProps> = (props) => {
             <text x="8" y="11" text-anchor="middle" font-size="6" font-weight="bold" fill="currentColor">PDF</text>
           </svg>
           Open PDF
+        </button>
+        <button class="sidebar-btn epub-btn" onClick={props.onOpenEpub}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <rect x="3" y="1" width="10" height="14" rx="1" stroke="currentColor" stroke-width="1" fill="none" />
+            <path d="M5 4h6M5 6h6M5 8h4" stroke="currentColor" stroke-width="0.8" />
+          </svg>
+          Open EPUB
         </button>
         <button
           class="sidebar-btn"

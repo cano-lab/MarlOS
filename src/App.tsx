@@ -5,6 +5,7 @@ import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import MarkdownEditor from "./components/MarkdownEditor";
 import Preview from "./components/Preview";
 import PdfViewer from "./components/PdfViewer";
+import EpubViewer from "./components/EpubViewer";
 import PrintPreview from "./components/PrintPreview";
 import Sidebar from "./components/Sidebar";
 import Titlebar from "./components/Titlebar";
@@ -26,7 +27,7 @@ interface Document {
 }
 
 type ViewMode = "editor" | "preview" | "split";
-type AppMode = "markdown" | "pdf";
+type AppMode = "markdown" | "pdf" | "epub";
 
 function App() {
   const [version, setVersion] = createSignal<VersionInfo | null>(null);
@@ -35,6 +36,7 @@ function App() {
   const [viewMode, setViewMode] = createSignal<ViewMode>("split");
   const [appMode, setAppMode] = createSignal<AppMode>("markdown");
   const [pdfPath, setPdfPath] = createSignal<string | null>(null);
+  const [epubPath, setEpubPath] = createSignal<string | null>(null);
   const [showPrintPreview, setShowPrintPreview] = createSignal(false);
 
   onMount(async () => {
@@ -49,6 +51,7 @@ function App() {
   const createNewDocument = async () => {
     setAppMode("markdown");
     setPdfPath(null);
+    setEpubPath(null);
     try {
       const doc = await invoke<Document>("create_document");
       setDocument(doc);
@@ -67,6 +70,8 @@ function App() {
           filters: [
             { name: "Markdown", extensions: ["md", "markdown"] },
             { name: "Text", extensions: ["txt"] },
+            { name: "PDF", extensions: ["pdf"] },
+            { name: "EPUB", extensions: ["epub"] },
             { name: "All Files", extensions: ["*"] },
           ],
         });
@@ -83,8 +88,15 @@ function App() {
         return;
       }
 
+      // Check if it's an EPUB
+      if (path.toLowerCase().endsWith(".epub")) {
+        openEpub(path);
+        return;
+      }
+
       setAppMode("markdown");
       setPdfPath(null);
+      setEpubPath(null);
 
       // Read file content directly using fs plugin
       const content = await readTextFile(path);
@@ -134,6 +146,7 @@ function App() {
       }
 
       setDocument(null);
+      setEpubPath(null);
       setAppMode("pdf");
       setPdfPath(path);
     } catch (e) {
@@ -145,6 +158,39 @@ function App() {
   const closePdf = () => {
     setAppMode("markdown");
     setPdfPath(null);
+  };
+
+  const openEpub = async (pathArg?: string) => {
+    try {
+      let path = pathArg;
+
+      if (!path) {
+        const selected = await open({
+          multiple: false,
+          filters: [
+            { name: "EPUB", extensions: ["epub"] },
+          ],
+        });
+
+        if (!selected || typeof selected !== "string") {
+          return;
+        }
+        path = selected;
+      }
+
+      setDocument(null);
+      setPdfPath(null);
+      setAppMode("epub");
+      setEpubPath(path);
+    } catch (e) {
+      console.error("Failed to open EPUB:", e);
+      alert(`Failed to open EPUB: ${e}`);
+    }
+  };
+
+  const closeEpub = () => {
+    setAppMode("markdown");
+    setEpubPath(null);
   };
 
   const saveDocument = async () => {
@@ -249,12 +295,14 @@ function App() {
         setViewMode("preview");
       }
     }
-    // Escape to close print preview or PDF
+    // Escape to close print preview, PDF, or EPUB
     if (e.key === "Escape") {
       if (showPrintPreview()) {
         setShowPrintPreview(false);
       } else if (appMode() === "pdf") {
         closePdf();
+      } else if (appMode() === "epub") {
+        closeEpub();
       }
     }
   };
@@ -267,6 +315,9 @@ function App() {
   const getTitle = () => {
     if (appMode() === "pdf" && pdfPath()) {
       return pdfPath()!.split(/[/\\]/).pop() || "PDF";
+    }
+    if (appMode() === "epub" && epubPath()) {
+      return epubPath()!.split(/[/\\]/).pop() || "EPUB";
     }
     return document()?.title || "MarlOS";
   };
@@ -289,6 +340,7 @@ function App() {
             onNewDocument={createNewDocument}
             onOpenDocument={() => openDocument()}
             onOpenPdf={() => openPdf()}
+            onOpenEpub={() => openEpub()}
             onPrint={openPrintPreview}
             canPrint={!!(document() || pdfPath())}
           />
@@ -298,6 +350,11 @@ function App() {
           {/* PDF Mode */}
           <Show when={appMode() === "pdf" && pdfPath()}>
             <PdfViewer path={pdfPath()!} onClose={closePdf} />
+          </Show>
+
+          {/* EPUB Mode */}
+          <Show when={appMode() === "epub" && epubPath()}>
+            <EpubViewer path={epubPath()!} onClose={closeEpub} />
           </Show>
 
           {/* Markdown Mode */}
@@ -318,6 +375,9 @@ function App() {
                     <button class="btn-secondary" onClick={() => openPdf()}>
                       Open PDF
                     </button>
+                    <button class="btn-secondary" onClick={() => openEpub()}>
+                      Open EPUB
+                    </button>
                   </div>
                   <div class="welcome-shortcuts">
                     <h3>Keyboard Shortcuts</h3>
@@ -337,6 +397,7 @@ function App() {
                     <ul>
                       <li><strong>Markdown Editor</strong> - Mermaid diagrams, LaTeX math, charts</li>
                       <li><strong>PDF Viewer</strong> - Accurate rendering with measurement tools</li>
+                      <li><strong>EPUB Reader</strong> - Read e-books with TOC navigation and search</li>
                       <li><strong>Calibration</strong> - Calibrate scale for real-world measurements</li>
                     </ul>
                   </div>

@@ -10,6 +10,7 @@ use crate::document::Document;
 use crate::kernel::SemanticKernel;
 use crate::memory::MemoryType;
 use crate::pdf::{PdfManager, PdfInfo, RenderedPage, Measurement, PdfPoint};
+use crate::epub::{EpubManager, EpubInfo, ChapterContent, SearchResult as EpubSearchResult};
 
 /// Response for version info
 #[derive(Serialize)]
@@ -247,4 +248,62 @@ pub fn pdf_pixel_to_real(
         "inches": { "x": point.x / 72.0, "y": point.y / 72.0 },
         "mm": { "x": point.x / 72.0 * 25.4, "y": point.y / 72.0 * 25.4 },
     }))
+}
+
+// ============================================================================
+// EPUB Commands
+// ============================================================================
+
+/// Open an EPUB file
+#[tauri::command]
+pub fn epub_open(
+    path: String,
+    epub_manager: State<'_, EpubManager>,
+) -> Result<EpubInfo, String> {
+    epub_manager.open(&path).map_err(|e| e.to_string())
+}
+
+/// Get current EPUB info
+#[tauri::command]
+pub fn epub_get_info(
+    epub_manager: State<'_, EpubManager>,
+) -> Result<EpubInfo, String> {
+    epub_manager.get_info().map_err(|e| e.to_string())
+}
+
+/// Get chapter content by index
+#[tauri::command]
+pub fn epub_get_chapter(
+    index: usize,
+    epub_manager: State<'_, EpubManager>,
+) -> Result<ChapterContent, String> {
+    epub_manager.get_chapter(index).map_err(|e| e.to_string())
+}
+
+/// Get chapter by content path
+#[tauri::command]
+pub fn epub_get_chapter_by_path(
+    content_path: String,
+    epub_manager: State<'_, EpubManager>,
+) -> Result<ChapterContent, String> {
+    epub_manager.get_chapter_by_path(&content_path).map_err(|e| e.to_string())
+}
+
+/// Search EPUB content
+#[tauri::command]
+pub fn epub_search(
+    query: String,
+    max_results: Option<usize>,
+    epub_manager: State<'_, EpubManager>,
+) -> Result<Vec<EpubSearchResult>, String> {
+    let max = max_results.unwrap_or(50);
+    epub_manager.search(&query, max).map_err(|e| e.to_string())
+}
+
+/// Get EPUB cover image as base64
+#[tauri::command]
+pub fn epub_get_cover(
+    epub_manager: State<'_, EpubManager>,
+) -> Result<Option<String>, String> {
+    epub_manager.get_cover().map_err(|e| e.to_string())
 }
