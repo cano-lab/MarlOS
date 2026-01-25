@@ -39,6 +39,7 @@ base64 = "0.22"
 epub = "2"
 html2text = "0.12"
 reqwest = { version = "0.12", features = ["blocking", "json"] }
+regex = "1"
 
 # For embeddings (optional, add later)
 # ort = "2"  # ONNX Runtime

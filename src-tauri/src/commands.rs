@@ -12,6 +12,11 @@ use crate::memory::MemoryType;
 use crate::pdf::{PdfManager, PdfInfo, RenderedPage, Measurement, PdfPoint};
 use crate::epub::{EpubManager, EpubInfo, ChapterContent, SearchResult as EpubSearchResult};
 use crate::ai::{AiManager, ProviderConfig, Message, Role, AiResponse};
+use crate::providers::{
+    ProviderRegistry, ProviderInfo, Command as ProviderCommand,
+    WordCountProvider, MarkdownLanguageService, CodingAgentProvider,
+    CodeRequest, CodeResponse, CodeOperation,
+};
 
 /// Response for version info
 #[derive(Serialize)]
@@ -58,7 +63,7 @@ pub fn create_document(
     kernel.register_context(handle);
 
     // Store in memory (public tier - these are events)
-    kernel.memory.store_public(
+    kernel.memory.store_open(
         &format!("Created new document: {}", doc.title),
         MemoryType::Event,
         serde_json::json!({ "document_id": doc.id }),
@@ -82,7 +87,7 @@ pub fn open_document(
     kernel.register_context(handle);
 
     // Store in memory (public tier - these are events)
-    kernel.memory.store_public(
+    kernel.memory.store_open(
         &format!("Opened document: {}", doc.title),
         MemoryType::Event,
         serde_json::json!({
@@ -121,7 +126,7 @@ pub fn save_document(
     }
 
     // Store in memory (public tier - these are events)
-    kernel.memory.store_public(
+    kernel.memory.store_open(
         &format!("Saved document: {}", doc.title),
         MemoryType::Event,
         serde_json::json!({
@@ -387,4 +392,234 @@ pub async fn ai_generate(
     ai_manager: State<'_, AiManager>,
 ) -> Result<AiResponse, String> {
     ai_manager.generate(&prompt, system_prompt.as_deref()).await.map_err(|e| e.to_string())
+}
+
+// ============================================================================
+// Provider Commands
+// ============================================================================
+
+/// List all registered providers
+#[tauri::command]
+pub fn provider_list(
+    registry: State<'_, ProviderRegistry>,
+) -> Vec<ProviderInfo> {
+    registry.list()
+}
+
+/// List all registered commands
+#[tauri::command]
+pub fn provider_list_commands(
+    registry: State<'_, ProviderRegistry>,
+) -> Vec<ProviderCommand> {
+    registry.commands.list()
+}
+
+/// Get provider state
+#[tauri::command]
+pub fn provider_get_state(
+    name: String,
+    registry: State<'_, ProviderRegistry>,
+) -> Result<serde_json::Value, String> {
+    registry
+        .get_provider_state(&name)
+        .ok_or_else(|| format!("Provider not found: {}", name))
+}
+
+/// Initialize providers for a document
+#[tauri::command]
+pub fn provider_init_for_document(
+    content: String,
+    file_path: Option<String>,
+    registry: State<'_, ProviderRegistry>,
+) -> Result<Vec<ProviderInfo>, String> {
+    // Register ALWAYS_ON providers
+    let word_count = Box::new(WordCountProvider::new());
+    registry.register(word_count, &content, file_path.as_deref())?;
+
+    let markdown_service = Box::new(MarkdownLanguageService::new());
+    registry.register(markdown_service, &content, file_path.as_deref())?;
+
+    // Register ON_DEMAND providers
+    let coding_agent = Box::new(CodingAgentProvider::new());
+    registry.register(coding_agent, &content, file_path.as_deref())?;
+
+    Ok(registry.list())
+}
+
+/// Notify providers of content change
+#[tauri::command]
+pub fn provider_content_changed(
+    content: String,
+    registry: State<'_, ProviderRegistry>,
+) -> Result<(), String> {
+    registry.notify_content_changed(&content);
+    Ok(())
+}
+
+/// Get word count stats
+#[tauri::command]
+pub fn provider_word_count(
+    registry: State<'_, ProviderRegistry>,
+) -> Result<serde_json::Value, String> {
+    registry
+        .get_provider_state("word_count")
+        .ok_or_else(|| "Word count provider not initialized".to_string())
+}
+
+/// Get markdown document structure (headings, links, code blocks, tasks)
+#[tauri::command]
+pub fn provider_markdown_structure(
+    registry: State<'_, ProviderRegistry>,
+) -> Result<serde_json::Value, String> {
+    registry
+        .get_provider_state("markdown_language_service")
+        .ok_or_else(|| "Markdown language service not initialized".to_string())
+}
+
+/// Execute a coding agent operation
+#[tauri::command]
+pub async fn provider_code_operation(
+    request: CodeRequest,
+    _registry: State<'_, ProviderRegistry>,
+    ai_manager: State<'_, AiManager>,
+) -> Result<CodeResponse, String> {
+    // Check if AI is available
+    if !ai_manager.is_available().await {
+        return Ok(CodeResponse {
+            operation: request.operation,
+            result: String::new(),
+            success: false,
+            error: Some("AI provider not available. Please configure an AI provider in settings.".to_string()),
+        });
+    }
+
+    // Build the prompt
+    let prompt = CodingAgentProvider::build_prompt(&request);
+    let system_prompt = request.operation.system_prompt();
+
+    // Call the AI
+    match ai_manager.generate(&prompt, Some(system_prompt)).await {
+        Ok(response) => Ok(CodeResponse {
+            operation: request.operation,
+            result: response.content,
+            success: true,
+            error: None,
+        }),
+        Err(e) => Ok(CodeResponse {
+            operation: request.operation,
+            result: String::new(),
+            success: false,
+            error: Some(e.to_string()),
+        }),
+    }
+}
+
+/// Quick code explanation (convenience wrapper)
+#[tauri::command]
+pub async fn provider_code_explain(
+    code: String,
+    language: Option<String>,
+    ai_manager: State<'_, AiManager>,
+) -> Result<CodeResponse, String> {
+    let request = CodeRequest {
+        operation: CodeOperation::Explain,
+        code,
+        instruction: None,
+        language,
+        cursor_position: None,
+        context_before: None,
+        context_after: None,
+    };
+
+    let prompt = CodingAgentProvider::build_prompt(&request);
+    let system_prompt = CodeOperation::Explain.system_prompt();
+
+    match ai_manager.generate(&prompt, Some(system_prompt)).await {
+        Ok(response) => Ok(CodeResponse {
+            operation: CodeOperation::Explain,
+            result: response.content,
+            success: true,
+            error: None,
+        }),
+        Err(e) => Ok(CodeResponse {
+            operation: CodeOperation::Explain,
+            result: String::new(),
+            success: false,
+            error: Some(e.to_string()),
+        }),
+    }
+}
+
+/// Quick code completion (convenience wrapper)
+#[tauri::command]
+pub async fn provider_code_complete(
+    context_before: String,
+    context_after: String,
+    language: Option<String>,
+    ai_manager: State<'_, AiManager>,
+) -> Result<CodeResponse, String> {
+    let request = CodeRequest {
+        operation: CodeOperation::Complete,
+        code: String::new(),
+        instruction: None,
+        language,
+        cursor_position: None,
+        context_before: Some(context_before),
+        context_after: Some(context_after),
+    };
+
+    let prompt = CodingAgentProvider::build_prompt(&request);
+    let system_prompt = CodeOperation::Complete.system_prompt();
+
+    match ai_manager.generate(&prompt, Some(system_prompt)).await {
+        Ok(response) => Ok(CodeResponse {
+            operation: CodeOperation::Complete,
+            result: response.content,
+            success: true,
+            error: None,
+        }),
+        Err(e) => Ok(CodeResponse {
+            operation: CodeOperation::Complete,
+            result: String::new(),
+            success: false,
+            error: Some(e.to_string()),
+        }),
+    }
+}
+
+/// Edit code with instruction (convenience wrapper)
+#[tauri::command]
+pub async fn provider_code_edit(
+    code: String,
+    instruction: String,
+    language: Option<String>,
+    ai_manager: State<'_, AiManager>,
+) -> Result<CodeResponse, String> {
+    let request = CodeRequest {
+        operation: CodeOperation::Edit,
+        code,
+        instruction: Some(instruction),
+        language,
+        cursor_position: None,
+        context_before: None,
+        context_after: None,
+    };
+
+    let prompt = CodingAgentProvider::build_prompt(&request);
+    let system_prompt = CodeOperation::Edit.system_prompt();
+
+    match ai_manager.generate(&prompt, Some(system_prompt)).await {
+        Ok(response) => Ok(CodeResponse {
+            operation: CodeOperation::Edit,
+            result: response.content,
+            success: true,
+            error: None,
+        }),
+        Err(e) => Ok(CodeResponse {
+            operation: CodeOperation::Edit,
+            result: String::new(),
+            success: false,
+            error: Some(e.to_string()),
+        }),
+    }
 }

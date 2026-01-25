@@ -132,7 +132,7 @@ fn main() {
         println!("Difficulty: {:?}", scenario.difficulty);
         println!("─────────────────────────────────────────────────────────────────");
 
-        let prompt = HealingTestHarness::create_diagnosis_prompt(scenario, SecurityTier::Internal);
+        let prompt = HealingTestHarness::create_diagnosis_prompt(scenario, SecurityTier::Guarded);
 
         if show_prompts {
             println!("\n=== PROMPT ===\n{}\n", prompt);

@@ -12,6 +12,8 @@ pub mod ai;
 pub mod healing_test;
 pub mod llm_client;
 pub mod healing_engine;
+pub mod providers;
+pub mod tier_classifier;
 
 use tauri::Manager;
 
@@ -53,6 +55,11 @@ pub fn run() {
             log::info!("AI support enabled");
             app.manage(ai_manager);
 
+            // Initialize Provider registry
+            let provider_registry = providers::ProviderRegistry::new();
+            log::info!("Provider system initialized");
+            app.manage(provider_registry);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -82,6 +89,19 @@ pub fn run() {
             commands::ai_chat,
             commands::ai_run_task,
             commands::ai_generate,
+            // Provider commands
+            commands::provider_list,
+            commands::provider_list_commands,
+            commands::provider_get_state,
+            commands::provider_init_for_document,
+            commands::provider_content_changed,
+            commands::provider_word_count,
+            commands::provider_markdown_structure,
+            // Coding agent commands
+            commands::provider_code_operation,
+            commands::provider_code_explain,
+            commands::provider_code_complete,
+            commands::provider_code_edit,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

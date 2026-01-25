@@ -72,7 +72,7 @@ impl Default for HealingConfig {
                 ActionType::RotateLogs,
                 ActionType::NoAction,
             ],
-            max_llm_tier: SecurityTier::Internal,
+            max_llm_tier: SecurityTier::Guarded, // LLM sees Open + Guarded (summaries)
             human_in_loop: false,
         }
     }
@@ -131,10 +131,15 @@ impl HealingEngine {
     }
 
     /// Build security-tier filtered context for LLM
+    ///
+    /// Tier filtering:
+    /// - Open: Logs, Metrics, Errors (always visible)
+    /// - Guarded: Config, Processes (visible with Guarded access)
+    /// - Sealed: Never included (e.g., credentials)
     fn build_context(&self, state: &SystemState) -> String {
         let mut context = String::new();
 
-        // Logs are tier 0 (public) - always visible
+        // Logs are Open tier - always visible
         context.push_str("=== SYSTEM LOGS ===\n");
         for log in &state.logs {
             context.push_str(&format!(
@@ -143,7 +148,7 @@ impl HealingEngine {
             ));
         }
 
-        // Metrics are tier 0 (public) - always visible
+        // Metrics are Open tier - always visible
         context.push_str("\n=== METRICS ===\n");
         for (name, value) in &state.metrics {
             use crate::healing_test::MetricValue;
@@ -155,8 +160,8 @@ impl HealingEngine {
             context.push_str(&format!("{}: {}\n", name, v));
         }
 
-        // Config and processes require Internal tier
-        if self.config.max_llm_tier >= SecurityTier::Internal {
+        // Config and processes are Guarded tier
+        if self.config.max_llm_tier >= SecurityTier::Guarded {
             context.push_str("\n=== CONFIGURATION ===\n");
             for (key, value) in &state.config {
                 context.push_str(&format!("{}: {}\n", key, value));
@@ -171,7 +176,7 @@ impl HealingEngine {
             }
         }
 
-        // Errors summary
+        // Errors summary (Open tier)
         if !state.errors.is_empty() {
             context.push_str("\n=== ERRORS ===\n");
             for err in &state.errors {

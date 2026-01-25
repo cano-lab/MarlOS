@@ -2584,6 +2584,7 @@ dependencies = [
  "image",
  "log",
  "pdfium-render",
+ "regex",
  "reqwest",
  "rusqlite",
  "serde",

@@ -67,15 +67,15 @@ pub enum Difficulty {
 /// NOTE: This is SYNTHETIC data for testing, not real system state
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemState {
-    /// Simulated log entries (tier 0 - public)
+    /// Simulated log entries (Open tier - always visible)
     pub logs: Vec<LogEntry>,
-    /// Simulated metrics (tier 0 - public)
+    /// Simulated metrics (Open tier - always visible)
     pub metrics: HashMap<String, MetricValue>,
-    /// Simulated config state (tier 1 - internal)
+    /// Simulated config state (Guarded tier - visible with Guarded access)
     pub config: HashMap<String, serde_json::Value>,
-    /// Simulated process list (tier 1 - internal)
+    /// Simulated process list (Guarded tier - visible with Guarded access)
     pub processes: Vec<ProcessInfo>,
-    /// Any error messages visible
+    /// Any error messages visible (Open tier)
     pub errors: Vec<String>,
 }
 
@@ -826,10 +826,14 @@ impl HealingTestHarness {
 
     /// Format system state as context for LLM
     /// This is what gets sent to the LLM for diagnosis
+    ///
+    /// Tier filtering:
+    /// - Open: Logs, Metrics, Errors (always visible)
+    /// - Guarded: Config, Processes (visible with Guarded access)
     pub fn format_context_for_llm(state: &SystemState, max_tier: SecurityTier) -> String {
         let mut context = String::new();
 
-        // Logs are tier 0 (public) - always visible
+        // Logs are Open tier - always visible
         context.push_str("=== SYSTEM LOGS ===\n");
         for log in &state.logs {
             context.push_str(&format!(
@@ -838,7 +842,7 @@ impl HealingTestHarness {
             ));
         }
 
-        // Metrics are tier 0 (public) - always visible
+        // Metrics are Open tier - always visible
         context.push_str("\n=== METRICS ===\n");
         for (name, value) in &state.metrics {
             let v = match value {
@@ -849,8 +853,8 @@ impl HealingTestHarness {
             context.push_str(&format!("{}: {}\n", name, v));
         }
 
-        // Config is tier 1 (internal) - only if agent has tier >= 1
-        if max_tier >= SecurityTier::Internal {
+        // Config and Processes are Guarded tier
+        if max_tier >= SecurityTier::Guarded {
             context.push_str("\n=== CONFIGURATION ===\n");
             for (key, value) in &state.config {
                 context.push_str(&format!("{}: {}\n", key, value));
@@ -865,7 +869,7 @@ impl HealingTestHarness {
             }
         }
 
-        // Errors summary
+        // Errors summary (Open tier)
         if !state.errors.is_empty() {
             context.push_str("\n=== ERRORS ===\n");
             for err in &state.errors {
@@ -1027,15 +1031,16 @@ mod tests {
         let harness = HealingTestHarness::new();
         let scenario = &harness.scenarios()[0];
 
-        // With tier 0, should see logs and metrics but not config
-        let context_tier0 = HealingTestHarness::format_context_for_llm(&scenario.system_state, SecurityTier::Public);
-        assert!(context_tier0.contains("LOGS"), "Should contain logs");
-        assert!(context_tier0.contains("METRICS"), "Should contain metrics");
-        assert!(!context_tier0.contains("CONFIGURATION"), "Should NOT contain config at tier 0");
+        // With Open tier, should see logs and metrics but not config
+        let context_open = HealingTestHarness::format_context_for_llm(&scenario.system_state, SecurityTier::Open);
+        assert!(context_open.contains("LOGS"), "Should contain logs");
+        assert!(context_open.contains("METRICS"), "Should contain metrics");
+        assert!(!context_open.contains("CONFIGURATION"), "Should NOT contain config at Open tier");
 
-        // With tier 1, should see everything
-        let context_tier1 = HealingTestHarness::format_context_for_llm(&scenario.system_state, SecurityTier::Internal);
-        assert!(context_tier1.contains("CONFIGURATION"), "Should contain config at tier 1");
+        // With Guarded tier, should see everything
+        let context_guarded = HealingTestHarness::format_context_for_llm(&scenario.system_state, SecurityTier::Guarded);
+        assert!(context_guarded.contains("CONFIGURATION"), "Should contain config at Guarded tier");
+        assert!(context_guarded.contains("PROCESSES"), "Should contain processes at Guarded tier");
     }
 
     #[test]
@@ -1043,7 +1048,7 @@ mod tests {
         let harness = HealingTestHarness::new();
         let scenario = &harness.scenarios()[0];
 
-        let prompt = HealingTestHarness::create_diagnosis_prompt(scenario, SecurityTier::Internal);
+        let prompt = HealingTestHarness::create_diagnosis_prompt(scenario, SecurityTier::Guarded);
         assert!(prompt.contains("self-healing OS agent"), "Prompt should set context");
         assert!(prompt.contains("RestartService"), "Prompt should list allowed actions");
     }
