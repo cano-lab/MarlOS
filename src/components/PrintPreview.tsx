@@ -1,5 +1,6 @@
 import { Component, createSignal, createEffect, Show, For } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
+import { marked } from "marked";
 import "./PrintPreview.css";
 
 interface PrintPreviewProps {
@@ -25,6 +26,12 @@ const PrintPreview: Component<PrintPreviewProps> = (props) => {
   const [orientation, setOrientation] = createSignal<"portrait" | "landscape">("portrait");
   const [scale, setScale] = createSignal(100);
   const [currentPreviewPage, setCurrentPreviewPage] = createSignal(0);
+
+  // Margins in inches
+  const [marginTop, setMarginTop] = createSignal(1.0);
+  const [marginRight, setMarginRight] = createSignal(1.0);
+  const [marginBottom, setMarginBottom] = createSignal(1.0);
+  const [marginLeft, setMarginLeft] = createSignal(1.0);
 
   // Paper dimensions in points (72 points = 1 inch)
   const paperDimensions = {
@@ -146,7 +153,7 @@ const PrintPreview: Component<PrintPreviewProps> = (props) => {
         <style>
           @page {
             size: ${paperSize()} ${orientation()};
-            margin: 1in;
+            margin: ${marginTop()}in ${marginRight()}in ${marginBottom()}in ${marginLeft()}in;
           }
           body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -247,7 +254,7 @@ const PrintPreview: Component<PrintPreviewProps> = (props) => {
         <style>
           @page {
             size: ${paperSize()} ${orientation()};
-            margin: 0.5in;
+            margin: ${marginTop()}in ${marginRight()}in ${marginBottom()}in ${marginLeft()}in;
           }
           body {
             margin: 0;
@@ -283,8 +290,7 @@ const PrintPreview: Component<PrintPreviewProps> = (props) => {
   const renderMarkdownContent = () => {
     if (!props.content) return "";
     // Use the same marked rendering as Preview component
-    const { marked } = require("marked");
-    return marked(props.content);
+    return marked(props.content) as string;
   };
 
   return (
@@ -324,6 +330,56 @@ const PrintPreview: Component<PrintPreviewProps> = (props) => {
                 value={scale()}
                 onInput={(e) => setScale(parseInt(e.target.value))}
               />
+            </div>
+
+            <div class="option-group">
+              <label>Margins (inches)</label>
+              <div class="margin-grid">
+                <div class="margin-row">
+                  <span>Top:</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="3"
+                    step="0.25"
+                    value={marginTop()}
+                    onInput={(e) => setMarginTop(parseFloat(e.target.value) || 0)}
+                  />
+                </div>
+                <div class="margin-row">
+                  <span>Right:</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="3"
+                    step="0.25"
+                    value={marginRight()}
+                    onInput={(e) => setMarginRight(parseFloat(e.target.value) || 0)}
+                  />
+                </div>
+                <div class="margin-row">
+                  <span>Bottom:</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="3"
+                    step="0.25"
+                    value={marginBottom()}
+                    onInput={(e) => setMarginBottom(parseFloat(e.target.value) || 0)}
+                  />
+                </div>
+                <div class="margin-row">
+                  <span>Left:</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="3"
+                    step="0.25"
+                    value={marginLeft()}
+                    onInput={(e) => setMarginLeft(parseFloat(e.target.value) || 0)}
+                  />
+                </div>
+              </div>
             </div>
 
             <Show when={props.type === "pdf" && pages().length > 1}>
@@ -369,6 +425,11 @@ const PrintPreview: Component<PrintPreviewProps> = (props) => {
                   style={{
                     width: `${(paperDimensions[paperSize()].width * scale() / 100)}px`,
                     "min-height": `${(paperDimensions[paperSize()].height * scale() / 100)}px`,
+                    "padding-top": `${marginTop() * 72 * scale() / 100}px`,
+                    "padding-right": `${marginRight() * 72 * scale() / 100}px`,
+                    "padding-bottom": `${marginBottom() * 72 * scale() / 100}px`,
+                    "padding-left": `${marginLeft() * 72 * scale() / 100}px`,
+                    "box-sizing": "border-box",
                   }}
                 >
                   <div
