@@ -14,6 +14,7 @@ pub mod llm_client;
 pub mod healing_engine;
 pub mod providers;
 pub mod tier_classifier;
+pub mod semantic_object;
 
 use tauri::Manager;
 
