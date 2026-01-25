@@ -335,10 +335,10 @@ impl From<ChatMessage> for Message {
 
 /// Check if AI provider is available
 #[tauri::command]
-pub fn ai_check_status(
+pub async fn ai_check_status(
     ai_manager: State<'_, AiManager>,
 ) -> Result<bool, String> {
-    Ok(ai_manager.is_available())
+    Ok(ai_manager.is_available().await)
 }
 
 /// Get AI provider configuration
@@ -360,31 +360,31 @@ pub fn ai_set_config(
 
 /// Send a chat message and get response
 #[tauri::command]
-pub fn ai_chat(
+pub async fn ai_chat(
     messages: Vec<ChatMessage>,
     system_prompt: Option<String>,
     ai_manager: State<'_, AiManager>,
 ) -> Result<AiResponse, String> {
     let msgs: Vec<Message> = messages.into_iter().map(|m| m.into()).collect();
-    ai_manager.chat(msgs, system_prompt.as_deref()).map_err(|e| e.to_string())
+    ai_manager.chat(msgs, system_prompt.as_deref()).await.map_err(|e| e.to_string())
 }
 
 /// Run a predefined AI task on content
 #[tauri::command]
-pub fn ai_run_task(
+pub async fn ai_run_task(
     task: String,
     content: String,
     ai_manager: State<'_, AiManager>,
 ) -> Result<AiResponse, String> {
-    ai_manager.run_task(&task, &content).map_err(|e| e.to_string())
+    ai_manager.run_task(&task, &content).await.map_err(|e| e.to_string())
 }
 
 /// Simple generate with just a prompt
 #[tauri::command]
-pub fn ai_generate(
+pub async fn ai_generate(
     prompt: String,
     system_prompt: Option<String>,
     ai_manager: State<'_, AiManager>,
 ) -> Result<AiResponse, String> {
-    ai_manager.generate(&prompt, system_prompt.as_deref()).map_err(|e| e.to_string())
+    ai_manager.generate(&prompt, system_prompt.as_deref()).await.map_err(|e| e.to_string())
 }

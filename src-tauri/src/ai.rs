@@ -68,7 +68,7 @@ impl Default for ProviderConfig {
             model: None,
             temperature: 0.7,
             max_tokens: 2048,
-            timeout_secs: 60,
+            timeout_secs: 300,
         }
     }
 }
@@ -98,7 +98,7 @@ struct ChatChoice {
 
 #[derive(Debug, Deserialize)]
 struct ChatMessage {
-    content: String,
+    content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -159,15 +159,15 @@ impl SystemPrompts {
 /// AI Provider manager
 pub struct AiManager {
     config: Mutex<ProviderConfig>,
-    client: reqwest::blocking::Client,
+    client: reqwest::Client,
 }
 
 impl AiManager {
     pub fn new() -> Self {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
             .build()
-            .unwrap_or_else(|_| reqwest::blocking::Client::new());
+            .unwrap_or_else(|_| reqwest::Client::new());
 
         Self {
             config: Mutex::new(ProviderConfig::default()),
@@ -188,27 +188,45 @@ impl AiManager {
         Ok(cfg.clone())
     }
 
-    /// Check if provider is available
-    pub fn is_available(&self) -> bool {
+    /// Check if provider is available (async)
+    pub async fn is_available(&self) -> bool {
         let config = match self.config.lock() {
             Ok(c) => c.clone(),
             Err(_) => return false,
         };
 
         let url = format!("{}/models", config.base_url);
-        self.client
+        let mut request = self.client
             .get(&url)
-            .timeout(std::time::Duration::from_secs(2))
-            .send()
-            .map(|r| r.status().is_success())
-            .unwrap_or(false)
+            .timeout(std::time::Duration::from_secs(5));
+
+        // Include API key if configured
+        if let Some(api_key) = &config.api_key {
+            if !api_key.is_empty() {
+                request = request.header("Authorization", format!("Bearer {}", api_key));
+            }
+        }
+
+        match request.send().await {
+            Ok(r) => {
+                let status = r.status();
+                log::info!("AI availability check: {} -> {}", url, status);
+                // Accept 200 OK or 404 (endpoint not found but server reachable)
+                status.is_success() || status.as_u16() == 404
+            }
+            Err(e) => {
+                log::warn!("AI availability check failed: {}", e);
+                false
+            }
+        }
     }
 
-    /// Send a chat completion request
-    pub fn chat(&self, messages: Vec<Message>, system_prompt: Option<&str>) -> Result<AiResponse> {
+    /// Send a chat completion request (async)
+    pub async fn chat(&self, messages: Vec<Message>, system_prompt: Option<&str>) -> Result<AiResponse> {
         let config = self.config.lock().map_err(|_| AiError::Lock)?.clone();
 
         let url = format!("{}/chat/completions", config.base_url);
+        log::info!("AI request to: {}", url);
 
         // Build messages with optional system prompt
         let mut all_messages: Vec<serde_json::Value> = Vec::new();
@@ -249,45 +267,55 @@ impl AiManager {
             .json(&payload);
 
         if let Some(api_key) = &config.api_key {
-            request = request.header("Authorization", format!("Bearer {}", api_key));
+            if !api_key.is_empty() {
+                request = request.header("Authorization", format!("Bearer {}", api_key));
+            }
         }
 
         let response = request
             .send()
-            .map_err(|e| AiError::Http(e.to_string()))?;
+            .await
+            .map_err(|e| {
+                log::error!("AI request failed: {}", e);
+                AiError::Http(e.to_string())
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let text = response.text().unwrap_or_default();
+            let text = response.text().await.unwrap_or_default();
+            log::error!("AI API error {}: {}", status, text);
             return Err(AiError::Api(format!("{}: {}", status, text)));
         }
 
         let result: ChatCompletionResponse = response
             .json()
-            .map_err(|e| AiError::Http(e.to_string()))?;
+            .await
+            .map_err(|e| AiError::Http(format!("Failed to parse response: {}", e)))?;
 
         let choice = result.choices.first()
             .ok_or_else(|| AiError::Api("No response choices".to_string()))?;
 
+        let content = choice.message.content.clone().unwrap_or_default();
+
         Ok(AiResponse {
-            content: choice.message.content.clone(),
+            content,
             model: result.model.unwrap_or_default(),
             tokens_used: result.usage.and_then(|u| u.total_tokens),
             finish_reason: choice.finish_reason.clone(),
         })
     }
 
-    /// Simple generate with just a prompt
-    pub fn generate(&self, prompt: &str, system_prompt: Option<&str>) -> Result<AiResponse> {
+    /// Simple generate with just a prompt (async)
+    pub async fn generate(&self, prompt: &str, system_prompt: Option<&str>) -> Result<AiResponse> {
         let messages = vec![Message {
             role: Role::User,
             content: prompt.to_string(),
         }];
-        self.chat(messages, system_prompt)
+        self.chat(messages, system_prompt).await
     }
 
-    /// Run a predefined task on content
-    pub fn run_task(&self, task: &str, content: &str) -> Result<AiResponse> {
+    /// Run a predefined task on content (async)
+    pub async fn run_task(&self, task: &str, content: &str) -> Result<AiResponse> {
         let system_prompt = match task {
             "intent_map" => SystemPrompts::intent_map(),
             "explain" => SystemPrompts::explain(),
@@ -298,7 +326,7 @@ impl AiManager {
             _ => SystemPrompts::default_chat(),
         };
 
-        self.generate(content, Some(system_prompt))
+        self.generate(content, Some(system_prompt)).await
     }
 }
 
