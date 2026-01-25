@@ -55,8 +55,8 @@ pub fn create_document(
     let handle = crate::kernel::ContextHandle::new("document");
     kernel.register_context(handle);
 
-    // Store in memory
-    kernel.memory.store(
+    // Store in memory (public tier - these are events)
+    kernel.memory.store_public(
         &format!("Created new document: {}", doc.title),
         MemoryType::Event,
         serde_json::json!({ "document_id": doc.id }),
@@ -79,8 +79,8 @@ pub fn open_document(
         .with_path(&path);
     kernel.register_context(handle);
 
-    // Store in memory
-    kernel.memory.store(
+    // Store in memory (public tier - these are events)
+    kernel.memory.store_public(
         &format!("Opened document: {}", doc.title),
         MemoryType::Event,
         serde_json::json!({
@@ -118,8 +118,8 @@ pub fn save_document(
         return Err("No path provided for save".to_string());
     }
 
-    // Store in memory
-    kernel.memory.store(
+    // Store in memory (public tier - these are events)
+    kernel.memory.store_public(
         &format!("Saved document: {}", doc.title),
         MemoryType::Event,
         serde_json::json!({

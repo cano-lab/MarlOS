@@ -7,6 +7,9 @@ pub mod memory;
 pub mod document;
 pub mod commands;
 pub mod pdf;
+pub mod healing_test;
+pub mod llm_client;
+pub mod healing_engine;
 
 use tauri::Manager;
 

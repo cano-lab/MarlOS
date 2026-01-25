@@ -11,6 +11,10 @@ edition = "2021"
 name = "marlos_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
+[[bin]]
+name = "healing_test_runner"
+path = "src/bin/healing_test_runner.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -32,6 +36,7 @@ dirs = "6"
 pdfium-render = "0.8"
 image = "0.25"
 base64 = "0.22"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
 
 # For embeddings (optional, add later)
 # ort = "2"  # ONNX Runtime
