@@ -8,6 +8,7 @@ pub mod document;
 pub mod commands;
 pub mod pdf;
 pub mod epub;
+pub mod ai;
 
 use tauri::Manager;
 
@@ -44,6 +45,11 @@ pub fn run() {
             log::info!("EPUB support enabled");
             app.manage(epub_manager);
 
+            // Initialize AI manager
+            let ai_manager = ai::AiManager::new();
+            log::info!("AI support enabled");
+            app.manage(ai_manager);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -66,6 +72,13 @@ pub fn run() {
             commands::epub_get_chapter_by_path,
             commands::epub_search,
             commands::epub_get_cover,
+            // AI commands
+            commands::ai_check_status,
+            commands::ai_get_config,
+            commands::ai_set_config,
+            commands::ai_chat,
+            commands::ai_run_task,
+            commands::ai_generate,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

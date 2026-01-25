@@ -8,6 +8,8 @@ interface SidebarProps {
   onOpenEpub: () => void;
   onPrint?: () => void;
   canPrint?: boolean;
+  onToggleChat?: () => void;
+  chatOpen?: boolean;
 }
 
 const Sidebar: Component<SidebarProps> = (props) => {
@@ -65,6 +67,19 @@ const Sidebar: Component<SidebarProps> = (props) => {
             <rect x="5" y="12" width="4" height="1" fill="currentColor" />
           </svg>
           Print
+        </button>
+        <button
+          class={`sidebar-btn chat-btn ${props.chatOpen ? "active" : ""}`}
+          onClick={props.onToggleChat}
+          title="AI Chat (Ctrl+/)"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M2 2h12v9H5l-3 3V2z" stroke="currentColor" stroke-width="1" fill="none" />
+            <circle cx="5" cy="6.5" r="1" fill="currentColor" />
+            <circle cx="8" cy="6.5" r="1" fill="currentColor" />
+            <circle cx="11" cy="6.5" r="1" fill="currentColor" />
+          </svg>
+          Unstuck
         </button>
       </div>
 

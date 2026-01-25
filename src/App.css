@@ -213,3 +213,14 @@
 .status-spacer {
   flex: 1;
 }
+
+/* Chat panel container */
+.chat-panel-container {
+  width: 380px;
+  min-width: 320px;
+  max-width: 500px;
+  height: 100%;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}

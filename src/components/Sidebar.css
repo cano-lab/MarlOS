@@ -58,6 +58,15 @@
   color: var(--text-primary);
 }
 
+.sidebar-btn.active {
+  background-color: var(--accent);
+  color: white;
+}
+
+.sidebar-btn.active:hover {
+  filter: brightness(1.1);
+}
+
 .sidebar-section {
   display: flex;
   flex-direction: column;

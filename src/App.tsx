@@ -7,6 +7,7 @@ import Preview from "./components/Preview";
 import PdfViewer from "./components/PdfViewer";
 import EpubViewer from "./components/EpubViewer";
 import PrintPreview from "./components/PrintPreview";
+import ChatPanel from "./components/ChatPanel";
 import Sidebar from "./components/Sidebar";
 import Titlebar from "./components/Titlebar";
 import "./App.css";
@@ -38,6 +39,8 @@ function App() {
   const [pdfPath, setPdfPath] = createSignal<string | null>(null);
   const [epubPath, setEpubPath] = createSignal<string | null>(null);
   const [showPrintPreview, setShowPrintPreview] = createSignal(false);
+  const [showChat, setShowChat] = createSignal(false);
+  const [selectedText, setSelectedText] = createSignal<string>("");
 
   onMount(async () => {
     try {
@@ -280,6 +283,10 @@ function App() {
       e.preventDefault();
       setSidebarOpen(!sidebarOpen());
     }
+    if ((e.ctrlKey || e.metaKey) && e.key === "/") {
+      e.preventDefault();
+      setShowChat(!showChat());
+    }
     // View mode shortcuts (only in markdown mode)
     if (appMode() === "markdown") {
       if ((e.ctrlKey || e.metaKey) && e.key === "1") {
@@ -343,6 +350,8 @@ function App() {
             onOpenEpub={() => openEpub()}
             onPrint={openPrintPreview}
             canPrint={!!(document() || pdfPath())}
+            onToggleChat={() => setShowChat(!showChat())}
+            chatOpen={showChat()}
           />
         </Show>
 
@@ -390,6 +399,7 @@ function App() {
                       <span class="shortcut-key">Ctrl+1</span><span>Editor Only</span>
                       <span class="shortcut-key">Ctrl+2</span><span>Split View</span>
                       <span class="shortcut-key">Ctrl+3</span><span>Preview Only</span>
+                      <span class="shortcut-key">Ctrl+/</span><span>Toggle Chat</span>
                     </div>
                   </div>
                   <div class="welcome-features">
@@ -398,7 +408,7 @@ function App() {
                       <li><strong>Markdown Editor</strong> - Mermaid diagrams, LaTeX math, charts</li>
                       <li><strong>PDF Viewer</strong> - Accurate rendering with measurement tools</li>
                       <li><strong>EPUB Reader</strong> - Read e-books with TOC navigation and search</li>
-                      <li><strong>Calibration</strong> - Calibrate scale for real-world measurements</li>
+                      <li><strong>Unstuck AI</strong> - LLM chat for thinking, brainstorming, and analysis</li>
                     </ul>
                   </div>
                 </div>
@@ -426,6 +436,16 @@ function App() {
             </Show>
           </Show>
         </main>
+
+        {/* Chat Panel */}
+        <Show when={showChat()}>
+          <div class="chat-panel-container">
+            <ChatPanel
+              contextContent={selectedText()}
+              onClose={() => setShowChat(false)}
+            />
+          </div>
+        </Show>
       </div>
 
       <Show when={appMode() === "markdown"}>

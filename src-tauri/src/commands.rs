@@ -11,6 +11,7 @@ use crate::kernel::SemanticKernel;
 use crate::memory::MemoryType;
 use crate::pdf::{PdfManager, PdfInfo, RenderedPage, Measurement, PdfPoint};
 use crate::epub::{EpubManager, EpubInfo, ChapterContent, SearchResult as EpubSearchResult};
+use crate::ai::{AiManager, ProviderConfig, Message, Role, AiResponse};
 
 /// Response for version info
 #[derive(Serialize)]
@@ -306,4 +307,84 @@ pub fn epub_get_cover(
     epub_manager: State<'_, EpubManager>,
 ) -> Result<Option<String>, String> {
     epub_manager.get_cover().map_err(|e| e.to_string())
+}
+
+// ============================================================================
+// AI Commands
+// ============================================================================
+
+/// Chat message for the API
+#[derive(Deserialize)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+impl From<ChatMessage> for Message {
+    fn from(msg: ChatMessage) -> Self {
+        Message {
+            role: match msg.role.as_str() {
+                "system" => Role::System,
+                "assistant" => Role::Assistant,
+                _ => Role::User,
+            },
+            content: msg.content,
+        }
+    }
+}
+
+/// Check if AI provider is available
+#[tauri::command]
+pub fn ai_check_status(
+    ai_manager: State<'_, AiManager>,
+) -> Result<bool, String> {
+    Ok(ai_manager.is_available())
+}
+
+/// Get AI provider configuration
+#[tauri::command]
+pub fn ai_get_config(
+    ai_manager: State<'_, AiManager>,
+) -> Result<ProviderConfig, String> {
+    ai_manager.get_config().map_err(|e| e.to_string())
+}
+
+/// Set AI provider configuration
+#[tauri::command]
+pub fn ai_set_config(
+    config: ProviderConfig,
+    ai_manager: State<'_, AiManager>,
+) -> Result<(), String> {
+    ai_manager.set_config(config).map_err(|e| e.to_string())
+}
+
+/// Send a chat message and get response
+#[tauri::command]
+pub fn ai_chat(
+    messages: Vec<ChatMessage>,
+    system_prompt: Option<String>,
+    ai_manager: State<'_, AiManager>,
+) -> Result<AiResponse, String> {
+    let msgs: Vec<Message> = messages.into_iter().map(|m| m.into()).collect();
+    ai_manager.chat(msgs, system_prompt.as_deref()).map_err(|e| e.to_string())
+}
+
+/// Run a predefined AI task on content
+#[tauri::command]
+pub fn ai_run_task(
+    task: String,
+    content: String,
+    ai_manager: State<'_, AiManager>,
+) -> Result<AiResponse, String> {
+    ai_manager.run_task(&task, &content).map_err(|e| e.to_string())
+}
+
+/// Simple generate with just a prompt
+#[tauri::command]
+pub fn ai_generate(
+    prompt: String,
+    system_prompt: Option<String>,
+    ai_manager: State<'_, AiManager>,
+) -> Result<AiResponse, String> {
+    ai_manager.generate(&prompt, system_prompt.as_deref()).map_err(|e| e.to_string())
 }
