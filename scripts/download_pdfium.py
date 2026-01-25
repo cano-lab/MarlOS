@@ -76,15 +76,27 @@ def download_pdfium(target_dir: Path):
         with tarfile.open(download_path, 'r:gz') as tf:
             tf.extractall(target_dir)
 
-    # Find and copy library to expected location
+    # Find the actual library in bin directory (not the archive)
     lib_path = None
-    for root, dirs, files in os.walk(target_dir):
-        for f in files:
-            if f == lib_name or f.startswith("pdfium"):
-                lib_path = Path(root) / f
+    # Check bin directory first (where pdfium-binaries extracts the DLL)
+    bin_lib = target_dir / "bin" / lib_name
+    if bin_lib.exists():
+        lib_path = bin_lib
+    else:
+        # Fallback: search for the library
+        for root, dirs, files in os.walk(target_dir):
+            for f in files:
+                # Skip compressed archives
+                if f.endswith(('.tgz', '.tar.gz', '.zip')):
+                    continue
+                if f == lib_name:
+                    candidate = Path(root) / f
+                    # Verify it's actually a library (not compressed)
+                    if candidate.stat().st_size > 1_000_000:  # Real DLL should be > 1MB
+                        lib_path = candidate
+                        break
+            if lib_path:
                 break
-        if lib_path:
-            break
 
     if lib_path and lib_path.exists():
         # Copy to target directory root
