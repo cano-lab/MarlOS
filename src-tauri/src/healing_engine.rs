@@ -6,6 +6,8 @@
 //! 3. Auto-executes safe, high-confidence repairs
 //! 4. Escalates uncertain or sensitive actions to humans
 
+use std::collections::HashMap;
+
 use crate::healing_test::{
     ActionType, Diagnosis, RepairAction, Severity, SystemState,
 };
