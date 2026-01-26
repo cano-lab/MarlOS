@@ -15,6 +15,9 @@ pub mod healing_engine;
 pub mod providers;
 pub mod tier_classifier;
 pub mod semantic_object;
+pub mod object_store;
+pub mod embeddings;
+pub mod semantic_search;
 
 use tauri::Manager;
 
