@@ -18,6 +18,7 @@ pub mod semantic_object;
 pub mod object_store;
 pub mod embeddings;
 pub mod semantic_search;
+pub mod andor_client;
 
 use std::sync::Arc;
 use tauri::Manager;

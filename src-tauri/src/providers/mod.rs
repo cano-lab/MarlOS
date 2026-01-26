@@ -287,8 +287,10 @@ pub struct ProviderInfo {
 pub mod word_count;
 pub mod markdown_language;
 pub mod coding_agent;
+pub mod session;
 
 // Re-export built-in providers
 pub use word_count::WordCountProvider;
 pub use markdown_language::MarkdownLanguageService;
 pub use coding_agent::{CodingAgentProvider, CodeOperation, CodeRequest, CodeResponse};
+pub use session::{SessionParser, SessionScanner, ParsedSession, session_to_objects};

@@ -12,9 +12,11 @@
 
 use chrono::Utc;
 use clap::{Parser, Subcommand};
+use marlos_lib::andor_client::{AndorClient, MemoryQueryRequest, ContextSearchRequest, SemanticSearchRequest};
 use marlos_lib::embeddings::EmbeddingManager;
 use marlos_lib::memory::SecurityTier;
 use marlos_lib::object_store::ObjectStore;
+use marlos_lib::providers::{SessionScanner, SessionParser, session_to_objects};
 use marlos_lib::semantic_object::{ContentType, SemanticObject, Suid, FileBoundary, RelationType};
 use marlos_lib::semantic_search::{SemanticSearch, SearchOptions};
 use serde::Serialize;
@@ -141,6 +143,143 @@ enum Commands {
         #[arg(short, long, default_value = "references")]
         relation: String,
     },
+
+    /// Query Andor Hub (coding sessions, memories, context)
+    Andor {
+        #[command(subcommand)]
+        command: AndorCommands,
+    },
+
+    /// Manage Claude Code sessions (native MarlOS tracking)
+    Sessions {
+        #[command(subcommand)]
+        command: SessionCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum AndorCommands {
+    /// Check if Andor Hub is running
+    Status,
+
+    /// List coding sessions
+    Sessions {
+        /// Filter by status (active, completed)
+        #[arg(short, long)]
+        status: Option<String>,
+        /// Filter by session type
+        #[arg(short = 't', long)]
+        session_type: Option<String>,
+        /// Filter by repo path
+        #[arg(short, long)]
+        repo: Option<String>,
+        /// Maximum results
+        #[arg(short, long, default_value = "20")]
+        limit: i32,
+    },
+
+    /// Get a specific session by ID
+    Session {
+        /// Session ID
+        id: String,
+    },
+
+    /// Get session statistics
+    SessionStats,
+
+    /// Query memories (semantic search)
+    Memory {
+        /// Search query
+        query: String,
+        /// Filter by namespace
+        #[arg(short, long)]
+        namespace: Option<String>,
+        /// Filter by type (fact, decision, pattern, etc.)
+        #[arg(short = 't', long)]
+        memory_type: Option<String>,
+        /// Maximum results
+        #[arg(short, long, default_value = "10")]
+        limit: i32,
+        /// Search mode (exact, semantic, hybrid)
+        #[arg(short, long, default_value = "hybrid")]
+        mode: String,
+    },
+
+    /// Get memory statistics
+    MemoryStats,
+
+    /// Get memories for a specific session
+    SessionMemories {
+        /// Session ID
+        session_id: String,
+    },
+
+    /// List repos with context maps
+    Repos,
+
+    /// Search repo context (semantic search over files)
+    Context {
+        /// Search query
+        query: String,
+        /// Filter by repo name
+        #[arg(short, long)]
+        repo: Option<String>,
+        /// Maximum results
+        #[arg(short, long, default_value = "10")]
+        limit: i32,
+    },
+
+    /// Semantic search across sessions
+    Search {
+        /// Search query
+        query: String,
+        /// Maximum results
+        #[arg(short, long, default_value = "10")]
+        limit: i32,
+        /// Minimum score threshold
+        #[arg(short = 's', long)]
+        min_score: Option<f32>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SessionCommands {
+    /// Scan and list all Claude Code sessions
+    List {
+        /// Filter by project path (substring match)
+        #[arg(short, long)]
+        project: Option<String>,
+        /// Maximum results
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+    },
+
+    /// Parse and show details of a specific session
+    Show {
+        /// Session ID (UUID) or path to JSONL file
+        session: String,
+    },
+
+    /// Import sessions into MarlOS object store
+    Import {
+        /// Session ID to import, or "all" to import all sessions
+        session: String,
+        /// Generate embeddings for imported sessions
+        #[arg(long)]
+        embed: bool,
+    },
+
+    /// Search across all sessions (without importing)
+    Search {
+        /// Search query
+        query: String,
+        /// Maximum results
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
+    },
+
+    /// Show session statistics
+    Stats,
 }
 
 #[derive(Serialize)]
@@ -681,6 +820,563 @@ fn run_command(cli: &Cli) -> CliResponse<serde_json::Value> {
                         "relation": relation,
                         "message": "Relation added"
                     })),
+                    error: None,
+                },
+                Err(e) => CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+
+        Commands::Andor { command } => {
+            run_andor_command(command)
+        }
+
+        Commands::Sessions { command } => {
+            run_session_command(command, &rt, &search)
+        }
+    }
+}
+
+fn run_session_command(
+    command: &SessionCommands,
+    rt: &tokio::runtime::Runtime,
+    search: &SemanticSearch,
+) -> CliResponse<serde_json::Value> {
+    let scanner = SessionScanner::new();
+
+    match command {
+        SessionCommands::List { project, limit } => {
+            match scanner.find_all_sessions() {
+                Ok(sessions) => {
+                    let mut results: Vec<serde_json::Value> = Vec::new();
+
+                    for path in sessions.iter() {
+                        // Stop if we've reached the limit
+                        if results.len() >= *limit {
+                            break;
+                        }
+
+                        // Parse each session to get metadata
+                        match SessionParser::parse_file(path) {
+                            Ok(parsed) => {
+                                // Apply project filter if provided
+                                if let Some(filter) = project {
+                                    if let Some(ref proj_path) = parsed.project_path {
+                                        if !proj_path.to_lowercase().contains(&filter.to_lowercase()) {
+                                            continue;
+                                        }
+                                    } else {
+                                        continue;
+                                    }
+                                }
+
+                                results.push(serde_json::json!({
+                                    "id": parsed.id,
+                                    "project": parsed.project_path,
+                                    "branch": parsed.git_branch,
+                                    "message_count": parsed.message_count,
+                                    "user_messages": parsed.user_messages.len(),
+                                    "assistant_messages": parsed.assistant_messages.len(),
+                                    "started_at": parsed.started_at.map(|t| t.to_rfc3339()),
+                                    "ended_at": parsed.ended_at.map(|t| t.to_rfc3339()),
+                                    "source_file": parsed.source_file,
+                                }));
+                            }
+                            Err(e) => {
+                                log::warn!("Failed to parse session {}: {}", path.display(), e);
+                            }
+                        }
+                    }
+
+                    CliResponse {
+                        success: true,
+                        data: Some(serde_json::json!({
+                            "sessions": results,
+                            "total": results.len(),
+                        })),
+                        error: None,
+                    }
+                }
+                Err(e) => CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(e),
+                },
+            }
+        }
+
+        SessionCommands::Show { session } => {
+            // Try to find the session file
+            let path = if session.ends_with(".jsonl") {
+                PathBuf::from(session)
+            } else {
+                // Search for session by ID
+                match scanner.find_all_sessions() {
+                    Ok(sessions) => {
+                        sessions.into_iter()
+                            .find(|p| {
+                                p.file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .map_or(false, |s| s == session)
+                            })
+                            .unwrap_or_else(|| PathBuf::from(session))
+                    }
+                    Err(_) => PathBuf::from(session),
+                }
+            };
+
+            match SessionParser::parse_file(&path) {
+                Ok(parsed) => {
+                    CliResponse {
+                        success: true,
+                        data: Some(serde_json::json!({
+                            "id": parsed.id,
+                            "project": parsed.project_path,
+                            "branch": parsed.git_branch,
+                            "message_count": parsed.message_count,
+                            "user_messages": parsed.user_messages.len(),
+                            "assistant_messages": parsed.assistant_messages.len(),
+                            "tool_calls": parsed.tool_calls,
+                            "started_at": parsed.started_at.map(|t| t.to_rfc3339()),
+                            "ended_at": parsed.ended_at.map(|t| t.to_rfc3339()),
+                            "summary": parsed.generate_summary(),
+                            "source_file": parsed.source_file,
+                        })),
+                        error: None,
+                    }
+                }
+                Err(e) => CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(e),
+                },
+            }
+        }
+
+        SessionCommands::Import { session, embed } => {
+            let sessions_to_import: Vec<PathBuf> = if session == "all" {
+                scanner.find_all_sessions().unwrap_or_default()
+            } else {
+                // Find single session
+                match scanner.find_all_sessions() {
+                    Ok(sessions) => {
+                        sessions.into_iter()
+                            .filter(|p| {
+                                p.file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .map_or(false, |s| s == session)
+                            })
+                            .collect()
+                    }
+                    Err(_) => vec![],
+                }
+            };
+
+            if sessions_to_import.is_empty() {
+                return CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(format!("No sessions found matching: {}", session)),
+                };
+            }
+
+            let mut imported = 0;
+            let mut failed = 0;
+
+            for path in sessions_to_import {
+                match SessionParser::parse_file(&path) {
+                    Ok(parsed) => {
+                        let objects = session_to_objects(&parsed);
+
+                        for obj in objects {
+                            let suid = obj.suid;
+                            let content_for_embed: Option<String> = obj.content_as_str().map(|s| s.to_string());
+
+                            let store = search.store.blocking_write();
+                            match store.create(&obj) {
+                                Ok(()) => {
+                                    drop(store);
+
+                                    // Generate embedding if requested
+                                    if *embed {
+                                        if let Some(content) = content_for_embed {
+                                            if let Ok(embedding) = rt.block_on(search.embeddings().embed(&content)) {
+                                                let store = search.store.blocking_write();
+                                                let model = search.embeddings().model_info().id.clone();
+                                                let _ = store.store_embedding(&suid, &embedding, &model);
+                                            }
+                                        }
+                                    }
+
+                                    imported += 1;
+                                }
+                                Err(e) => {
+                                    log::warn!("Failed to import session object: {}", e);
+                                    failed += 1;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to parse session {}: {}", path.display(), e);
+                        failed += 1;
+                    }
+                }
+            }
+
+            CliResponse {
+                success: true,
+                data: Some(serde_json::json!({
+                    "imported": imported,
+                    "failed": failed,
+                    "message": format!("Imported {} sessions", imported),
+                })),
+                error: None,
+            }
+        }
+
+        SessionCommands::Search { query, limit } => {
+            // Simple text search across sessions (without embeddings)
+            let mut results: Vec<serde_json::Value> = Vec::new();
+            let query_lower = query.to_lowercase();
+
+            match scanner.find_all_sessions() {
+                Ok(sessions) => {
+                    for path in sessions {
+                        if results.len() >= *limit {
+                            break;
+                        }
+
+                        match SessionParser::parse_file(&path) {
+                            Ok(parsed) => {
+                                // Search in messages
+                                let full_text = parsed.get_full_text().to_lowercase();
+                                if full_text.contains(&query_lower) {
+                                    // Find matching excerpts
+                                    let excerpts: Vec<String> = parsed.user_messages.iter()
+                                        .chain(parsed.assistant_messages.iter())
+                                        .filter(|m| m.content.to_lowercase().contains(&query_lower))
+                                        .take(3)
+                                        .map(|m| {
+                                            let preview: String = m.content.chars().take(200).collect();
+                                            format!("[{}]: {}...", m.role, preview)
+                                        })
+                                        .collect();
+
+                                    results.push(serde_json::json!({
+                                        "id": parsed.id,
+                                        "project": parsed.project_path,
+                                        "branch": parsed.git_branch,
+                                        "message_count": parsed.message_count,
+                                        "excerpts": excerpts,
+                                    }));
+                                }
+                            }
+                            Err(_) => continue,
+                        }
+                    }
+
+                    CliResponse {
+                        success: true,
+                        data: Some(serde_json::json!({
+                            "query": query,
+                            "results": results,
+                            "total": results.len(),
+                        })),
+                        error: None,
+                    }
+                }
+                Err(e) => CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(e),
+                },
+            }
+        }
+
+        SessionCommands::Stats => {
+            match scanner.find_all_sessions() {
+                Ok(sessions) => {
+                    let mut total_messages = 0;
+                    let mut total_user = 0;
+                    let mut total_assistant = 0;
+                    let mut projects: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+                    for path in &sessions {
+                        if let Ok(parsed) = SessionParser::parse_file(path) {
+                            total_messages += parsed.message_count;
+                            total_user += parsed.user_messages.len();
+                            total_assistant += parsed.assistant_messages.len();
+                            if let Some(proj) = parsed.project_path {
+                                projects.insert(proj);
+                            }
+                        }
+                    }
+
+                    CliResponse {
+                        success: true,
+                        data: Some(serde_json::json!({
+                            "total_sessions": sessions.len(),
+                            "total_messages": total_messages,
+                            "total_user_messages": total_user,
+                            "total_assistant_messages": total_assistant,
+                            "unique_projects": projects.len(),
+                            "projects": projects.into_iter().collect::<Vec<_>>(),
+                        })),
+                        error: None,
+                    }
+                }
+                Err(e) => CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(e),
+                },
+            }
+        }
+    }
+}
+
+fn run_andor_command(command: &AndorCommands) -> CliResponse<serde_json::Value> {
+    let client = AndorClient::new();
+
+    match command {
+        AndorCommands::Status => {
+            let running = client.is_running();
+            CliResponse {
+                success: true,
+                data: Some(serde_json::json!({
+                    "running": running,
+                    "url": "http://localhost:8080"
+                })),
+                error: None,
+            }
+        }
+
+        AndorCommands::Sessions { status, session_type, repo, limit } => {
+            if !client.is_running() {
+                return CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some("Andor Hub is not running".to_string()),
+                };
+            }
+
+            match client.list_sessions(
+                status.as_deref(),
+                session_type.as_deref(),
+                repo.as_deref(),
+                Some(*limit),
+            ) {
+                Ok(response) => CliResponse {
+                    success: true,
+                    data: Some(serde_json::to_value(response).unwrap()),
+                    error: None,
+                },
+                Err(e) => CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+
+        AndorCommands::Session { id } => {
+            if !client.is_running() {
+                return CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some("Andor Hub is not running".to_string()),
+                };
+            }
+
+            match client.get_session(id) {
+                Ok(session) => CliResponse {
+                    success: true,
+                    data: Some(serde_json::to_value(session).unwrap()),
+                    error: None,
+                },
+                Err(e) => CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+
+        AndorCommands::SessionStats => {
+            if !client.is_running() {
+                return CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some("Andor Hub is not running".to_string()),
+                };
+            }
+
+            match client.session_stats() {
+                Ok(stats) => CliResponse {
+                    success: true,
+                    data: Some(serde_json::to_value(stats).unwrap()),
+                    error: None,
+                },
+                Err(e) => CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+
+        AndorCommands::Memory { query, namespace, memory_type, limit, mode } => {
+            if !client.is_running() {
+                return CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some("Andor Hub is not running".to_string()),
+                };
+            }
+
+            let request = MemoryQueryRequest {
+                query: query.clone(),
+                namespace: namespace.clone(),
+                memory_type: memory_type.clone(),
+                limit: Some(*limit),
+                mode: Some(mode.clone()),
+            };
+
+            match client.query_memories(request) {
+                Ok(response) => CliResponse {
+                    success: true,
+                    data: Some(serde_json::to_value(response).unwrap()),
+                    error: None,
+                },
+                Err(e) => CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+
+        AndorCommands::MemoryStats => {
+            if !client.is_running() {
+                return CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some("Andor Hub is not running".to_string()),
+                };
+            }
+
+            match client.memory_stats() {
+                Ok(stats) => CliResponse {
+                    success: true,
+                    data: Some(serde_json::to_value(stats).unwrap()),
+                    error: None,
+                },
+                Err(e) => CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+
+        AndorCommands::SessionMemories { session_id } => {
+            if !client.is_running() {
+                return CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some("Andor Hub is not running".to_string()),
+                };
+            }
+
+            match client.session_memories(session_id) {
+                Ok(memories) => CliResponse {
+                    success: true,
+                    data: Some(serde_json::to_value(memories).unwrap()),
+                    error: None,
+                },
+                Err(e) => CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+
+        AndorCommands::Repos => {
+            if !client.is_running() {
+                return CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some("Andor Hub is not running".to_string()),
+                };
+            }
+
+            match client.list_repos() {
+                Ok(repos) => CliResponse {
+                    success: true,
+                    data: Some(serde_json::to_value(repos).unwrap()),
+                    error: None,
+                },
+                Err(e) => CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+
+        AndorCommands::Context { query, repo, limit } => {
+            if !client.is_running() {
+                return CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some("Andor Hub is not running".to_string()),
+                };
+            }
+
+            let request = ContextSearchRequest {
+                query: query.clone(),
+                repo_name: repo.clone(),
+                limit: Some(*limit),
+            };
+
+            match client.search_context(request) {
+                Ok(response) => CliResponse {
+                    success: true,
+                    data: Some(serde_json::to_value(response).unwrap()),
+                    error: None,
+                },
+                Err(e) => CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+
+        AndorCommands::Search { query, limit, min_score } => {
+            if !client.is_running() {
+                return CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some("Andor Hub is not running".to_string()),
+                };
+            }
+
+            let request = SemanticSearchRequest {
+                query: query.clone(),
+                limit: Some(*limit),
+                min_score: *min_score,
+            };
+
+            match client.semantic_search(request) {
+                Ok(response) => CliResponse {
+                    success: true,
+                    data: Some(serde_json::to_value(response).unwrap()),
                     error: None,
                 },
                 Err(e) => CliResponse {
