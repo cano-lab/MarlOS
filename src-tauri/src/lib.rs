@@ -77,9 +77,11 @@ pub fn run() {
             let object_store = object_store::ObjectStore::new(db_path)
                 .expect("Failed to create object store");
 
-            // Use mock embeddings for now (can upgrade to Ollama later)
-            let embedding_manager = embeddings::EmbeddingManager::mock();
-            log::info!("Embedding manager initialized (mock mode)");
+            // Auto-detect embedding provider (LM Studio → Ollama → Mock)
+            let embedding_manager = tauri::async_runtime::block_on(
+                embeddings::EmbeddingManager::auto_detect()
+            );
+            log::info!("Embedding manager initialized: {}", embedding_manager.model_info().name);
 
             let semantic_search = semantic_search::SemanticSearch::new(object_store, embedding_manager);
             log::info!("Semantic search initialized");

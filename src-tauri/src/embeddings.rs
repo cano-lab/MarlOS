@@ -205,6 +205,37 @@ impl OpenAIEmbedding {
             "text-embedding-3-small",
         )
     }
+
+    /// Create for LM Studio (localhost:1234, no API key needed)
+    pub fn lm_studio(model: &str) -> Self {
+        let (dimensions, max_tokens) = match model {
+            "nomic-embed-text" | "nomic-ai/nomic-embed-text-v1.5-GGUF" => (768, 8192),
+            "text-embedding-nomic-embed-text-v1.5" => (768, 8192),
+            "all-MiniLM-L6-v2" | "sentence-transformers/all-MiniLM-L6-v2" => (384, 512),
+            "bge-small-en" | "BAAI/bge-small-en-v1.5" => (384, 512),
+            "bge-base-en" | "BAAI/bge-base-en-v1.5" => (768, 512),
+            "bge-large-en" | "BAAI/bge-large-en-v1.5" => (1024, 512),
+            _ => (768, 8192), // Reasonable default for most embedding models
+        };
+
+        Self {
+            client: reqwest::Client::new(),
+            base_url: "http://localhost:1234/v1".to_string(),
+            api_key: None, // LM Studio doesn't require API key
+            model: model.to_string(),
+            model_info: ModelInfo {
+                id: format!("lm-studio:{}", model),
+                name: format!("LM Studio: {}", model),
+                dimensions,
+                max_tokens,
+            },
+        }
+    }
+
+    /// Create for LM Studio with default model
+    pub fn lm_studio_default() -> Self {
+        Self::lm_studio("nomic-embed-text")
+    }
 }
 
 #[derive(Serialize)]
@@ -262,8 +293,13 @@ impl EmbeddingProvider for OpenAIEmbedding {
     }
 
     async fn is_available(&self) -> bool {
-        // For API services, assume available if we have a key
-        self.api_key.is_some()
+        // For LM Studio (no API key), probe the server
+        if self.api_key.is_none() {
+            let url = format!("{}/models", self.base_url);
+            return self.client.get(&url).send().await.is_ok();
+        }
+        // For API services with key, assume available
+        true
     }
 }
 
@@ -360,6 +396,39 @@ impl EmbeddingManager {
             log::warn!("Ollama not available, using mock embeddings");
             Self::mock()
         }
+    }
+
+    /// Try to create with LM Studio, fall back to Ollama, then mock
+    /// This is the recommended auto-detection method
+    pub async fn auto_detect() -> Self {
+        // Try LM Studio first (localhost:1234)
+        let lm_studio = OpenAIEmbedding::lm_studio_default();
+        if lm_studio.is_available().await {
+            log::info!("Using LM Studio for embeddings (nomic-embed-text)");
+            return Self::new(Box::new(lm_studio));
+        }
+
+        // Try Ollama second (localhost:11434)
+        let ollama = OllamaEmbedding::default_local();
+        if ollama.is_available().await {
+            log::info!("Using Ollama for embeddings (all-minilm)");
+            return Self::new(Box::new(ollama));
+        }
+
+        // Fall back to mock embeddings
+        log::warn!("No embedding service available, using mock embeddings");
+        log::warn!("For real embeddings, start LM Studio or Ollama");
+        Self::mock()
+    }
+
+    /// Create with LM Studio provider
+    pub fn lm_studio(model: &str) -> Self {
+        Self::new(Box::new(OpenAIEmbedding::lm_studio(model)))
+    }
+
+    /// Create with LM Studio default model (nomic-embed-text)
+    pub fn lm_studio_default() -> Self {
+        Self::new(Box::new(OpenAIEmbedding::lm_studio_default()))
     }
 
     /// Get model information

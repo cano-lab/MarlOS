@@ -7,12 +7,11 @@
 //! 4. Escalates uncertain or sensitive actions to humans
 
 use crate::healing_test::{
-    ActionType, Diagnosis, FaultCategory, RepairAction, Severity, SystemState,
+    ActionType, Diagnosis, RepairAction, Severity, SystemState,
 };
 use crate::llm_client::{LlmClient, LlmError};
 use crate::memory::SecurityTier;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Decision made by the healing engine
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

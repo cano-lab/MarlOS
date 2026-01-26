@@ -19,7 +19,7 @@ use crate::providers::{
 };
 use crate::semantic_search::SemanticSearch;
 use crate::semantic_object::{
-    SemanticObject, Suid, ContentType, GuardedObjectView,
+    SemanticObject, Suid, ContentType,
     FileBoundary, RelationType,
 };
 

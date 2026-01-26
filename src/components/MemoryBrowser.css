@@ -1,0 +1,240 @@
+.memory-browser {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-secondary, #1e1e1e);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.memory-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px;
+  border-bottom: 1px solid var(--border-color, #333);
+}
+
+.memory-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #fff);
+}
+
+.import-btn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 4px;
+  background: var(--accent-color, #3b82f6);
+  color: white;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.import-btn:hover {
+  background: var(--accent-hover, #2563eb);
+}
+
+.memory-search {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+.memory-search .search-input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid var(--border-color, #333);
+  border-radius: 6px;
+  background: var(--bg-primary, #252526);
+  color: var(--text-primary, #fff);
+  font-size: 13px;
+}
+
+.memory-search .search-input:focus {
+  outline: none;
+  border-color: var(--accent-color, #3b82f6);
+}
+
+.search-btn {
+  padding: 8px 12px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent-color, #3b82f6);
+  color: white;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.search-btn:hover:not(:disabled) {
+  background: var(--accent-hover, #2563eb);
+}
+
+.search-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.memory-filters {
+  padding: 0 12px 8px;
+}
+
+.tier-filter {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border-color, #333);
+  border-radius: 4px;
+  background: var(--bg-primary, #252526);
+  color: var(--text-primary, #fff);
+  font-size: 12px;
+}
+
+.error-message {
+  margin: 8px 12px;
+  padding: 8px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 4px;
+  color: #ef4444;
+  font-size: 12px;
+}
+
+.memory-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.results-header,
+.no-results {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+}
+
+.empty-state {
+  text-align: center;
+  padding: 24px;
+  color: var(--text-secondary, #888);
+}
+
+.empty-state p {
+  margin: 4px 0;
+}
+
+.empty-state .hint {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.memory-item {
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  background: var(--bg-primary, #252526);
+  border: 1px solid var(--border-color, #333);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.memory-item:hover {
+  border-color: var(--accent-color, #3b82f6);
+}
+
+.memory-item.selected {
+  border-color: var(--accent-color, #3b82f6);
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.item-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.item-icon {
+  font-size: 14px;
+}
+
+.item-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary, #fff);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.item-tier {
+  font-size: 12px;
+}
+
+.item-preview {
+  font-size: 11px;
+  color: var(--text-secondary, #888);
+  line-height: 1.4;
+  margin-bottom: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.item-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-muted, #666);
+}
+
+.item-meta .relevance {
+  color: var(--accent-color, #3b82f6);
+  font-weight: 500;
+}
+
+.item-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color, #333);
+}
+
+.tier-select {
+  flex: 1;
+  padding: 4px 8px;
+  border: 1px solid var(--border-color, #333);
+  border-radius: 4px;
+  background: var(--bg-secondary, #1e1e1e);
+  color: var(--text-primary, #fff);
+  font-size: 11px;
+}
+
+.delete-btn {
+  padding: 4px 8px;
+  border: none;
+  border-radius: 4px;
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.delete-btn:hover {
+  background: rgba(239, 68, 68, 0.2);
+}
+
+.memory-footer {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-color, #333);
+  font-size: 11px;
+  color: var(--text-muted, #666);
+  text-align: center;
+}
