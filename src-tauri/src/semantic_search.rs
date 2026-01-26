@@ -100,7 +100,8 @@ impl Default for SearchOptions {
 
 /// Semantic search engine
 pub struct SemanticSearch {
-    store: Arc<RwLock<ObjectStore>>,
+    /// Object store (public for direct access from commands)
+    pub store: Arc<RwLock<ObjectStore>>,
     embeddings: Arc<EmbeddingManager>,
 }
 

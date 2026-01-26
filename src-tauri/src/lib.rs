@@ -19,6 +19,7 @@ pub mod object_store;
 pub mod embeddings;
 pub mod semantic_search;
 
+use std::sync::Arc;
 use tauri::Manager;
 
 /// Initialize and run the Tauri application
@@ -64,6 +65,28 @@ pub fn run() {
             log::info!("Provider system initialized");
             app.manage(provider_registry);
 
+            // Initialize ObjectStore and SemanticSearch
+            let app_data_dir = app.path().app_data_dir()
+                .expect("Failed to get app data directory");
+            std::fs::create_dir_all(&app_data_dir)
+                .expect("Failed to create app data directory");
+
+            let db_path = app_data_dir.join("objects.db");
+            log::info!("Object store path: {:?}", db_path);
+
+            let object_store = object_store::ObjectStore::new(db_path)
+                .expect("Failed to create object store");
+
+            // Use mock embeddings for now (can upgrade to Ollama later)
+            let embedding_manager = embeddings::EmbeddingManager::mock();
+            log::info!("Embedding manager initialized (mock mode)");
+
+            let semantic_search = semantic_search::SemanticSearch::new(object_store, embedding_manager);
+            log::info!("Semantic search initialized");
+
+            // Wrap in Arc for shared access across commands
+            app.manage(Arc::new(semantic_search));
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -106,6 +129,20 @@ pub fn run() {
             commands::provider_code_explain,
             commands::provider_code_complete,
             commands::provider_code_edit,
+            // Semantic object commands
+            commands::object_create,
+            commands::object_get,
+            commands::object_list,
+            commands::object_delete,
+            commands::object_search,
+            commands::object_find_similar,
+            commands::object_import_file,
+            commands::object_export_file,
+            // Tier management commands (LLM can use these)
+            commands::object_get_tier,
+            commands::object_set_tier,
+            commands::object_tier_history,
+            commands::object_add_relation,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
