@@ -28,13 +28,23 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["msi"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
+      "icons/256x256.png",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": [],
+    "copyright": "Copyright © 2026 MarlOS",
+    "shortDescription": "Semantic Document Environment",
+    "longDescription": "MarlOS is a local-first, AI-enhanced document environment that remembers your work context. Features semantic search, session tracking, and intelligent code assistance.",
+    "windows": {
+      "wix": {
+        "language": "en-US",
+        "template": null,
+        "upgradeCode": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      }
+    }
   }
 }
