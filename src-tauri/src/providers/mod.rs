@@ -293,4 +293,8 @@ pub mod session;
 pub use word_count::WordCountProvider;
 pub use markdown_language::MarkdownLanguageService;
 pub use coding_agent::{CodingAgentProvider, CodeOperation, CodeRequest, CodeResponse};
-pub use session::{SessionParser, SessionScanner, ParsedSession, session_to_objects};
+pub use session::{
+    SessionParser, SessionScanner, ParsedSession, session_to_objects,
+    ChunkedSessionParser, ChunkedSession, ConversationChunk,
+    FileRef, FileOperation, chunked_session_to_objects,
+};

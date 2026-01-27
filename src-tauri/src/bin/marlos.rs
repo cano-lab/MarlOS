@@ -16,7 +16,10 @@ use marlos_lib::andor_client::{AndorClient, MemoryQueryRequest, ContextSearchReq
 use marlos_lib::embeddings::EmbeddingManager;
 use marlos_lib::memory::SecurityTier;
 use marlos_lib::object_store::ObjectStore;
-use marlos_lib::providers::{SessionScanner, SessionParser, session_to_objects};
+use marlos_lib::providers::{
+    SessionScanner, SessionParser, session_to_objects,
+    ChunkedSessionParser, chunked_session_to_objects,
+};
 use marlos_lib::semantic_object::{ContentType, SemanticObject, Suid, FileBoundary, RelationType};
 use marlos_lib::semantic_search::{SemanticSearch, SearchOptions};
 use serde::Serialize;
@@ -260,13 +263,34 @@ enum SessionCommands {
         session: String,
     },
 
-    /// Import sessions into MarlOS object store
+    /// Show chunks from a session with file references
+    Chunks {
+        /// Session ID (UUID)
+        session: String,
+        /// Maximum chunks to show
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
+    },
+
+    /// Search for sessions that touched specific files
+    Files {
+        /// File path pattern to search for (substring match)
+        pattern: String,
+        /// Maximum results
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
+    },
+
+    /// Import sessions into MarlOS object store (chunked with file refs)
     Import {
         /// Session ID to import, or "all" to import all sessions
         session: String,
-        /// Generate embeddings for imported sessions
+        /// Generate embeddings for imported chunks
         #[arg(long)]
         embed: bool,
+        /// Use legacy mode (whole session, not chunked)
+        #[arg(long)]
+        legacy: bool,
     },
 
     /// Search across all sessions (without importing)
@@ -956,11 +980,134 @@ fn run_session_command(
             }
         }
 
-        SessionCommands::Import { session, embed } => {
+        SessionCommands::Chunks { session, limit } => {
+            // Find the session file
+            let path = match scanner.find_all_sessions() {
+                Ok(sessions) => {
+                    sessions.into_iter()
+                        .find(|p| {
+                            p.file_stem()
+                                .and_then(|s| s.to_str())
+                                .map_or(false, |s| s == session)
+                        })
+                }
+                Err(_) => None,
+            };
+
+            let Some(path) = path else {
+                return CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(format!("Session not found: {}", session)),
+                };
+            };
+
+            match ChunkedSessionParser::parse_file(&path) {
+                Ok(chunked) => {
+                    let chunks: Vec<serde_json::Value> = chunked.chunks.iter()
+                        .take(*limit)
+                        .map(|chunk| {
+                            serde_json::json!({
+                                "id": chunk.id,
+                                "index": chunk.chunk_index,
+                                "user_preview": chunk.user_content.chars().take(200).collect::<String>(),
+                                "assistant_preview": chunk.assistant_content.chars().take(200).collect::<String>(),
+                                "files_read": chunk.files_read,
+                                "files_modified": chunk.files_modified,
+                                "all_files": chunk.all_files,
+                                "tools_used": chunk.tools_used,
+                                "timestamp": chunk.timestamp.map(|t| t.to_rfc3339()),
+                            })
+                        })
+                        .collect();
+
+                    CliResponse {
+                        success: true,
+                        data: Some(serde_json::json!({
+                            "session_id": chunked.id,
+                            "total_chunks": chunked.chunks.len(),
+                            "total_files": chunked.all_files.len(),
+                            "chunks": chunks,
+                        })),
+                        error: None,
+                    }
+                }
+                Err(e) => CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(e),
+                },
+            }
+        }
+
+        SessionCommands::Files { pattern, limit } => {
+            let pattern_lower = pattern.to_lowercase();
+            let mut results: Vec<serde_json::Value> = Vec::new();
+
+            match scanner.find_all_sessions() {
+                Ok(sessions) => {
+                    for path in sessions {
+                        if results.len() >= *limit {
+                            break;
+                        }
+
+                        if let Ok(chunked) = ChunkedSessionParser::parse_file(&path) {
+                            // Check if any file matches the pattern
+                            let matching_files: Vec<&String> = chunked.all_files.iter()
+                                .filter(|f| f.to_lowercase().contains(&pattern_lower))
+                                .collect();
+
+                            if !matching_files.is_empty() {
+                                // Find chunks that touched these files
+                                let matching_chunks: Vec<serde_json::Value> = chunked.chunks.iter()
+                                    .filter(|chunk| {
+                                        chunk.all_files.iter().any(|f| f.to_lowercase().contains(&pattern_lower))
+                                    })
+                                    .take(3)
+                                    .map(|chunk| {
+                                        serde_json::json!({
+                                            "index": chunk.chunk_index,
+                                            "files": chunk.all_files.iter()
+                                                .filter(|f| f.to_lowercase().contains(&pattern_lower))
+                                                .collect::<Vec<_>>(),
+                                            "user_preview": chunk.user_content.chars().take(100).collect::<String>(),
+                                        })
+                                    })
+                                    .collect();
+
+                                results.push(serde_json::json!({
+                                    "session_id": chunked.id,
+                                    "project": chunked.project_path,
+                                    "branch": chunked.git_branch,
+                                    "matching_files": matching_files,
+                                    "matching_chunks": matching_chunks,
+                                }));
+                            }
+                        }
+                    }
+
+                    CliResponse {
+                        success: true,
+                        data: Some(serde_json::json!({
+                            "pattern": pattern,
+                            "results": results,
+                            "total": results.len(),
+                        })),
+                        error: None,
+                    }
+                }
+                Err(e) => CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(e),
+                },
+            }
+        }
+
+        SessionCommands::Import { session, embed, legacy } => {
             let sessions_to_import: Vec<PathBuf> = if session == "all" {
                 scanner.find_all_sessions().unwrap_or_default()
             } else {
-                // Find single session
                 match scanner.find_all_sessions() {
                     Ok(sessions) => {
                         sessions.into_iter()
@@ -983,46 +1130,88 @@ fn run_session_command(
                 };
             }
 
-            let mut imported = 0;
+            let mut imported_objects = 0;
+            let mut imported_sessions = 0;
             let mut failed = 0;
 
             for path in sessions_to_import {
-                match SessionParser::parse_file(&path) {
-                    Ok(parsed) => {
-                        let objects = session_to_objects(&parsed);
-
-                        for obj in objects {
-                            let suid = obj.suid;
-                            let content_for_embed: Option<String> = obj.content_as_str().map(|s| s.to_string());
-
-                            let store = search.store.blocking_write();
-                            match store.create(&obj) {
-                                Ok(()) => {
-                                    drop(store);
-
-                                    // Generate embedding if requested
-                                    if *embed {
-                                        if let Some(content) = content_for_embed {
-                                            if let Ok(embedding) = rt.block_on(search.embeddings().embed(&content)) {
-                                                let store = search.store.blocking_write();
-                                                let model = search.embeddings().model_info().id.clone();
-                                                let _ = store.store_embedding(&suid, &embedding, &model);
+                if *legacy {
+                    // Legacy mode: one object per session
+                    match SessionParser::parse_file(&path) {
+                        Ok(parsed) => {
+                            let objects = session_to_objects(&parsed);
+                            for obj in objects {
+                                let suid = obj.suid;
+                                let content_for_embed: Option<String> = obj.content_as_str().map(|s| s.to_string());
+                                let store = search.store.blocking_write();
+                                match store.create(&obj) {
+                                    Ok(()) => {
+                                        drop(store);
+                                        if *embed {
+                                            if let Some(content) = content_for_embed {
+                                                if let Ok(embedding) = rt.block_on(search.embeddings().embed(&content)) {
+                                                    let store = search.store.blocking_write();
+                                                    let model = search.embeddings().model_info().id.clone();
+                                                    let _ = store.store_embedding(&suid, &embedding, &model);
+                                                }
                                             }
                                         }
+                                        imported_objects += 1;
                                     }
-
-                                    imported += 1;
-                                }
-                                Err(e) => {
-                                    log::warn!("Failed to import session object: {}", e);
-                                    failed += 1;
+                                    Err(e) => {
+                                        log::warn!("Failed to import: {}", e);
+                                        failed += 1;
+                                    }
                                 }
                             }
+                            imported_sessions += 1;
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to parse session {}: {}", path.display(), e);
+                            failed += 1;
                         }
                     }
-                    Err(e) => {
-                        log::warn!("Failed to parse session {}: {}", path.display(), e);
-                        failed += 1;
+                } else {
+                    // Chunked mode: one object per chunk + session summary
+                    match ChunkedSessionParser::parse_file(&path) {
+                        Ok(chunked) => {
+                            let objects = chunked_session_to_objects(&chunked);
+                            for obj in objects {
+                                let suid = obj.suid;
+                                // Use embedding_text from metadata if available, otherwise content
+                                let embed_text: Option<String> = obj.metadata
+                                    .get("embedding_text")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string())
+                                    .or_else(|| obj.content_as_str().map(|s| s.to_string()));
+
+                                let store = search.store.blocking_write();
+                                match store.create(&obj) {
+                                    Ok(()) => {
+                                        drop(store);
+                                        if *embed {
+                                            if let Some(content) = embed_text {
+                                                if let Ok(embedding) = rt.block_on(search.embeddings().embed(&content)) {
+                                                    let store = search.store.blocking_write();
+                                                    let model = search.embeddings().model_info().id.clone();
+                                                    let _ = store.store_embedding(&suid, &embedding, &model);
+                                                }
+                                            }
+                                        }
+                                        imported_objects += 1;
+                                    }
+                                    Err(e) => {
+                                        log::warn!("Failed to import chunk: {}", e);
+                                        failed += 1;
+                                    }
+                                }
+                            }
+                            imported_sessions += 1;
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to parse session {}: {}", path.display(), e);
+                            failed += 1;
+                        }
                     }
                 }
             }
@@ -1030,9 +1219,11 @@ fn run_session_command(
             CliResponse {
                 success: true,
                 data: Some(serde_json::json!({
-                    "imported": imported,
+                    "imported_sessions": imported_sessions,
+                    "imported_objects": imported_objects,
                     "failed": failed,
-                    "message": format!("Imported {} sessions", imported),
+                    "mode": if *legacy { "legacy" } else { "chunked" },
+                    "message": format!("Imported {} objects from {} sessions", imported_objects, imported_sessions),
                 })),
                 error: None,
             }
