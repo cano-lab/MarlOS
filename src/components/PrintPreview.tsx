@@ -33,6 +33,10 @@ const PrintPreview: Component<PrintPreviewProps> = (props) => {
   const [marginBottom, setMarginBottom] = createSignal(1.0);
   const [marginLeft, setMarginLeft] = createSignal(1.0);
 
+  // Smart printing options
+  const [smartPrinting, setSmartPrinting] = createSignal(true);
+  const [showPageNumbers, setShowPageNumbers] = createSignal(true);
+
   // Paper dimensions in points (72 points = 1 inch)
   const paperDimensions = {
     letter: { width: 612, height: 792 }, // 8.5 x 11 inches
@@ -144,6 +148,89 @@ const PrintPreview: Component<PrintPreviewProps> = (props) => {
     const previewContent = document.querySelector(".print-preview-markdown-content");
     const htmlContent = previewContent?.innerHTML || "";
 
+    // Smart printing CSS rules
+    const smartPrintingStyles = smartPrinting() ? `
+          /* Widow/orphan control - prevent single lines at top/bottom of pages */
+          p, li {
+            orphans: 3;
+            widows: 3;
+          }
+
+          /* Prevent headings from being orphaned at bottom of page */
+          h1, h2, h3, h4, h5, h6 {
+            break-after: avoid;
+            page-break-after: avoid;
+          }
+
+          /* Keep headings with their following content */
+          h1 + *, h2 + *, h3 + *, h4 + *, h5 + *, h6 + * {
+            break-before: avoid;
+            page-break-before: avoid;
+          }
+
+          /* Prevent breaking inside code blocks, quotes, and small tables */
+          pre, blockquote {
+            break-inside: avoid;
+            page-break-inside: avoid;
+          }
+
+          /* Tables: avoid breaking inside rows, add continuation headers */
+          table {
+            break-inside: auto;
+          }
+          thead {
+            display: table-header-group;
+          }
+          tr {
+            break-inside: avoid;
+            page-break-inside: avoid;
+          }
+
+          /* Figures with captions - keep together when possible */
+          figure {
+            break-inside: avoid;
+            page-break-inside: avoid;
+          }
+
+          /* For large figures that must break, show continuation notice */
+          .figure-container {
+            position: relative;
+          }
+          .figure-container[data-title]::before {
+            content: attr(data-title);
+            display: none;
+          }
+
+          /* Images - try to keep with captions */
+          img {
+            break-inside: avoid;
+            page-break-inside: avoid;
+          }
+
+          /* Keep list items together when reasonable */
+          li {
+            break-inside: avoid;
+            page-break-inside: avoid;
+          }
+
+          /* Prevent large gaps before headers */
+          h1, h2, h3 {
+            margin-top: 1em;
+          }
+    ` : '';
+
+    // Page numbering styles
+    const pageNumberStyles = showPageNumbers() ? `
+          @page {
+            @bottom-center {
+              content: counter(page);
+            }
+          }
+          body {
+            counter-reset: page;
+          }
+    ` : '';
+
     doc.open();
     doc.write(`
       <!DOCTYPE html>
@@ -173,6 +260,7 @@ const PrintPreview: Component<PrintPreviewProps> = (props) => {
             padding: 1em;
             border-radius: 4px;
             overflow-x: auto;
+            font-size: 0.85em;
           }
           code {
             font-family: 'Fira Code', Consolas, monospace;
@@ -200,10 +288,22 @@ const PrintPreview: Component<PrintPreviewProps> = (props) => {
             padding-left: 1em;
             color: #666;
           }
+          figure {
+            margin: 1.5em 0;
+            text-align: center;
+          }
+          figcaption {
+            font-size: 0.9em;
+            color: #666;
+            margin-top: 0.5em;
+            font-style: italic;
+          }
+          ${smartPrintingStyles}
+          ${pageNumberStyles}
         </style>
       </head>
       <body>
-        ${htmlContent}
+        ${processContentForPrint(htmlContent)}
       </body>
       </html>
     `);
@@ -219,6 +319,88 @@ const PrintPreview: Component<PrintPreviewProps> = (props) => {
     }, 250);
 
     props.onClose();
+  };
+
+  // Process HTML content for smart printing (add data attributes for continuation headers)
+  const processContentForPrint = (html: string): string => {
+    if (!smartPrinting()) return html;
+
+    // Create a temporary DOM to process the HTML
+    const temp = document.createElement('div');
+    temp.innerHTML = html;
+
+    // Wrap images with figures and add data-title for continuation
+    const images = temp.querySelectorAll('img');
+    images.forEach((img, index) => {
+      const alt = img.getAttribute('alt') || `Figure ${index + 1}`;
+
+      // Check if already wrapped in figure
+      if (img.parentElement?.tagName !== 'FIGURE') {
+        const figure = document.createElement('figure');
+        figure.className = 'figure-container';
+        figure.setAttribute('data-title', `${alt} (continued)`);
+
+        const figcaption = document.createElement('figcaption');
+        figcaption.textContent = alt;
+
+        img.parentNode?.insertBefore(figure, img);
+        figure.appendChild(img);
+        figure.appendChild(figcaption);
+      } else {
+        // Add data-title to existing figure
+        const figure = img.parentElement as HTMLElement;
+        const caption = figure.querySelector('figcaption');
+        const title = caption?.textContent || alt;
+        figure.setAttribute('data-title', `${title} (continued)`);
+      }
+    });
+
+    // Process tables - ensure they have thead for repeat headers
+    const tables = temp.querySelectorAll('table');
+    tables.forEach((table, index) => {
+      // Find the caption or create one
+      let caption = table.querySelector('caption');
+      if (!caption) {
+        // Look for preceding heading or paragraph as title
+        const prevSibling = table.previousElementSibling;
+        if (prevSibling && (prevSibling.tagName === 'P' || prevSibling.tagName.match(/^H[1-6]$/))) {
+          const text = prevSibling.textContent?.trim();
+          if (text && text.length < 100) {
+            caption = document.createElement('caption');
+            caption.textContent = text;
+            table.insertBefore(caption, table.firstChild);
+          }
+        }
+      }
+
+      // Ensure first row is in thead if it contains th elements
+      const firstRow = table.querySelector('tr');
+      const hasThInFirstRow = firstRow?.querySelector('th');
+
+      if (hasThInFirstRow && !table.querySelector('thead')) {
+        const thead = document.createElement('thead');
+        const tbody = table.querySelector('tbody') || document.createElement('tbody');
+
+        // Move first row to thead
+        if (firstRow) {
+          thead.appendChild(firstRow);
+        }
+
+        // Wrap remaining rows in tbody if not already
+        const remainingRows = table.querySelectorAll('tr');
+        if (!table.querySelector('tbody')) {
+          remainingRows.forEach(row => tbody.appendChild(row));
+        }
+
+        // Insert thead at beginning
+        table.insertBefore(thead, table.firstChild);
+        if (!table.querySelector('tbody')) {
+          table.appendChild(tbody);
+        }
+      }
+    });
+
+    return temp.innerHTML;
   };
 
   const printPdf = () => {
@@ -381,6 +563,42 @@ const PrintPreview: Component<PrintPreviewProps> = (props) => {
                 </div>
               </div>
             </div>
+
+            <Show when={props.type === "markdown"}>
+              <div class="option-group">
+                <label>Smart Printing</label>
+                <div class="checkbox-row">
+                  <input
+                    type="checkbox"
+                    id="smartPrinting"
+                    checked={smartPrinting()}
+                    onChange={(e) => setSmartPrinting(e.target.checked)}
+                  />
+                  <label for="smartPrinting">Enable smart layout</label>
+                </div>
+                <div class="smart-print-details">
+                  <ul>
+                    <li>No orphaned headings at page bottom</li>
+                    <li>Table headers repeat on each page</li>
+                    <li>Figures keep captions together</li>
+                    <li>Code blocks avoid mid-break</li>
+                  </ul>
+                </div>
+              </div>
+
+              <div class="option-group">
+                <label>Page Numbers</label>
+                <div class="checkbox-row">
+                  <input
+                    type="checkbox"
+                    id="showPageNumbers"
+                    checked={showPageNumbers()}
+                    onChange={(e) => setShowPageNumbers(e.target.checked)}
+                  />
+                  <label for="showPageNumbers">Show page numbers</label>
+                </div>
+              </div>
+            </Show>
 
             <Show when={props.type === "pdf" && pages().length > 1}>
               <div class="option-group">

@@ -305,6 +305,48 @@
   color: #666;
 }
 
+/* Smart printing options */
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.checkbox-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.checkbox-row label {
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+  margin-bottom: 0;
+}
+
+.smart-print-details {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.smart-print-details ul {
+  margin: 0;
+  padding-left: 16px;
+  list-style-type: disc;
+}
+
+.smart-print-details li {
+  margin: 4px 0;
+  line-height: 1.4;
+}
+
 .print-preview-footer {
   display: flex;
   justify-content: flex-end;

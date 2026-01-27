@@ -6,6 +6,7 @@ authors = ["MarlOS Team"]
 license = "Proprietary"
 repository = ""
 edition = "2021"
+default-run = "marlos"
 
 [lib]
 name = "marlos_lib"
@@ -16,7 +17,7 @@ name = "healing_test_runner"
 path = "src/bin/healing_test_runner.rs"
 
 [[bin]]
-name = "marlos"
+name = "marlos-cli"
 path = "src/bin/marlos.rs"
 
 [build-dependencies]
