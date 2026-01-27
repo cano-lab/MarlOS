@@ -16,6 +16,8 @@ use crate::providers::{
     ProviderRegistry, ProviderInfo, Command as ProviderCommand,
     WordCountProvider, MarkdownLanguageService, CodingAgentProvider,
     CodeRequest, CodeResponse, CodeOperation,
+    Source, SourceType, CitationStyle, CitationGenerator,
+    FactCheckResult, WebFetcher,
 };
 use crate::semantic_search::SemanticSearch;
 use crate::semantic_object::{
@@ -1112,4 +1114,649 @@ pub async fn object_add_relation(
 
     log::info!("Added relation: {} -> {} ({})", source.short(), target.short(), relation_type);
     Ok(true)
+}
+
+// ============================================================================
+// Research Provider Commands
+// ============================================================================
+
+/// Source view for API responses
+#[derive(Serialize)]
+pub struct SourceView {
+    pub id: String,
+    pub title: String,
+    pub url: Option<String>,
+    pub source_type: String,
+    pub authors: Vec<String>,
+    pub published_date: Option<String>,
+    pub accessed_date: String,
+    pub summary: Option<String>,
+    pub key_points: Vec<String>,
+    pub tags: Vec<String>,
+    pub reliability_score: Option<f32>,
+    pub notes: Option<String>,
+    pub publisher: Option<String>,
+    pub doi: Option<String>,
+    pub citations: std::collections::HashMap<String, String>,
+}
+
+impl From<&Source> for SourceView {
+    fn from(source: &Source) -> Self {
+        Self {
+            id: source.id.clone(),
+            title: source.title.clone(),
+            url: source.url.clone(),
+            source_type: format!("{:?}", source.source_type),
+            authors: source.authors.clone(),
+            published_date: source.published_date.clone(),
+            accessed_date: source.accessed_date.to_rfc3339(),
+            summary: source.summary.clone(),
+            key_points: source.key_points.clone(),
+            tags: source.tags.clone(),
+            reliability_score: source.reliability_score,
+            notes: source.notes.clone(),
+            publisher: source.publisher.clone(),
+            doi: source.doi.clone(),
+            citations: source.citations.clone(),
+        }
+    }
+}
+
+/// Add source request
+#[derive(Deserialize)]
+pub struct AddSourceRequest {
+    pub url: Option<String>,
+    pub title: Option<String>,
+    pub authors: Option<Vec<String>>,
+    pub published_date: Option<String>,
+    pub source_type: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub notes: Option<String>,
+    pub content: Option<String>,
+}
+
+/// Add a source from URL (fetches and extracts metadata)
+#[tauri::command]
+pub async fn research_add_from_url(
+    url: String,
+    tags: Option<Vec<String>>,
+    search: State<'_, Arc<SemanticSearch>>,
+    ai_manager: State<'_, AiManager>,
+) -> Result<SourceView, String> {
+    log::info!("Adding source from URL: {}", url);
+
+    // Fetch content
+    let fetched = WebFetcher::fetch(&url).await?;
+
+    // Create source
+    let mut source = Source::new(
+        fetched.metadata.title.as_deref().unwrap_or("Untitled"),
+        Some(&url),
+    );
+
+    source.authors = fetched.metadata.authors;
+    source.published_date = fetched.metadata.published_date;
+    source.publisher = fetched.metadata.site_name;
+    source.content = Some(fetched.text.clone());
+    source.tags = tags.unwrap_or_default();
+
+    // Detect source type from URL
+    source.source_type = detect_source_type(&url);
+
+    // Generate citations
+    source.citations = CitationGenerator::generate_all(&source);
+
+    // Generate summary if AI is available
+    if ai_manager.is_available().await {
+        if let Ok(summary) = generate_source_summary(&fetched.text, &ai_manager).await {
+            source.summary = Some(summary.summary);
+            source.key_points = summary.key_points;
+        }
+    }
+
+    // Store as semantic object
+    store_source(&source, &search).await?;
+
+    log::info!("Added source: {} ({})", source.title, source.id);
+    Ok(SourceView::from(&source))
+}
+
+/// Add a source manually
+#[tauri::command]
+pub async fn research_add_manual(
+    request: AddSourceRequest,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<SourceView, String> {
+    let title = request.title.as_deref().unwrap_or("Untitled");
+    let mut source = Source::new(title, request.url.as_deref());
+
+    source.authors = request.authors.unwrap_or_default();
+    source.published_date = request.published_date;
+    source.tags = request.tags.unwrap_or_default();
+    source.notes = request.notes;
+    source.content = request.content;
+
+    // Parse source type
+    if let Some(st) = request.source_type {
+        source.source_type = match st.to_lowercase().as_str() {
+            "article" => SourceType::Article,
+            "paper" => SourceType::Paper,
+            "book" => SourceType::Book,
+            "webpage" | "web_page" => SourceType::WebPage,
+            "video" => SourceType::Video,
+            "podcast" => SourceType::Podcast,
+            "documentation" | "docs" => SourceType::Documentation,
+            "code" | "repository" | "code_repository" => SourceType::CodeRepository,
+            other => SourceType::Other(other.to_string()),
+        };
+    }
+
+    // Generate citations
+    source.citations = CitationGenerator::generate_all(&source);
+
+    // Store
+    store_source(&source, &search).await?;
+
+    log::info!("Added manual source: {} ({})", source.title, source.id);
+    Ok(SourceView::from(&source))
+}
+
+/// Get a source by ID
+#[tauri::command]
+pub async fn research_get_source(
+    source_id: String,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<SourceView, String> {
+    let source = get_source_by_id(&source_id, &search).await?;
+    Ok(SourceView::from(&source))
+}
+
+/// List all sources
+#[tauri::command]
+pub async fn research_list_sources(
+    tag_filter: Option<String>,
+    limit: Option<usize>,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<Vec<SourceView>, String> {
+    let store = search.store.read().await;
+
+    // Get all objects of kind "source"
+    let all_objects = store.list(1000, 0).map_err(|e| e.to_string())?;
+
+    let mut sources: Vec<Source> = all_objects.iter()
+        .filter(|obj| obj.tags.contains(&"kind:source".to_string()))
+        .filter_map(|obj| source_from_object(obj))
+        .collect();
+
+    // Apply tag filter
+    if let Some(tag) = tag_filter {
+        let tag_lower = tag.to_lowercase();
+        sources.retain(|s| s.tags.iter().any(|t| t.to_lowercase().contains(&tag_lower)));
+    }
+
+    // Sort by accessed date (newest first)
+    sources.sort_by(|a, b| b.accessed_date.cmp(&a.accessed_date));
+
+    // Apply limit
+    let limit = limit.unwrap_or(100);
+    sources.truncate(limit);
+
+    Ok(sources.iter().map(SourceView::from).collect())
+}
+
+/// Search sources semantically
+#[tauri::command]
+pub async fn research_search_sources(
+    query: String,
+    limit: Option<usize>,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<Vec<(SourceView, f32)>, String> {
+    use crate::semantic_search::SearchOptions;
+
+    let limit = limit.unwrap_or(10);
+
+    // Search with embeddings
+    let options = SearchOptions {
+        limit: limit * 2,
+        ..Default::default()
+    };
+    let results = search.search(&query, options).await
+        .map_err(|e| format!("{}", e))?;
+
+    // Filter to only sources
+    let source_results: Vec<(SourceView, f32)> = results.into_iter()
+        .filter(|hit| hit.object.tags.contains(&"kind:source".to_string()))
+        .filter_map(|hit| {
+            source_from_object(&hit.object).map(|s| (SourceView::from(&s), hit.score))
+        })
+        .take(limit)
+        .collect();
+
+    Ok(source_results)
+}
+
+/// Delete a source
+#[tauri::command]
+pub async fn research_delete_source(
+    source_id: String,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<bool, String> {
+    // Find the object by looking for its suid in tags
+    let store = search.store.write().await;
+
+    let objects = store.list(1000, 0).map_err(|e| e.to_string())?;
+    let obj = objects.iter()
+        .find(|o| o.tags.contains(&format!("source_id:{}", source_id)))
+        .ok_or_else(|| format!("Source not found: {}", source_id))?;
+
+    let suid = obj.suid.clone();
+    store.delete(&suid).map_err(|e| e.to_string())?;
+
+    log::info!("Deleted source: {}", source_id);
+    Ok(true)
+}
+
+/// Update source tags
+#[tauri::command]
+pub async fn research_update_tags(
+    source_id: String,
+    tags: Vec<String>,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<SourceView, String> {
+    let mut source = get_source_by_id(&source_id, &search).await?;
+    source.tags = tags;
+
+    // Re-store
+    store_source(&source, &search).await?;
+
+    Ok(SourceView::from(&source))
+}
+
+/// Add notes to a source
+#[tauri::command]
+pub async fn research_add_notes(
+    source_id: String,
+    notes: String,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<SourceView, String> {
+    let mut source = get_source_by_id(&source_id, &search).await?;
+    source.notes = Some(notes);
+
+    // Re-store
+    store_source(&source, &search).await?;
+
+    Ok(SourceView::from(&source))
+}
+
+/// Generate citation for a source
+#[tauri::command]
+pub async fn research_generate_citation(
+    source_id: String,
+    style: String,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<String, String> {
+    let source = get_source_by_id(&source_id, &search).await?;
+
+    let citation_style = match style.to_lowercase().as_str() {
+        "apa" => CitationStyle::APA,
+        "mla" => CitationStyle::MLA,
+        "chicago" => CitationStyle::Chicago,
+        "harvard" => CitationStyle::Harvard,
+        "ieee" => CitationStyle::IEEE,
+        "bibtex" => CitationStyle::BibTeX,
+        _ => return Err(format!("Unknown citation style: {}", style)),
+    };
+
+    Ok(CitationGenerator::generate(&source, citation_style))
+}
+
+/// Generate bibliography from multiple sources
+#[tauri::command]
+pub async fn research_generate_bibliography(
+    source_ids: Vec<String>,
+    style: String,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<String, String> {
+    let mut sources = Vec::new();
+    for id in &source_ids {
+        if let Ok(source) = get_source_by_id(id, &search).await {
+            sources.push(source);
+        }
+    }
+
+    let citation_style = match style.to_lowercase().as_str() {
+        "apa" => CitationStyle::APA,
+        "mla" => CitationStyle::MLA,
+        "chicago" => CitationStyle::Chicago,
+        "harvard" => CitationStyle::Harvard,
+        "ieee" => CitationStyle::IEEE,
+        "bibtex" => CitationStyle::BibTeX,
+        _ => return Err(format!("Unknown citation style: {}", style)),
+    };
+
+    let mut citations: Vec<String> = sources.iter()
+        .map(|s| CitationGenerator::generate(s, citation_style))
+        .collect();
+
+    citations.sort();
+    Ok(citations.join("\n\n"))
+}
+
+/// Summarize a source using AI
+#[tauri::command]
+pub async fn research_summarize_source(
+    source_id: String,
+    search: State<'_, Arc<SemanticSearch>>,
+    ai_manager: State<'_, AiManager>,
+) -> Result<SourceView, String> {
+    if !ai_manager.is_available().await {
+        return Err("AI not available for summarization".to_string());
+    }
+
+    let mut source = get_source_by_id(&source_id, &search).await?;
+
+    let content = source.content.as_ref()
+        .ok_or_else(|| "Source has no content to summarize".to_string())?;
+
+    let summary = generate_source_summary(content, &ai_manager).await?;
+    source.summary = Some(summary.summary);
+    source.key_points = summary.key_points;
+
+    // Re-store
+    store_source(&source, &search).await?;
+
+    Ok(SourceView::from(&source))
+}
+
+/// Find connections between sources using AI
+#[tauri::command]
+pub async fn research_find_connections(
+    source_ids: Vec<String>,
+    search: State<'_, Arc<SemanticSearch>>,
+    ai_manager: State<'_, AiManager>,
+) -> Result<serde_json::Value, String> {
+    if !ai_manager.is_available().await {
+        return Err("AI not available for analysis".to_string());
+    }
+
+    let mut sources = Vec::new();
+    for id in &source_ids {
+        if let Ok(source) = get_source_by_id(id, &search).await {
+            sources.push(source);
+        }
+    }
+
+    if sources.len() < 2 {
+        return Ok(serde_json::json!({
+            "connections": [],
+            "common_themes": [],
+            "synthesis": "Need at least 2 sources to find connections."
+        }));
+    }
+
+    // Build prompt
+    let sources_text = sources.iter()
+        .map(|s| format!(
+            "Source [{}]: {}\nSummary: {}\n",
+            s.id,
+            s.title,
+            s.summary.as_deref().unwrap_or("No summary")
+        ))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let prompt = format!(
+        r#"Analyze these sources and identify connections, themes, and relationships between them:
+
+{}
+
+Respond in JSON format:
+{{
+  "connections": [
+    {{
+      "source_a": "source_id",
+      "source_b": "source_id",
+      "relationship": "agrees|contradicts|extends|references|similar_topic",
+      "description": "brief description of the connection"
+    }}
+  ],
+  "common_themes": ["theme1", "theme2"],
+  "synthesis": "A brief synthesis of how these sources relate"
+}}"#,
+        sources_text
+    );
+
+    let system_prompt = "You are a research assistant helping to analyze and connect sources. Always respond with valid JSON.";
+
+    let response = ai_manager.generate(&prompt, Some(system_prompt)).await
+        .map_err(|e| format!("AI error: {}", e))?;
+
+    // Parse response
+    let json_start = response.content.find('{').unwrap_or(0);
+    let json_end = response.content.rfind('}').map(|i| i + 1).unwrap_or(response.content.len());
+    let json_str = &response.content[json_start..json_end];
+
+    serde_json::from_str::<serde_json::Value>(json_str)
+        .map_err(|e| format!("Failed to parse AI response: {}", e))
+}
+
+/// Fact-check a claim against sources
+#[tauri::command]
+pub async fn research_fact_check(
+    claim: String,
+    source_ids: Option<Vec<String>>,
+    search: State<'_, Arc<SemanticSearch>>,
+    ai_manager: State<'_, AiManager>,
+) -> Result<FactCheckResult, String> {
+    if !ai_manager.is_available().await {
+        return Err("AI not available for fact-checking".to_string());
+    }
+
+    // Get sources - either specified or search for relevant ones
+    let sources = if let Some(ids) = source_ids {
+        let mut sources = Vec::new();
+        for id in ids {
+            if let Ok(source) = get_source_by_id(&id, &search).await {
+                sources.push(source);
+            }
+        }
+        sources
+    } else {
+        // Search for relevant sources
+        use crate::semantic_search::SearchOptions;
+        let options = SearchOptions {
+            limit: 5,
+            ..Default::default()
+        };
+        let results = search.search(&claim, options).await
+            .map_err(|e| format!("{}", e))?;
+
+        results.into_iter()
+            .filter(|hit| hit.object.tags.contains(&"kind:source".to_string()))
+            .filter_map(|hit| source_from_object(&hit.object))
+            .collect()
+    };
+
+    if sources.is_empty() {
+        return Ok(FactCheckResult {
+            claim: claim.clone(),
+            verdict: "unverifiable".to_string(),
+            confidence: 0.0,
+            supporting_sources: Vec::new(),
+            contradicting_sources: Vec::new(),
+            explanation: "No relevant sources found to verify this claim.".to_string(),
+        });
+    }
+
+    // Build prompt
+    let sources_text = sources.iter()
+        .map(|s| format!(
+            "Source [{}]: {}\nContent: {}\n",
+            s.id,
+            s.title,
+            s.content.as_deref().unwrap_or(s.summary.as_deref().unwrap_or("No content"))
+                .chars().take(1000).collect::<String>()
+        ))
+        .collect::<Vec<_>>()
+        .join("\n---\n");
+
+    let prompt = format!(
+        r#"Fact-check the following claim against the provided sources:
+
+CLAIM: {}
+
+SOURCES:
+{}
+
+Analyze whether the claim is supported, contradicted, or unverifiable based on these sources.
+
+Respond in JSON format:
+{{
+  "verdict": "supported|contradicted|partially_supported|unverifiable",
+  "confidence": 0.0 to 1.0,
+  "supporting_sources": ["source_id1", "source_id2"],
+  "contradicting_sources": ["source_id3"],
+  "explanation": "Detailed explanation of the verdict"
+}}"#,
+        claim, sources_text
+    );
+
+    let system_prompt = "You are a fact-checker. Analyze claims against provided sources objectively. Always respond with valid JSON.";
+
+    let response = ai_manager.generate(&prompt, Some(system_prompt)).await
+        .map_err(|e| format!("AI error: {}", e))?;
+
+    // Parse response
+    let json_start = response.content.find('{').unwrap_or(0);
+    let json_end = response.content.rfind('}').map(|i| i + 1).unwrap_or(response.content.len());
+    let json_str = &response.content[json_start..json_end];
+
+    let mut result: FactCheckResult = serde_json::from_str(json_str)
+        .map_err(|e| format!("Failed to parse fact-check result: {}", e))?;
+
+    result.claim = claim;
+    Ok(result)
+}
+
+// ============================================================================
+// Research Helper Functions
+// ============================================================================
+
+fn detect_source_type(url: &str) -> SourceType {
+    let url_lower = url.to_lowercase();
+
+    if url_lower.contains("arxiv.org") || url_lower.contains("doi.org") ||
+       url_lower.contains("scholar.google") || url_lower.contains("researchgate") ||
+       url_lower.contains("pubmed") || url_lower.contains("ieee.org") {
+        SourceType::Paper
+    } else if url_lower.contains("youtube.com") || url_lower.contains("vimeo.com") {
+        SourceType::Video
+    } else if url_lower.contains("github.com") || url_lower.contains("gitlab.com") {
+        SourceType::CodeRepository
+    } else if url_lower.contains("docs.") || url_lower.contains("/documentation") ||
+              url_lower.contains("/docs/") || url_lower.contains("readme") {
+        SourceType::Documentation
+    } else if url_lower.ends_with(".pdf") {
+        SourceType::Paper
+    } else {
+        SourceType::WebPage
+    }
+}
+
+#[derive(Deserialize)]
+struct SummaryResult {
+    summary: String,
+    key_points: Vec<String>,
+}
+
+async fn generate_source_summary(content: &str, ai_manager: &AiManager) -> Result<SummaryResult, String> {
+    let prompt = format!(
+        r#"Analyze the following content and provide:
+1. A concise summary (2-3 sentences)
+2. 3-5 key points or takeaways
+
+Content:
+{}
+
+Respond in this exact JSON format:
+{{
+  "summary": "...",
+  "key_points": ["point 1", "point 2", "point 3"]
+}}"#,
+        content.chars().take(4000).collect::<String>()
+    );
+
+    let system_prompt = "You are a research assistant. Summarize content accurately and extract key points. Always respond with valid JSON.";
+
+    let response = ai_manager.generate(&prompt, Some(system_prompt)).await
+        .map_err(|e| format!("AI error: {}", e))?;
+
+    // Parse JSON response
+    let json_start = response.content.find('{').unwrap_or(0);
+    let json_end = response.content.rfind('}').map(|i| i + 1).unwrap_or(response.content.len());
+    let json_str = &response.content[json_start..json_end];
+
+    serde_json::from_str::<SummaryResult>(json_str)
+        .map_err(|e| format!("Failed to parse summary: {}", e))
+}
+
+async fn store_source(source: &Source, search: &SemanticSearch) -> Result<(), String> {
+    // Build content for embedding
+    let mut content_parts = vec![source.title.clone()];
+    if let Some(summary) = &source.summary {
+        content_parts.push(summary.clone());
+    }
+    if let Some(content) = &source.content {
+        content_parts.push(content.chars().take(2000).collect());
+    }
+    content_parts.extend(source.key_points.clone());
+
+    let content = content_parts.join("\n\n");
+
+    // Create semantic object
+    let mut obj = SemanticObject::new(content.as_bytes().to_vec(), ContentType::Text);
+
+    obj.name = Some(source.title.clone());
+    obj.path = source.url.clone();
+
+    // Store metadata in tags for filtering
+    obj.tags.push("kind:source".to_string());
+    obj.tags.push(format!("source_id:{}", source.id));
+    obj.tags.push(format!("source_type:{:?}", source.source_type));
+    obj.tags.extend(source.tags.iter().map(|t| format!("user_tag:{}", t)));
+
+    // Store full metadata as summary (JSON)
+    obj.summary = Some(serde_json::to_string(&source).unwrap_or_default());
+
+    // Store with embedding
+    {
+        let store = search.store.write().await;
+        store.create(&obj).map_err(|e| e.to_string())?;
+
+        let embedding = search.embeddings().embed(&content).await
+            .map_err(|e| e.to_string())?;
+        let model = search.embeddings().model_info().id.clone();
+        store.store_embedding(&obj.suid, &embedding, &model)
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+async fn get_source_by_id(source_id: &str, search: &SemanticSearch) -> Result<Source, String> {
+    let store = search.store.read().await;
+
+    let objects = store.list(1000, 0).map_err(|e| e.to_string())?;
+    let obj = objects.iter()
+        .find(|o| o.tags.contains(&format!("source_id:{}", source_id)))
+        .ok_or_else(|| format!("Source not found: {}", source_id))?;
+
+    source_from_object(obj)
+        .ok_or_else(|| "Failed to parse source from object".to_string())
+}
+
+fn source_from_object(obj: &SemanticObject) -> Option<Source> {
+    // Parse source from summary JSON
+    obj.summary.as_ref()
+        .and_then(|s| serde_json::from_str::<Source>(s).ok())
 }

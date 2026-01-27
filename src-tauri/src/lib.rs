@@ -146,6 +146,20 @@ pub fn run() {
             commands::object_set_tier,
             commands::object_tier_history,
             commands::object_add_relation,
+            // Research commands
+            commands::research_add_from_url,
+            commands::research_add_manual,
+            commands::research_get_source,
+            commands::research_list_sources,
+            commands::research_search_sources,
+            commands::research_delete_source,
+            commands::research_update_tags,
+            commands::research_add_notes,
+            commands::research_generate_citation,
+            commands::research_generate_bibliography,
+            commands::research_summarize_source,
+            commands::research_find_connections,
+            commands::research_fact_check,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
