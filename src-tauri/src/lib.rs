@@ -19,6 +19,9 @@ pub mod object_store;
 pub mod embeddings;
 pub mod semantic_search;
 pub mod andor_client;
+pub mod llm_tasks;
+pub mod mcp;
+pub mod paper_generator;
 
 use std::sync::Arc;
 use tauri::Manager;
@@ -56,8 +59,8 @@ pub fn run() {
             log::info!("EPUB support enabled");
             app.manage(epub_manager);
 
-            // Initialize AI manager
-            let ai_manager = ai::AiManager::new();
+            // Initialize AI manager (wrapped in Arc for shared ownership)
+            let ai_manager = std::sync::Arc::new(ai::AiManager::new());
             log::info!("AI support enabled");
             app.manage(ai_manager);
 
@@ -160,6 +163,35 @@ pub fn run() {
             commands::research_summarize_source,
             commands::research_find_connections,
             commands::research_fact_check,
+            commands::research_discover_sources,
+            // LLM Task-based commands
+            commands::llm_summarize,
+            commands::llm_analyze_code,
+            commands::llm_answer_question,
+            commands::llm_classify_text,
+            // MCP Research commands
+            commands::mcp_research,
+            commands::mcp_research_academic,
+            commands::mcp_web_search,
+            commands::mcp_fetch_page,
+            commands::mcp_academic_search,
+            // Paper Generator commands
+            commands::paper_create,
+            commands::paper_get,
+            commands::paper_list,
+            commands::paper_delete,
+            commands::paper_add_sources,
+            commands::paper_chunk_sources,
+            commands::paper_extract_findings,
+            commands::paper_generate_outline,
+            commands::paper_update_outline,
+            commands::paper_write_section,
+            commands::paper_write_all,
+            commands::paper_review_section,
+            commands::paper_update_section,
+            commands::paper_export,
+            commands::paper_get_sections,
+            commands::paper_get_findings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

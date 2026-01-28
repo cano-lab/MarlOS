@@ -1,0 +1,210 @@
+/* Paper Export Styles */
+
+body {
+  font-family: 'Times New Roman', Times, serif;
+  font-size: 12pt;
+  line-height: 1.6;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 40px;
+  color: #333;
+}
+
+.paper {
+  background: white;
+}
+
+/* Title Page */
+.title-page {
+  text-align: center;
+  margin-bottom: 60px;
+  page-break-after: always;
+}
+
+.title-page h1 {
+  font-size: 24pt;
+  margin-bottom: 30px;
+  font-weight: bold;
+}
+
+.title-page .thesis {
+  font-style: italic;
+  margin: 20px 0;
+}
+
+.title-page .research-question {
+  margin: 20px 0;
+}
+
+/* Table of Contents */
+.toc {
+  margin: 40px 0;
+  page-break-after: always;
+}
+
+.toc h2 {
+  font-size: 16pt;
+  margin-bottom: 20px;
+}
+
+.toc ol {
+  list-style-type: none;
+  padding-left: 0;
+}
+
+.toc li {
+  margin: 10px 0;
+}
+
+.toc a {
+  color: #333;
+  text-decoration: none;
+}
+
+.toc a:hover {
+  text-decoration: underline;
+}
+
+/* Sections */
+section {
+  margin: 40px 0;
+}
+
+section h2 {
+  font-size: 14pt;
+  font-weight: bold;
+  margin-bottom: 20px;
+}
+
+section p {
+  text-align: justify;
+  text-indent: 0.5in;
+  margin: 0 0 12pt 0;
+}
+
+section p:first-of-type {
+  text-indent: 0;
+}
+
+/* References */
+.references {
+  margin-top: 60px;
+  page-break-before: always;
+}
+
+.references h2 {
+  font-size: 14pt;
+  text-align: center;
+  margin-bottom: 30px;
+}
+
+.references ol {
+  padding-left: 0;
+  list-style-type: none;
+}
+
+.references li {
+  margin: 12pt 0;
+  padding-left: 0.5in;
+  text-indent: -0.5in;
+}
+
+/* Citations */
+.citation {
+  font-size: 10pt;
+  vertical-align: super;
+}
+
+/* Print styles */
+@media print {
+  body {
+    padding: 0;
+    margin: 1in;
+  }
+
+  .title-page {
+    page-break-after: always;
+  }
+
+  .toc {
+    page-break-after: always;
+  }
+
+  section {
+    page-break-inside: avoid;
+  }
+
+  .references {
+    page-break-before: always;
+  }
+}
+
+/* Abstract specific */
+section#abstract {
+  margin-bottom: 40px;
+}
+
+section#abstract p {
+  text-indent: 0;
+}
+
+/* Block quotes */
+blockquote {
+  margin: 20px 40px;
+  padding: 10px 20px;
+  border-left: 3px solid #ccc;
+  font-style: italic;
+}
+
+/* Lists */
+ul, ol {
+  margin: 12pt 0;
+  padding-left: 40px;
+}
+
+li {
+  margin: 6pt 0;
+}
+
+/* Tables */
+table {
+  border-collapse: collapse;
+  margin: 20px auto;
+  width: 100%;
+}
+
+th, td {
+  border: 1px solid #333;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+th {
+  background-color: #f5f5f5;
+  font-weight: bold;
+}
+
+/* Code blocks */
+pre, code {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 10pt;
+}
+
+pre {
+  background-color: #f5f5f5;
+  padding: 15px;
+  overflow-x: auto;
+  margin: 20px 0;
+}
+
+/* Figures */
+figure {
+  margin: 20px 0;
+  text-align: center;
+}
+
+figcaption {
+  font-size: 10pt;
+  margin-top: 10px;
+  font-style: italic;
+}

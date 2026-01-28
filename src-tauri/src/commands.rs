@@ -24,6 +24,12 @@ use crate::semantic_object::{
     SemanticObject, Suid, ContentType,
     FileBoundary, RelationType,
 };
+use crate::llm_tasks::{
+    TaskRunner,
+    SummarizeContentTask, AnalyzeCodeTask,
+    AnswerQuestionTask, ClassifyTextTask,
+};
+use crate::mcp::{McpServer, McpContext, ContextSource, ResearchAgent};
 
 /// Response for version info
 #[derive(Serialize)]
@@ -348,7 +354,7 @@ impl From<ChatMessage> for Message {
 /// Check if AI provider is available
 #[tauri::command]
 pub async fn ai_check_status(
-    ai_manager: State<'_, AiManager>,
+    ai_manager: State<'_, Arc<AiManager>>,
 ) -> Result<bool, String> {
     Ok(ai_manager.is_available().await)
 }
@@ -356,7 +362,7 @@ pub async fn ai_check_status(
 /// Get AI provider configuration
 #[tauri::command]
 pub fn ai_get_config(
-    ai_manager: State<'_, AiManager>,
+    ai_manager: State<'_, Arc<AiManager>>,
 ) -> Result<ProviderConfig, String> {
     ai_manager.get_config().map_err(|e| e.to_string())
 }
@@ -365,7 +371,7 @@ pub fn ai_get_config(
 #[tauri::command]
 pub fn ai_set_config(
     config: ProviderConfig,
-    ai_manager: State<'_, AiManager>,
+    ai_manager: State<'_, Arc<AiManager>>,
 ) -> Result<(), String> {
     ai_manager.set_config(config).map_err(|e| e.to_string())
 }
@@ -375,7 +381,7 @@ pub fn ai_set_config(
 pub async fn ai_chat(
     messages: Vec<ChatMessage>,
     system_prompt: Option<String>,
-    ai_manager: State<'_, AiManager>,
+    ai_manager: State<'_, Arc<AiManager>>,
 ) -> Result<AiResponse, String> {
     let msgs: Vec<Message> = messages.into_iter().map(|m| m.into()).collect();
     ai_manager.chat(msgs, system_prompt.as_deref()).await.map_err(|e| e.to_string())
@@ -386,7 +392,7 @@ pub async fn ai_chat(
 pub async fn ai_run_task(
     task: String,
     content: String,
-    ai_manager: State<'_, AiManager>,
+    ai_manager: State<'_, Arc<AiManager>>,
 ) -> Result<AiResponse, String> {
     ai_manager.run_task(&task, &content).await.map_err(|e| e.to_string())
 }
@@ -396,7 +402,7 @@ pub async fn ai_run_task(
 pub async fn ai_generate(
     prompt: String,
     system_prompt: Option<String>,
-    ai_manager: State<'_, AiManager>,
+    ai_manager: State<'_, Arc<AiManager>>,
 ) -> Result<AiResponse, String> {
     ai_manager.generate(&prompt, system_prompt.as_deref()).await.map_err(|e| e.to_string())
 }
@@ -488,7 +494,7 @@ pub fn provider_markdown_structure(
 pub async fn provider_code_operation(
     request: CodeRequest,
     _registry: State<'_, ProviderRegistry>,
-    ai_manager: State<'_, AiManager>,
+    ai_manager: State<'_, Arc<AiManager>>,
 ) -> Result<CodeResponse, String> {
     // Check if AI is available
     if !ai_manager.is_available().await {
@@ -526,7 +532,7 @@ pub async fn provider_code_operation(
 pub async fn provider_code_explain(
     code: String,
     language: Option<String>,
-    ai_manager: State<'_, AiManager>,
+    ai_manager: State<'_, Arc<AiManager>>,
 ) -> Result<CodeResponse, String> {
     let request = CodeRequest {
         operation: CodeOperation::Explain,
@@ -563,7 +569,7 @@ pub async fn provider_code_complete(
     context_before: String,
     context_after: String,
     language: Option<String>,
-    ai_manager: State<'_, AiManager>,
+    ai_manager: State<'_, Arc<AiManager>>,
 ) -> Result<CodeResponse, String> {
     let request = CodeRequest {
         operation: CodeOperation::Complete,
@@ -600,7 +606,7 @@ pub async fn provider_code_edit(
     code: String,
     instruction: String,
     language: Option<String>,
-    ai_manager: State<'_, AiManager>,
+    ai_manager: State<'_, Arc<AiManager>>,
 ) -> Result<CodeResponse, String> {
     let request = CodeRequest {
         operation: CodeOperation::Edit,
@@ -1181,7 +1187,7 @@ pub async fn research_add_from_url(
     url: String,
     tags: Option<Vec<String>>,
     search: State<'_, Arc<SemanticSearch>>,
-    ai_manager: State<'_, AiManager>,
+    ai_manager: State<'_, Arc<AiManager>>,
 ) -> Result<SourceView, String> {
     log::info!("Adding source from URL: {}", url);
 
@@ -1447,7 +1453,7 @@ pub async fn research_generate_bibliography(
 pub async fn research_summarize_source(
     source_id: String,
     search: State<'_, Arc<SemanticSearch>>,
-    ai_manager: State<'_, AiManager>,
+    ai_manager: State<'_, Arc<AiManager>>,
 ) -> Result<SourceView, String> {
     if !ai_manager.is_available().await {
         return Err("AI not available for summarization".to_string());
@@ -1473,7 +1479,7 @@ pub async fn research_summarize_source(
 pub async fn research_find_connections(
     source_ids: Vec<String>,
     search: State<'_, Arc<SemanticSearch>>,
-    ai_manager: State<'_, AiManager>,
+    ai_manager: State<'_, Arc<AiManager>>,
 ) -> Result<serde_json::Value, String> {
     if !ai_manager.is_available().await {
         return Err("AI not available for analysis".to_string());
@@ -1546,7 +1552,7 @@ pub async fn research_fact_check(
     claim: String,
     source_ids: Option<Vec<String>>,
     search: State<'_, Arc<SemanticSearch>>,
-    ai_manager: State<'_, AiManager>,
+    ai_manager: State<'_, Arc<AiManager>>,
 ) -> Result<FactCheckResult, String> {
     if !ai_manager.is_available().await {
         return Err("AI not available for fact-checking".to_string());
@@ -1759,4 +1765,912 @@ fn source_from_object(obj: &SemanticObject) -> Option<Source> {
     // Parse source from summary JSON
     obj.summary.as_ref()
         .and_then(|s| serde_json::from_str::<Source>(s).ok())
+}
+
+// ============================================================================
+// Source Discovery (Web Search)
+// ============================================================================
+
+/// A discovered source from web search
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveredSource {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+    pub relevance_reason: Option<String>,
+}
+
+/// Result of source discovery
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveryResult {
+    pub query_used: String,
+    pub sources: Vec<DiscoveredSource>,
+}
+
+/// Discover sources based on a research description
+#[tauri::command]
+pub async fn research_discover_sources(
+    description: String,
+    max_results: Option<usize>,
+    ai_manager: State<'_, Arc<AiManager>>,
+) -> Result<DiscoveryResult, String> {
+    let max_results = max_results.unwrap_or(10);
+    log::info!("Discovering sources for: {}", description);
+
+    // Step 1: Generate search query using AI (if available) or use description directly
+    let search_query = if ai_manager.is_available().await {
+        let prompt = format!(
+            r#"Convert this research description into an effective web search query.
+Keep it concise (3-8 words) and focused on finding academic or authoritative sources.
+
+Research description: "{}"
+
+Respond with ONLY the search query, nothing else."#,
+            description
+        );
+
+        let system = "You are a research assistant that creates effective search queries.";
+        match ai_manager.generate(&prompt, Some(system)).await {
+            Ok(response) => response.content.trim().to_string(),
+            Err(_) => description.clone(),
+        }
+    } else {
+        description.clone()
+    };
+
+    log::info!("Using search query: {}", search_query);
+
+    // Step 2: Perform web search using DuckDuckGo HTML API (no API key needed)
+    let sources = perform_web_search(&search_query, max_results).await?;
+
+    // Step 3: If AI is available, analyze and rank results
+    let sources = if ai_manager.is_available().await && !sources.is_empty() {
+        analyze_discovered_sources(&sources, &description, &ai_manager).await
+            .unwrap_or(sources)
+    } else {
+        sources
+    };
+
+    Ok(DiscoveryResult {
+        query_used: search_query,
+        sources,
+    })
+}
+
+async fn perform_web_search(query: &str, max_results: usize) -> Result<Vec<DiscoveredSource>, String> {
+    use reqwest::Client;
+    use scraper::{Html, Selector};
+
+    let client = Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    // Use DuckDuckGo HTML search
+    let encoded_query = urlencoding::encode(query);
+    let url = format!("https://html.duckduckgo.com/html/?q={}", encoded_query);
+
+    let response = client.get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Search request failed: {}", e))?;
+
+    let html = response.text().await
+        .map_err(|e| format!("Failed to read search response: {}", e))?;
+
+    // Parse HTML results
+    let document = Html::parse_document(&html);
+
+    // DuckDuckGo result selectors
+    let result_selector = Selector::parse(".result").unwrap();
+    let title_selector = Selector::parse(".result__title a").unwrap();
+    let snippet_selector = Selector::parse(".result__snippet").unwrap();
+
+    let mut sources = Vec::new();
+
+    for result in document.select(&result_selector).take(max_results) {
+        // Get title and URL
+        if let Some(title_elem) = result.select(&title_selector).next() {
+            let title = title_elem.text().collect::<String>().trim().to_string();
+            let url = title_elem.value().attr("href")
+                .map(|h| extract_duckduckgo_url(h))
+                .unwrap_or_default();
+
+            // Get snippet
+            let snippet = result.select(&snippet_selector)
+                .next()
+                .map(|s| s.text().collect::<String>().trim().to_string())
+                .unwrap_or_default();
+
+            if !url.is_empty() && !title.is_empty() {
+                sources.push(DiscoveredSource {
+                    title,
+                    url,
+                    snippet,
+                    relevance_reason: None,
+                });
+            }
+        }
+    }
+
+    log::info!("Found {} search results", sources.len());
+    Ok(sources)
+}
+
+fn extract_duckduckgo_url(href: &str) -> String {
+    // DuckDuckGo wraps URLs in a redirect, extract the actual URL
+    if href.contains("uddg=") {
+        if let Some(start) = href.find("uddg=") {
+            let encoded = &href[start + 5..];
+            if let Some(end) = encoded.find('&') {
+                return urlencoding::decode(&encoded[..end])
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+            }
+            return urlencoding::decode(encoded)
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+        }
+    }
+    href.to_string()
+}
+
+async fn analyze_discovered_sources(
+    sources: &[DiscoveredSource],
+    description: &str,
+    ai_manager: &AiManager,
+) -> Result<Vec<DiscoveredSource>, String> {
+    let sources_list = sources.iter()
+        .enumerate()
+        .map(|(i, s)| format!("{}. {} - {}", i + 1, s.title, s.snippet))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let prompt = format!(
+        r#"Analyze these search results for relevance to the research topic.
+For each result, provide a brief reason why it might be useful (or mark as "low relevance").
+
+Research topic: "{}"
+
+Search results:
+{}
+
+Respond in JSON format:
+{{
+  "results": [
+    {{"index": 1, "reason": "Contains relevant data on..."}},
+    {{"index": 2, "reason": "low relevance"}}
+  ]
+}}"#,
+        description, sources_list
+    );
+
+    let system = "You are a research assistant evaluating source relevance. Be concise. Always respond with valid JSON.";
+
+    let response = ai_manager.generate(&prompt, Some(system)).await
+        .map_err(|e| format!("AI analysis failed: {}", e))?;
+
+    // Parse response and update sources
+    #[derive(Deserialize)]
+    struct AnalysisResult {
+        results: Vec<SourceAnalysis>,
+    }
+
+    #[derive(Deserialize)]
+    struct SourceAnalysis {
+        index: usize,
+        reason: String,
+    }
+
+    let json_start = response.content.find('{').unwrap_or(0);
+    let json_end = response.content.rfind('}').map(|i| i + 1).unwrap_or(response.content.len());
+    let json_str = &response.content[json_start..json_end];
+
+    if let Ok(analysis) = serde_json::from_str::<AnalysisResult>(json_str) {
+        let mut updated_sources: Vec<DiscoveredSource> = sources.to_vec();
+
+        for item in analysis.results {
+            if item.index > 0 && item.index <= updated_sources.len() {
+                let idx = item.index - 1;
+                if item.reason.to_lowercase() != "low relevance" {
+                    updated_sources[idx].relevance_reason = Some(item.reason);
+                }
+            }
+        }
+
+        // Sort: sources with relevance reasons first
+        updated_sources.sort_by(|a, b| {
+            b.relevance_reason.is_some().cmp(&a.relevance_reason.is_some())
+        });
+
+        Ok(updated_sources)
+    } else {
+        Ok(sources.to_vec())
+    }
+}
+
+// ============================================================================
+// LLM Task-Based Commands
+// ============================================================================
+// These commands demonstrate the new unified LLM task system.
+// Use TaskRunner to execute any LlmTask with consistent error handling.
+
+/// Summarize content using the LLM task system
+#[tauri::command]
+pub async fn llm_summarize(
+    content: String,
+    ai_manager: State<'_, Arc<AiManager>>,
+) -> Result<crate::llm_tasks::SummaryResponse, String> {
+    let task = SummarizeContentTask::new(content);
+    let runner = TaskRunner::new(&ai_manager);
+    runner.execute(task).await
+}
+
+/// Analyze code using the LLM task system
+#[tauri::command]
+pub async fn llm_analyze_code(
+    code: String,
+    language: String,
+    focus: Option<String>,
+    ai_manager: State<'_, Arc<AiManager>>,
+) -> Result<crate::llm_tasks::tasks::CodeAnalysisResult, String> {
+    let mut task = AnalyzeCodeTask::new(code, language);
+    if let Some(f) = focus {
+        task = task.with_focus(&f);
+    }
+    let runner = TaskRunner::new(&ai_manager);
+    runner.execute(task).await
+}
+
+/// Answer a question with optional context
+#[tauri::command]
+pub async fn llm_answer_question(
+    question: String,
+    context: Option<String>,
+    ai_manager: State<'_, Arc<AiManager>>,
+) -> Result<crate::llm_tasks::tasks::AnswerResult, String> {
+    let mut task = AnswerQuestionTask::new(question);
+    if let Some(ctx) = context {
+        task = task.with_context(ctx);
+    }
+    let runner = TaskRunner::new(&ai_manager);
+    runner.execute(task).await
+}
+
+/// Classify text into categories
+#[tauri::command]
+pub async fn llm_classify_text(
+    text: String,
+    categories: Vec<String>,
+    allow_multiple: Option<bool>,
+    ai_manager: State<'_, Arc<AiManager>>,
+) -> Result<crate::llm_tasks::tasks::ClassificationResult, String> {
+    let mut task = ClassifyTextTask::new(text, categories);
+    if allow_multiple.unwrap_or(false) {
+        task = task.allow_multiple();
+    }
+    let runner = TaskRunner::new(&ai_manager);
+    runner.execute(task).await
+}
+
+// ============================================================================
+// MCP Research Agent Commands
+// ============================================================================
+
+/// Run the MCP-powered research agent to find sources for a topic
+#[tauri::command]
+pub async fn mcp_research(
+    topic: String,
+    existing_sources: Option<Vec<ContextSourceInput>>,
+    notes: Option<String>,
+    ai_manager: State<'_, Arc<AiManager>>,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<McpResearchResult, String> {
+    log::info!("Starting MCP research for topic: {}", topic);
+
+    // Build context from existing sources
+    let mut context = McpContext::default();
+    context.research_topic = Some(topic.clone());
+    context.notes = notes;
+
+    // Add existing sources to context
+    if let Some(sources) = existing_sources {
+        context.sources = sources.into_iter()
+            .map(|s| ContextSource {
+                id: s.id,
+                title: s.title,
+                url: s.url,
+                summary: s.summary,
+                tags: s.tags.unwrap_or_default(),
+            })
+            .collect();
+    } else {
+        // Load sources from storage
+        let store = search.store.read().await;
+        if let Ok(objects) = store.list(100, 0) {
+            context.sources = objects.iter()
+                .filter(|obj| obj.tags.contains(&"kind:source".to_string()))
+                .filter_map(|obj| {
+                    let source: Option<Source> = obj.summary.as_ref()
+                        .and_then(|s| serde_json::from_str(s).ok());
+                    source.map(|s| ContextSource {
+                        id: s.id,
+                        title: s.title,
+                        url: s.url,
+                        summary: s.summary,
+                        tags: s.tags,
+                    })
+                })
+                .collect();
+        }
+    }
+
+    // Create MCP server and research agent
+    let mcp_server = McpServer::new();
+    let agent = ResearchAgent::new(&mcp_server, &ai_manager)
+        .with_max_iterations(8);
+
+    // Run the agent
+    let result = agent.run(&topic, &context).await?;
+
+    Ok(McpResearchResult {
+        summary: result.summary,
+        sources: result.sources.into_iter()
+            .map(|s| McpDiscoveredSource {
+                url: s.url,
+                title: s.title,
+                relevance: s.relevance,
+                authors: s.authors,
+                year: s.year,
+                citation_count: s.citation_count,
+                pdf_url: s.pdf_url,
+                doi: s.doi,
+                venue: s.venue,
+                source_type: s.source_type,
+            })
+            .collect(),
+        iterations: result.iterations,
+    })
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ContextSourceInput {
+    pub id: String,
+    pub title: String,
+    pub url: Option<String>,
+    pub summary: Option<String>,
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct McpResearchResult {
+    pub summary: String,
+    pub sources: Vec<McpDiscoveredSource>,
+    pub iterations: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct McpDiscoveredSource {
+    pub url: String,
+    pub title: String,
+    pub relevance: String,
+    // Academic fields (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authors: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub year: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub citation_count: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pdf_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doi: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub venue: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_type: Option<String>,
+}
+
+/// Run MCP-powered academic research agent (searches scholarly sources)
+#[tauri::command]
+pub async fn mcp_research_academic(
+    topic: String,
+    existing_sources: Option<Vec<ContextSourceInput>>,
+    notes: Option<String>,
+    ai_manager: State<'_, Arc<AiManager>>,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<McpResearchResult, String> {
+    log::info!("Starting MCP academic research for topic: {}", topic);
+
+    // Build context from existing sources
+    let mut context = McpContext::default();
+    context.research_topic = Some(topic.clone());
+    context.notes = notes;
+
+    // Add existing sources to context
+    if let Some(sources) = existing_sources {
+        context.sources = sources.into_iter()
+            .map(|s| ContextSource {
+                id: s.id,
+                title: s.title,
+                url: s.url,
+                summary: s.summary,
+                tags: s.tags.unwrap_or_default(),
+            })
+            .collect();
+    } else {
+        // Load sources from storage
+        let store = search.store.read().await;
+        if let Ok(objects) = store.list(100, 0) {
+            context.sources = objects.iter()
+                .filter(|obj| obj.tags.contains(&"kind:source".to_string()))
+                .filter_map(|obj| {
+                    let source: Option<Source> = obj.summary.as_ref()
+                        .and_then(|s| serde_json::from_str(s).ok());
+                    source.map(|s| ContextSource {
+                        id: s.id,
+                        title: s.title,
+                        url: s.url,
+                        summary: s.summary,
+                        tags: s.tags,
+                    })
+                })
+                .collect();
+        }
+    }
+
+    // Create MCP server and research agent
+    let mcp_server = McpServer::new();
+    let agent = ResearchAgent::new(&mcp_server, &ai_manager)
+        .with_max_iterations(8);
+
+    // Run the academic research agent
+    let result = agent.run_academic(&topic, &context).await?;
+
+    Ok(McpResearchResult {
+        summary: result.summary,
+        sources: result.sources.into_iter()
+            .map(|s| McpDiscoveredSource {
+                url: s.url,
+                title: s.title,
+                relevance: s.relevance,
+                authors: s.authors,
+                year: s.year,
+                citation_count: s.citation_count,
+                pdf_url: s.pdf_url,
+                doi: s.doi,
+                venue: s.venue,
+                source_type: s.source_type,
+            })
+            .collect(),
+        iterations: result.iterations,
+    })
+}
+
+/// Perform a simple web search (non-agent, just returns results)
+#[tauri::command]
+pub async fn mcp_web_search(
+    query: String,
+    num_results: Option<usize>,
+) -> Result<crate::mcp::web_search::SearchResults, String> {
+    let num = num_results.unwrap_or(10).min(20);
+    crate::mcp::web_search::search(&query, num).await
+}
+
+/// Fetch and extract content from a web page
+#[tauri::command]
+pub async fn mcp_fetch_page(
+    url: String,
+    extract_links: Option<bool>,
+) -> Result<crate::mcp::web_search::FetchedPage, String> {
+    crate::mcp::web_search::fetch_page(&url, extract_links.unwrap_or(false)).await
+}
+
+/// Search for academic papers (Semantic Scholar + arXiv)
+#[tauri::command]
+pub async fn mcp_academic_search(
+    query: String,
+    num_results: Option<usize>,
+) -> Result<crate::mcp::web_search::AcademicSearchResults, String> {
+    let num = num_results.unwrap_or(10).min(20);
+    crate::mcp::web_search::search_academic(&query, num).await
+}
+
+// ============================================================================
+// Paper Generator Commands
+// ============================================================================
+
+use crate::paper_generator::{
+    Paper, PaperView, PaperSection, SectionView, PaperStatus, PaperType,
+    PaperPipeline, PaperStore, ChunkingProgress, ExtractionProgress, WritingProgress, ReviewResult,
+    ExportFormat, ExportOptions, PaperExporter,
+};
+
+/// Request to create a new paper
+#[derive(Deserialize)]
+pub struct CreatePaperRequest {
+    pub title: String,
+    pub research_question: String,
+    pub paper_type: Option<String>,
+    pub citation_style: Option<String>,
+    pub thesis: Option<String>,
+    pub tags: Option<Vec<String>>,
+}
+
+/// Create a new research paper
+#[tauri::command]
+pub async fn paper_create(
+    request: CreatePaperRequest,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<PaperView, String> {
+    let mut paper = Paper::new(&request.title, &request.research_question);
+
+    // Set paper type
+    if let Some(pt) = request.paper_type {
+        paper.paper_type = match pt.to_lowercase().as_str() {
+            "research_paper" | "research" => PaperType::ResearchPaper,
+            "literature_review" | "literature" => PaperType::LiteratureReview,
+            "argumentative" | "argumentative_essay" => PaperType::ArgumentativeEssay,
+            "expository" | "expository_essay" => PaperType::ExpositoryEssay,
+            "case_study" | "case" => PaperType::CaseStudy,
+            "technical_report" | "technical" => PaperType::TechnicalReport,
+            "thesis" | "dissertation" => PaperType::Thesis,
+            other => PaperType::Custom(other.to_string()),
+        };
+    }
+
+    // Set citation style
+    if let Some(cs) = request.citation_style {
+        paper.citation_style = match cs.to_lowercase().as_str() {
+            "apa" => CitationStyle::APA,
+            "mla" => CitationStyle::MLA,
+            "chicago" => CitationStyle::Chicago,
+            "harvard" => CitationStyle::Harvard,
+            "ieee" => CitationStyle::IEEE,
+            "bibtex" => CitationStyle::BibTeX,
+            _ => CitationStyle::APA,
+        };
+    }
+
+    if let Some(thesis) = request.thesis {
+        paper.thesis = Some(thesis);
+    }
+
+    if let Some(tags) = request.tags {
+        paper.tags = tags;
+    }
+
+    // Initialize standard sections based on paper type
+    paper.initialize_standard_sections();
+
+    // Store the paper
+    let store = PaperStore::new(search.inner().clone());
+    store.save(&paper).await?;
+
+    log::info!("Created paper: {} ({})", paper.title, paper.id);
+    Ok(PaperView::from(&paper))
+}
+
+/// Get a paper by ID
+#[tauri::command]
+pub async fn paper_get(
+    paper_id: String,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<Paper, String> {
+    let store = PaperStore::new(search.inner().clone());
+    store.get(&paper_id).await?
+        .ok_or_else(|| format!("Paper not found: {}", paper_id))
+}
+
+/// List all papers
+#[tauri::command]
+pub async fn paper_list(
+    limit: Option<usize>,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<Vec<PaperView>, String> {
+    let store = PaperStore::new(search.inner().clone());
+    store.list(limit.unwrap_or(50)).await
+}
+
+/// Delete a paper
+#[tauri::command]
+pub async fn paper_delete(
+    paper_id: String,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<bool, String> {
+    let store = PaperStore::new(search.inner().clone());
+    store.delete(&paper_id).await
+}
+
+/// Add sources to a paper
+#[tauri::command]
+pub async fn paper_add_sources(
+    paper_id: String,
+    source_ids: Vec<String>,
+    search: State<'_, Arc<SemanticSearch>>,
+    ai_manager: State<'_, Arc<AiManager>>,
+) -> Result<usize, String> {
+    let store = PaperStore::new(search.inner().clone());
+    let paper = store.get(&paper_id).await?
+        .ok_or_else(|| format!("Paper not found: {}", paper_id))?;
+
+    let mut pipeline = PaperPipeline::new(
+        Arc::clone(ai_manager.inner()),
+        search.inner().clone(),
+        paper,
+    );
+
+    let added = pipeline.add_sources(source_ids).await?;
+    log::info!("Added {} sources to paper {}", added, paper_id);
+    Ok(added)
+}
+
+/// Chunk sources for a paper
+#[tauri::command]
+pub async fn paper_chunk_sources(
+    paper_id: String,
+    search: State<'_, Arc<SemanticSearch>>,
+    ai_manager: State<'_, Arc<AiManager>>,
+) -> Result<ChunkingProgress, String> {
+    let store = PaperStore::new(search.inner().clone());
+    let paper = store.get(&paper_id).await?
+        .ok_or_else(|| format!("Paper not found: {}", paper_id))?;
+
+    let mut pipeline = PaperPipeline::new(
+        Arc::clone(ai_manager.inner()),
+        search.inner().clone(),
+        paper,
+    );
+
+    pipeline.chunk_sources().await
+}
+
+/// Extract findings from sources
+#[tauri::command]
+pub async fn paper_extract_findings(
+    paper_id: String,
+    search: State<'_, Arc<SemanticSearch>>,
+    ai_manager: State<'_, Arc<AiManager>>,
+) -> Result<ExtractionProgress, String> {
+    let store = PaperStore::new(search.inner().clone());
+    let paper = store.get(&paper_id).await?
+        .ok_or_else(|| format!("Paper not found: {}", paper_id))?;
+
+    let mut pipeline = PaperPipeline::new(
+        Arc::clone(ai_manager.inner()),
+        search.inner().clone(),
+        paper,
+    );
+
+    // First chunk the sources
+    pipeline.chunk_sources().await?;
+
+    // Then extract findings
+    pipeline.extract_findings().await
+}
+
+/// Generate paper outline
+#[tauri::command]
+pub async fn paper_generate_outline(
+    paper_id: String,
+    thesis_hint: Option<String>,
+    search: State<'_, Arc<SemanticSearch>>,
+    ai_manager: State<'_, Arc<AiManager>>,
+) -> Result<Vec<SectionView>, String> {
+    let store = PaperStore::new(search.inner().clone());
+    let paper = store.get(&paper_id).await?
+        .ok_or_else(|| format!("Paper not found: {}", paper_id))?;
+
+    let mut pipeline = PaperPipeline::new(
+        Arc::clone(ai_manager.inner()),
+        search.inner().clone(),
+        paper,
+    );
+
+    let sections = pipeline.generate_outline(thesis_hint.as_deref()).await?;
+    Ok(sections.iter().map(SectionView::from).collect())
+}
+
+/// Update paper outline (reorder/modify sections)
+#[tauri::command]
+pub async fn paper_update_outline(
+    paper_id: String,
+    sections: Vec<SectionUpdateRequest>,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<Vec<SectionView>, String> {
+    let store = PaperStore::new(search.inner().clone());
+    let mut paper = store.get(&paper_id).await?
+        .ok_or_else(|| format!("Paper not found: {}", paper_id))?;
+
+    // Update sections based on request
+    for update in sections {
+        if let Some(section) = paper.get_section_mut(&update.section_id) {
+            if let Some(title) = update.title {
+                section.title = title;
+            }
+            if let Some(order) = update.order {
+                section.order = order;
+            }
+            if let Some(target_words) = update.target_word_count {
+                section.target_word_count = Some(target_words);
+            }
+        }
+    }
+
+    // Re-sort sections by order
+    paper.sections.sort_by_key(|s| s.order);
+
+    // Save
+    store.save(&paper).await?;
+
+    Ok(paper.sections.iter().map(SectionView::from).collect())
+}
+
+#[derive(Deserialize)]
+pub struct SectionUpdateRequest {
+    pub section_id: String,
+    pub title: Option<String>,
+    pub order: Option<usize>,
+    pub target_word_count: Option<usize>,
+}
+
+/// Write a single section
+#[tauri::command]
+pub async fn paper_write_section(
+    paper_id: String,
+    section_id: String,
+    search: State<'_, Arc<SemanticSearch>>,
+    ai_manager: State<'_, Arc<AiManager>>,
+) -> Result<PaperSection, String> {
+    let store = PaperStore::new(search.inner().clone());
+    let paper = store.get(&paper_id).await?
+        .ok_or_else(|| format!("Paper not found: {}", paper_id))?;
+
+    let mut pipeline = PaperPipeline::new(
+        Arc::clone(ai_manager.inner()),
+        search.inner().clone(),
+        paper,
+    );
+
+    pipeline.write_section(&section_id).await
+}
+
+/// Write all pending sections
+#[tauri::command]
+pub async fn paper_write_all(
+    paper_id: String,
+    search: State<'_, Arc<SemanticSearch>>,
+    ai_manager: State<'_, Arc<AiManager>>,
+) -> Result<WritingProgress, String> {
+    let store = PaperStore::new(search.inner().clone());
+    let paper = store.get(&paper_id).await?
+        .ok_or_else(|| format!("Paper not found: {}", paper_id))?;
+
+    let mut pipeline = PaperPipeline::new(
+        Arc::clone(ai_manager.inner()),
+        search.inner().clone(),
+        paper,
+    );
+
+    pipeline.write_all_sections().await
+}
+
+/// Review a section
+#[tauri::command]
+pub async fn paper_review_section(
+    paper_id: String,
+    section_id: String,
+    focus_areas: Option<Vec<String>>,
+    search: State<'_, Arc<SemanticSearch>>,
+    ai_manager: State<'_, Arc<AiManager>>,
+) -> Result<ReviewResult, String> {
+    let store = PaperStore::new(search.inner().clone());
+    let paper = store.get(&paper_id).await?
+        .ok_or_else(|| format!("Paper not found: {}", paper_id))?;
+
+    let mut pipeline = PaperPipeline::new(
+        Arc::clone(ai_manager.inner()),
+        search.inner().clone(),
+        paper,
+    );
+
+    pipeline.review_section(&section_id, focus_areas).await
+}
+
+/// Update section content manually
+#[tauri::command]
+pub async fn paper_update_section(
+    paper_id: String,
+    section_id: String,
+    content: String,
+    search: State<'_, Arc<SemanticSearch>>,
+    ai_manager: State<'_, Arc<AiManager>>,
+) -> Result<bool, String> {
+    let store = PaperStore::new(search.inner().clone());
+    let paper = store.get(&paper_id).await?
+        .ok_or_else(|| format!("Paper not found: {}", paper_id))?;
+
+    let mut pipeline = PaperPipeline::new(
+        Arc::clone(ai_manager.inner()),
+        search.inner().clone(),
+        paper,
+    );
+
+    pipeline.update_section(&section_id, &content).await
+}
+
+/// Export request
+#[derive(Deserialize)]
+pub struct ExportRequest {
+    pub format: String,
+    pub include_title_page: Option<bool>,
+    pub include_toc: Option<bool>,
+    pub include_bibliography: Option<bool>,
+    pub number_sections: Option<bool>,
+}
+
+/// Export paper to a format
+#[tauri::command]
+pub async fn paper_export(
+    paper_id: String,
+    request: ExportRequest,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<String, String> {
+    let store = PaperStore::new(search.inner().clone());
+    let paper = store.get(&paper_id).await?
+        .ok_or_else(|| format!("Paper not found: {}", paper_id))?;
+
+    // Load sources for citation processing
+    let mut sources = Vec::new();
+    for source_id in &paper.source_ids {
+        if let Ok(source) = get_source_by_id(source_id, &search).await {
+            sources.push(source);
+        }
+    }
+
+    let format = match request.format.to_lowercase().as_str() {
+        "markdown" | "md" => ExportFormat::Markdown,
+        "html" => ExportFormat::Html,
+        "text" | "plain" | "txt" => ExportFormat::PlainText,
+        _ => ExportFormat::Markdown,
+    };
+
+    let options = ExportOptions {
+        format,
+        include_title_page: request.include_title_page.unwrap_or(true),
+        include_toc: request.include_toc.unwrap_or(true),
+        include_abstract: true,
+        include_bibliography: request.include_bibliography.unwrap_or(true),
+        include_page_numbers: true,
+        number_sections: request.number_sections.unwrap_or(true),
+        use_rendered_content: true,
+    };
+
+    PaperExporter::export(&paper, &sources, &options)
+}
+
+/// Get paper sections
+#[tauri::command]
+pub async fn paper_get_sections(
+    paper_id: String,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<Vec<SectionView>, String> {
+    let store = PaperStore::new(search.inner().clone());
+    let paper = store.get(&paper_id).await?
+        .ok_or_else(|| format!("Paper not found: {}", paper_id))?;
+
+    Ok(paper.sections.iter().map(SectionView::from).collect())
+}
+
+/// Get paper findings
+#[tauri::command]
+pub async fn paper_get_findings(
+    paper_id: String,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<Vec<crate::paper_generator::KeyFinding>, String> {
+    let store = PaperStore::new(search.inner().clone());
+    let paper = store.get(&paper_id).await?
+        .ok_or_else(|| format!("Paper not found: {}", paper_id))?;
+
+    Ok(paper.findings)
 }
