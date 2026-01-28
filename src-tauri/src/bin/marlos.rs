@@ -136,6 +136,13 @@ enum Commands {
     /// Show status (database stats, LM Studio status)
     Status,
 
+    /// Reindex all objects with current embedding model
+    Reindex {
+        /// Only show what would be reindexed (dry run)
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Add a relation between objects
     Relate {
         /// Source object SUID
@@ -808,6 +815,74 @@ fn run_command(cli: &Cli) -> CliResponse<serde_json::Value> {
                 success: true,
                 data: Some(serde_json::to_value(status).unwrap()),
                 error: None,
+            }
+        }
+
+        Commands::Reindex { dry_run } => {
+            let model_info = search.embeddings().model_info();
+
+            // Check if LM Studio is available
+            if !check_lm_studio_running() {
+                return CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some("LM Studio is not running. Start it first to generate embeddings.".to_string()),
+                };
+            }
+
+            let store = search.store.blocking_read();
+            let objects = match store.list(10000, 0) {
+                Ok(objs) => objs,
+                Err(e) => {
+                    return CliResponse {
+                        success: false,
+                        data: None,
+                        error: Some(format!("Failed to list objects: {}", e)),
+                    };
+                }
+            };
+            drop(store);
+
+            let text_objects: Vec<_> = objects
+                .iter()
+                .filter(|obj| obj.content_type.is_text())
+                .collect();
+
+            if *dry_run {
+                return CliResponse {
+                    success: true,
+                    data: Some(serde_json::json!({
+                        "dry_run": true,
+                        "total_objects": objects.len(),
+                        "text_objects_to_reindex": text_objects.len(),
+                        "embedding_model": model_info.id,
+                        "dimensions": model_info.dimensions,
+                    })),
+                    error: None,
+                };
+            }
+
+            eprintln!("Reindexing {} objects with {} ({} dimensions)...",
+                text_objects.len(), model_info.id, model_info.dimensions);
+
+            match rt.block_on(search.reindex_all()) {
+                Ok(count) => {
+                    eprintln!("Successfully reindexed {} objects", count);
+                    CliResponse {
+                        success: true,
+                        data: Some(serde_json::json!({
+                            "reindexed": count,
+                            "embedding_model": model_info.id,
+                            "dimensions": model_info.dimensions,
+                        })),
+                        error: None,
+                    }
+                }
+                Err(e) => CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(format!("Failed to reindex: {}", e)),
+                },
             }
         }
 
