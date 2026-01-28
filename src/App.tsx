@@ -8,6 +8,7 @@ import PdfViewer from "./components/PdfViewer";
 import EpubViewer from "./components/EpubViewer";
 import PrintPreview from "./components/PrintPreview";
 import ChatPanel from "./components/ChatPanel";
+import ResearchHub from "./components/ResearchHub";
 import Sidebar from "./components/Sidebar";
 import Titlebar from "./components/Titlebar";
 import "./App.css";
@@ -40,6 +41,7 @@ function App() {
   const [epubPath, setEpubPath] = createSignal<string | null>(null);
   const [showPrintPreview, setShowPrintPreview] = createSignal(false);
   const [showChat, setShowChat] = createSignal(false);
+  const [showResearchHub, setShowResearchHub] = createSignal(false);
   const [selectedText, setSelectedText] = createSignal<string>("");
 
   onMount(async () => {
@@ -287,6 +289,10 @@ function App() {
       e.preventDefault();
       setShowChat(!showChat());
     }
+    if ((e.ctrlKey || e.metaKey) && e.key === "r") {
+      e.preventDefault();
+      setShowResearchHub(!showResearchHub());
+    }
     // View mode shortcuts (only in markdown mode)
     if (appMode() === "markdown") {
       if ((e.ctrlKey || e.metaKey) && e.key === "1") {
@@ -302,10 +308,12 @@ function App() {
         setViewMode("preview");
       }
     }
-    // Escape to close print preview, PDF, or EPUB
+    // Escape to close print preview, PDF, EPUB, or Research Hub
     if (e.key === "Escape") {
       if (showPrintPreview()) {
         setShowPrintPreview(false);
+      } else if (showResearchHub()) {
+        setShowResearchHub(false);
       } else if (appMode() === "pdf") {
         closePdf();
       } else if (appMode() === "epub") {
@@ -352,6 +360,8 @@ function App() {
             canPrint={!!(document() || pdfPath())}
             onToggleChat={() => setShowChat(!showChat())}
             chatOpen={showChat()}
+            onToggleResearchHub={() => setShowResearchHub(!showResearchHub())}
+            researchHubOpen={showResearchHub()}
           />
         </Show>
 
@@ -400,6 +410,7 @@ function App() {
                       <span class="shortcut-key">Ctrl+2</span><span>Split View</span>
                       <span class="shortcut-key">Ctrl+3</span><span>Preview Only</span>
                       <span class="shortcut-key">Ctrl+/</span><span>Toggle Chat</span>
+                      <span class="shortcut-key">Ctrl+R</span><span>Research Hub</span>
                     </div>
                   </div>
                   <div class="welcome-features">
@@ -409,6 +420,7 @@ function App() {
                       <li><strong>PDF Viewer</strong> - Accurate rendering with measurement tools</li>
                       <li><strong>EPUB Reader</strong> - Read e-books with TOC navigation and search</li>
                       <li><strong>Unstuck AI</strong> - LLM chat for thinking, brainstorming, and analysis</li>
+                      <li><strong>Research Hub</strong> - Source collection, citations, fact-checking</li>
                     </ul>
                   </div>
                 </div>
@@ -477,6 +489,11 @@ function App() {
           pdfPath={appMode() === "pdf" ? pdfPath() || undefined : undefined}
           onClose={() => setShowPrintPreview(false)}
         />
+      </Show>
+
+      {/* Research Hub */}
+      <Show when={showResearchHub()}>
+        <ResearchHub onClose={() => setShowResearchHub(false)} />
       </Show>
     </div>
   );

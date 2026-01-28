@@ -11,6 +11,8 @@ interface SidebarProps {
   canPrint?: boolean;
   onToggleChat?: () => void;
   chatOpen?: boolean;
+  onToggleResearchHub?: () => void;
+  researchHubOpen?: boolean;
 }
 
 type SidebarTab = "files" | "memory";
@@ -90,6 +92,18 @@ const Sidebar: Component<SidebarProps> = (props) => {
                 <circle cx="11" cy="6.5" r="1" fill="currentColor" />
               </svg>
               Unstuck
+            </button>
+            <button
+              class={`sidebar-btn research-btn ${props.researchHubOpen ? "active" : ""}`}
+              onClick={props.onToggleResearchHub}
+              title="Research Hub (Ctrl+R)"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <circle cx="6" cy="6" r="4" stroke="currentColor" stroke-width="1.2" fill="none" />
+                <path d="M9 9l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                <path d="M4 6h4M6 4v4" stroke="currentColor" stroke-width="0.8" />
+              </svg>
+              Research
             </button>
           </div>
 
