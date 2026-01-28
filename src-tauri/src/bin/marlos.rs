@@ -57,6 +57,9 @@ enum Commands {
         /// Filter by tier (open, guarded, sealed)
         #[arg(short, long)]
         tier: Option<String>,
+        /// Sort by: score (default), date, date-desc
+        #[arg(short, long, default_value = "score")]
+        sort: String,
     },
 
     /// Get an object by SUID
@@ -330,6 +333,7 @@ struct SearchResult {
     tier: String,
     score: f32,
     preview: String,
+    created_at: String,
 }
 
 #[derive(Serialize)]
@@ -413,7 +417,7 @@ fn run_command(cli: &Cli) -> CliResponse<serde_json::Value> {
     let search = SemanticSearch::new(store, embedding_manager);
 
     match &cli.command {
-        Commands::Search { query, limit, tier } => {
+        Commands::Search { query, limit, tier, sort } => {
             let max_tier = tier.as_ref()
                 .and_then(|t| parse_tier(t))
                 .unwrap_or(SecurityTier::Guarded);
@@ -426,7 +430,7 @@ fn run_command(cli: &Cli) -> CliResponse<serde_json::Value> {
 
             match rt.block_on(search.search(query, options)) {
                 Ok(results) => {
-                    let data: Vec<SearchResult> = results
+                    let mut data: Vec<SearchResult> = results
                         .into_iter()
                         .map(|r| {
                             let content_str = r.object.content_as_str()
@@ -441,9 +445,18 @@ fn run_command(cli: &Cli) -> CliResponse<serde_json::Value> {
                                 tier: format!("{:?}", r.object.security_tier),
                                 score: r.score,
                                 preview: content_str,
+                                created_at: r.object.created_at.to_rfc3339(),
                             }
                         })
                         .collect();
+
+                    // Sort results based on sort parameter
+                    match sort.as_str() {
+                        "date" => data.sort_by(|a, b| a.created_at.cmp(&b.created_at)),
+                        "date-desc" => data.sort_by(|a, b| b.created_at.cmp(&a.created_at)),
+                        _ => {} // "score" is already the default order
+                    }
+
                     CliResponse {
                         success: true,
                         data: Some(serde_json::to_value(data).unwrap()),
@@ -776,6 +789,7 @@ fn run_command(cli: &Cli) -> CliResponse<serde_json::Value> {
                                 tier: format!("{:?}", r.object.security_tier),
                                 score: r.score,
                                 preview: content_str,
+                                created_at: r.object.created_at.to_rfc3339(),
                             }
                         })
                         .collect();
