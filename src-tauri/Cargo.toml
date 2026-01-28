@@ -48,6 +48,7 @@ regex = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
 urlencoding = "2"
+scraper = "0.22"
 
 # For embeddings (optional, add later)
 # ort = "2"  # ONNX Runtime
