@@ -209,12 +209,22 @@ impl OpenAIEmbedding {
     /// Create for LM Studio (localhost:1234, no API key needed)
     pub fn lm_studio(model: &str) -> Self {
         let (dimensions, max_tokens) = match model {
+            // Qwen3 embedding models
+            "text-embedding-qwen3-embedding-0.6b" | "Qwen/Qwen3-Embedding-0.6B" => (1024, 8192),
+            "text-embedding-qwen3-embedding-1.5b" | "Qwen/Qwen3-Embedding-1.5B" => (1024, 8192),
+            "text-embedding-qwen3-embedding-4b" | "Qwen/Qwen3-Embedding-4B" => (1024, 8192),
+            "text-embedding-qwen3-embedding-8b" | "Qwen/Qwen3-Embedding-8B" => (1024, 8192),
+            // Nomic models
             "nomic-embed-text" | "nomic-ai/nomic-embed-text-v1.5-GGUF" => (768, 8192),
             "text-embedding-nomic-embed-text-v1.5" => (768, 8192),
+            // Sentence transformers
             "all-MiniLM-L6-v2" | "sentence-transformers/all-MiniLM-L6-v2" => (384, 512),
+            // BGE models
             "bge-small-en" | "BAAI/bge-small-en-v1.5" => (384, 512),
             "bge-base-en" | "BAAI/bge-base-en-v1.5" => (768, 512),
             "bge-large-en" | "BAAI/bge-large-en-v1.5" => (1024, 512),
+            // Default - try to detect from model name
+            m if m.contains("qwen") && m.contains("embed") => (1024, 8192),
             _ => (768, 8192), // Reasonable default for most embedding models
         };
 
@@ -232,9 +242,9 @@ impl OpenAIEmbedding {
         }
     }
 
-    /// Create for LM Studio with default model
+    /// Create for LM Studio with default model (Qwen3 0.6B - 1024 dims)
     pub fn lm_studio_default() -> Self {
-        Self::lm_studio("nomic-embed-text")
+        Self::lm_studio("text-embedding-qwen3-embedding-0.6b")
     }
 }
 
