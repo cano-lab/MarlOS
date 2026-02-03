@@ -2,9 +2,11 @@
 //!
 //! These commands are callable from JavaScript/TypeScript via Tauri's invoke API.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::State;
 use serde::{Deserialize, Serialize};
+use chrono::{DateTime, Utc};
 
 use crate::document::Document;
 use crate::kernel::SemanticKernel;
@@ -30,6 +32,7 @@ use crate::llm_tasks::{
     AnswerQuestionTask, ClassifyTextTask,
 };
 use crate::mcp::{McpServer, McpContext, ContextSource, ResearchAgent};
+use crate::images::{ImageManager, ImageInfo, ToneMapOptions};
 
 /// Response for version info
 #[derive(Serialize)]
@@ -1286,11 +1289,11 @@ pub async fn research_list_sources(
 ) -> Result<Vec<SourceView>, String> {
     let store = search.store.read().await;
 
-    // Get all objects of kind "source"
-    let all_objects = store.list(1000, 0).map_err(|e| e.to_string())?;
+    // Use tag-filtered query to efficiently get all research sources
+    let source_objects = store.list_by_tag("kind:source", 500)
+        .map_err(|e| e.to_string())?;
 
-    let mut sources: Vec<Source> = all_objects.iter()
-        .filter(|obj| obj.tags.contains(&"kind:source".to_string()))
+    let mut sources: Vec<Source> = source_objects.iter()
         .filter_map(|obj| source_from_object(obj))
         .collect();
 
@@ -1762,9 +1765,68 @@ async fn get_source_by_id(source_id: &str, search: &SemanticSearch) -> Result<So
 }
 
 fn source_from_object(obj: &SemanticObject) -> Option<Source> {
-    // Parse source from summary JSON
-    obj.summary.as_ref()
-        .and_then(|s| serde_json::from_str::<Source>(s).ok())
+    // First try parsing from summary JSON (the preferred method)
+    if let Some(summary) = &obj.summary {
+        if let Ok(source) = serde_json::from_str::<Source>(summary) {
+            return Some(source);
+        }
+        // Log parsing failures for debugging
+        log::debug!("Failed to parse source from summary JSON for object: {:?}", obj.suid);
+    }
+
+    // Fallback: construct Source from object metadata and tags
+    // This handles sources that were stored without proper JSON serialization
+    let source_id = obj.tags.iter()
+        .find(|t| t.starts_with("source_id:"))
+        .map(|t| t.trim_start_matches("source_id:").to_string())
+        .unwrap_or_else(|| obj.suid.to_string());
+
+    let source_type = obj.tags.iter()
+        .find(|t| t.starts_with("source_type:"))
+        .map(|t| t.trim_start_matches("source_type:"))
+        .and_then(|t| match t {
+            "WebPage" => Some(SourceType::WebPage),
+            "Article" => Some(SourceType::Article),
+            "Paper" => Some(SourceType::Paper),
+            "Book" => Some(SourceType::Book),
+            "Video" => Some(SourceType::Video),
+            "Podcast" => Some(SourceType::Podcast),
+            "Documentation" => Some(SourceType::Documentation),
+            "CodeRepository" => Some(SourceType::CodeRepository),
+            _ => None,
+        })
+        .unwrap_or(SourceType::WebPage);
+
+    let user_tags: Vec<String> = obj.tags.iter()
+        .filter(|t| t.starts_with("user_tag:"))
+        .map(|t| t.trim_start_matches("user_tag:").to_string())
+        .collect();
+
+    // Only create fallback if we have basic required info
+    let title = obj.name.clone().or_else(|| {
+        // Try to extract title from content if available
+        None
+    })?;
+
+    Some(Source {
+        id: source_id,
+        title,
+        url: obj.path.clone(),
+        source_type,
+        authors: vec![],
+        published_date: None,
+        accessed_date: obj.created_at,
+        content: None,
+        summary: obj.summary.clone(), // Use raw summary as source summary
+        key_points: vec![],
+        tags: user_tags,
+        citations: std::collections::HashMap::new(),
+        reliability_score: None,
+        notes: None,
+        publisher: None,
+        doi: None,
+        isbn: None,
+    })
 }
 
 // ============================================================================
@@ -2673,4 +2735,2659 @@ pub async fn paper_get_findings(
         .ok_or_else(|| format!("Paper not found: {}", paper_id))?;
 
     Ok(paper.findings)
+}
+
+// ============================================================================
+// Proactive Intelligence Commands
+// ============================================================================
+
+use crate::proactive::{ProactiveSuggestion, ProactiveConfig};
+
+/// Suggestion view for frontend
+#[derive(Serialize)]
+pub struct SuggestionView {
+    pub id: String,
+    pub suggestion_type: String,
+    pub relevance: f32,
+    pub title: String,
+    pub content: String,
+    pub reason: String,
+    pub source_ids: Vec<String>,
+    pub generated_at: String,
+    pub seen: bool,
+}
+
+impl From<&ProactiveSuggestion> for SuggestionView {
+    fn from(s: &ProactiveSuggestion) -> Self {
+        Self {
+            id: s.id.clone(),
+            suggestion_type: format!("{:?}", s.suggestion_type),
+            relevance: s.relevance,
+            title: s.title.clone(),
+            content: s.content.clone(),
+            reason: s.reason.clone(),
+            source_ids: s.source_ids.clone(),
+            generated_at: s.generated_at.to_rfc3339(),
+            seen: s.seen,
+        }
+    }
+}
+
+/// Get proactive suggestions for a file being opened
+#[tauri::command]
+pub async fn proactive_on_file_opened(
+    file_path: String,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<Vec<SuggestionView>, String> {
+    let mut engine = crate::proactive::ProactiveEngine::new(search.inner().clone());
+    let suggestions = engine.on_file_opened(&file_path).await;
+    Ok(suggestions.iter().map(SuggestionView::from).collect())
+}
+
+/// Get proactive suggestions for a query
+#[tauri::command]
+pub async fn proactive_on_query(
+    query: String,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<Vec<SuggestionView>, String> {
+    let mut engine = crate::proactive::ProactiveEngine::new(search.inner().clone());
+    let suggestions = engine.on_query(&query).await;
+    Ok(suggestions.iter().map(SuggestionView::from).collect())
+}
+
+/// Get proactive suggestions when starting a session
+#[tauri::command]
+pub async fn proactive_on_session_start(
+    project_path: Option<String>,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<Vec<SuggestionView>, String> {
+    let mut engine = crate::proactive::ProactiveEngine::new(search.inner().clone());
+    let suggestions = engine.on_session_start(project_path.as_deref()).await;
+    Ok(suggestions.iter().map(SuggestionView::from).collect())
+}
+
+/// Check for decision conflicts
+#[tauri::command]
+pub async fn proactive_check_decision(
+    topic: String,
+    proposed_choice: String,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<Vec<SuggestionView>, String> {
+    let mut engine = crate::proactive::ProactiveEngine::new(search.inner().clone());
+    let suggestions = engine.on_decision_context(&topic, &proposed_choice).await;
+    Ok(suggestions.iter().map(SuggestionView::from).collect())
+}
+
+/// Log a decision for future reference
+#[tauri::command]
+pub async fn proactive_log_decision(
+    topic: String,
+    choice: String,
+    reasoning: String,
+    project: Option<String>,
+    file_path: Option<String>,
+    tags: Option<Vec<String>>,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<String, String> {
+    use crate::semantic_object::{ContentType, SemanticObject};
+    use crate::memory::SecurityTier;
+
+    // Create decision content
+    let content = format!(
+        "# Decision: {}\n\n## Choice\n{}\n\n## Reasoning\n{}",
+        topic, choice, reasoning
+    );
+
+    let mut obj = SemanticObject::new(
+        content.as_bytes().to_vec(),
+        ContentType::Markdown,
+    );
+
+    obj.name = Some(format!("Decision: {}", topic));
+    obj.summary = Some(format!("{}: {}", topic, choice));
+    obj.security_tier = SecurityTier::Guarded;
+
+    // Add metadata
+    obj.metadata.insert("topic".to_string(), serde_json::json!(topic));
+    obj.metadata.insert("choice".to_string(), serde_json::json!(choice));
+    obj.metadata.insert("reasoning".to_string(), serde_json::json!(reasoning));
+    if let Some(proj) = project {
+        obj.metadata.insert("project".to_string(), serde_json::json!(proj));
+    }
+    if let Some(path) = file_path {
+        obj.metadata.insert("file_path".to_string(), serde_json::json!(path));
+    }
+
+    // Add tags
+    obj.tags.push("decision".to_string());
+    if let Some(custom_tags) = tags {
+        obj.tags.extend(custom_tags);
+    }
+
+    // Store the decision
+    let suid = obj.suid.to_string();
+    let store = search.store.blocking_write();
+    store.create(&obj).map_err(|e| e.to_string())?;
+
+    // Generate embedding
+    drop(store);
+    let embedding_text = format!("{} {} {}", topic, choice, reasoning);
+    if let Ok(embedding) = search.embeddings().embed(&embedding_text).await {
+        let store = search.store.blocking_write();
+        let model = search.embeddings().model_info().id.clone();
+        let _ = store.store_embedding(&obj.suid, &embedding, &model);
+    }
+
+    Ok(suid)
+}
+
+/// Get decision statistics
+#[tauri::command]
+pub async fn proactive_decision_stats(
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<serde_json::Value, String> {
+    let tracker = crate::proactive::DecisionTracker::new(search.inner().clone());
+    let stats = tracker.get_stats().await?;
+
+    Ok(serde_json::json!({
+        "total_decisions": stats.total_decisions,
+        "recent_decisions": stats.recent_decisions,
+        "top_topics": stats.top_topics.into_iter()
+            .map(|(topic, count)| serde_json::json!({"topic": topic, "count": count}))
+            .collect::<Vec<_>>(),
+    }))
+}
+
+// ============================================================================
+// Mobile Capture Commands
+// ============================================================================
+
+/// Quick capture from mobile - saves text, photo references, or voice notes
+#[tauri::command]
+pub async fn quick_capture(
+    capture_type: String,
+    content: String,
+    tags: Option<Vec<String>>,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<String, String> {
+    use crate::semantic_object::{ContentType, SemanticObject};
+    use crate::memory::SecurityTier;
+
+    // Parse the JSON content
+    let capture_data: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Invalid capture data: {}", e))?;
+
+    let title = capture_data.get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Quick Capture")
+        .to_string();
+
+    let text_content = capture_data.get("content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // Create markdown content based on type
+    let markdown_content = match capture_type.as_str() {
+        "photo" => {
+            let photo_ref = capture_data.get("photo")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            format!("# {}\n\n![Photo]({})\n\n{}", title, photo_ref, text_content)
+        }
+        "voice" => {
+            format!("# {} (Voice Note)\n\n{}", title, text_content)
+        }
+        _ => {
+            format!("# {}\n\n{}", title, text_content)
+        }
+    };
+
+    let mut obj = SemanticObject::new(
+        markdown_content.as_bytes().to_vec(),
+        ContentType::Markdown,
+    );
+
+    obj.name = Some(title);
+    obj.security_tier = SecurityTier::Guarded;
+
+    // Add capture metadata
+    obj.metadata.insert("capture_type".to_string(), serde_json::json!(capture_type));
+    obj.metadata.insert("source".to_string(), serde_json::json!("mobile_capture"));
+    if let Some(captured_at) = capture_data.get("captured_at") {
+        obj.metadata.insert("captured_at".to_string(), captured_at.clone());
+    }
+
+    // Add tags
+    obj.tags.push("capture".to_string());
+    obj.tags.push(format!("capture:{}", capture_type));
+    if let Some(custom_tags) = tags {
+        obj.tags.extend(custom_tags);
+    }
+
+    // Store
+    let suid = obj.suid.to_string();
+    {
+        let store = search.store.write().await;
+        store.create(&obj).map_err(|e| e.to_string())?;
+    }
+
+    // Generate embedding from the text content
+    if !text_content.is_empty() {
+        if let Ok(embedding) = search.embeddings().embed(&text_content).await {
+            let store = search.store.write().await;
+            let model = search.embeddings().model_info().id.clone();
+            let _ = store.store_embedding(&obj.suid, &embedding, &model);
+        }
+    }
+
+    log::info!("Quick capture saved: {} ({})", obj.name.unwrap_or_default(), suid);
+    Ok(suid)
+}
+
+/// Get recent objects for mobile memory browser
+#[tauri::command]
+pub async fn get_recent_objects(
+    limit: Option<usize>,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let limit = limit.unwrap_or(20);
+    let store = search.store.read().await;
+
+    let objects = store.list(limit, 0).map_err(|e| e.to_string())?;
+
+    // Sort by modified_at descending and convert to JSON
+    let mut sorted: Vec<_> = objects.iter().collect();
+    sorted.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+
+    Ok(sorted.into_iter()
+        .take(limit)
+        .map(|obj| {
+            serde_json::json!({
+                "id": obj.suid.to_string(),
+                "kind": obj.tags.iter()
+                    .find(|t| t.starts_with("kind:"))
+                    .map(|t| t.strip_prefix("kind:").unwrap_or("unknown"))
+                    .unwrap_or("note"),
+                "content": obj.content_as_str().unwrap_or_default().chars().take(500).collect::<String>(),
+                "tags": obj.tags.iter()
+                    .filter(|t| !t.starts_with("kind:"))
+                    .collect::<Vec<_>>(),
+                "created_at": obj.created_at.to_rfc3339(),
+                "updated_at": obj.modified_at.to_rfc3339(),
+                "metadata": obj.metadata,
+            })
+        })
+        .collect())
+}
+
+/// Semantic search for mobile
+#[tauri::command]
+pub async fn semantic_search(
+    query: String,
+    limit: Option<usize>,
+    kind: Option<String>,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<Vec<serde_json::Value>, String> {
+    use crate::semantic_search::SearchOptions;
+    use crate::memory::SecurityTier;
+
+    let options = SearchOptions {
+        limit: limit.unwrap_or(20),
+        max_tier: SecurityTier::Guarded,
+        ..Default::default()
+    };
+
+    let results = search.search(&query, options).await
+        .map_err(|e| format!("{}", e))?;
+
+    // Filter by kind if specified
+    let filtered = results.into_iter()
+        .filter(|hit| {
+            if let Some(ref k) = kind {
+                hit.object.tags.iter().any(|t| t == &format!("kind:{}", k))
+            } else {
+                true
+            }
+        });
+
+    Ok(filtered
+        .map(|hit| {
+            serde_json::json!({
+                "object": {
+                    "id": hit.object.suid.to_string(),
+                    "kind": hit.object.tags.iter()
+                        .find(|t| t.starts_with("kind:"))
+                        .map(|t| t.strip_prefix("kind:").unwrap_or("unknown"))
+                        .unwrap_or("note"),
+                    "content": hit.object.content_as_str().unwrap_or_default().chars().take(500).collect::<String>(),
+                    "tags": hit.object.tags.iter()
+                        .filter(|t| !t.starts_with("kind:"))
+                        .collect::<Vec<_>>(),
+                    "created_at": hit.object.created_at.to_rfc3339(),
+                    "updated_at": hit.object.modified_at.to_rfc3339(),
+                    "metadata": hit.object.metadata,
+                },
+                "score": hit.score,
+            })
+        })
+        .collect())
+}
+
+/// Save a research source from mobile
+#[tauri::command]
+pub async fn save_research_source(
+    title: String,
+    url: String,
+    snippet: String,
+    notes: Option<String>,
+    tags: Option<Vec<String>>,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<String, String> {
+    use crate::semantic_object::{ContentType, SemanticObject};
+    use crate::memory::SecurityTier;
+
+    // Create content with title, URL, snippet, and notes
+    let content = format!(
+        "# {}\n\nURL: {}\n\n## Summary\n{}\n\n{}",
+        title,
+        url,
+        snippet,
+        notes.as_ref().map(|n| format!("## Notes\n{}", n)).unwrap_or_default()
+    );
+
+    let mut obj = SemanticObject::new(
+        content.as_bytes().to_vec(),
+        ContentType::Markdown,
+    );
+
+    obj.name = Some(title.clone());
+    obj.security_tier = SecurityTier::Open;
+
+    // Add metadata
+    obj.metadata.insert("url".to_string(), serde_json::json!(url));
+    obj.metadata.insert("snippet".to_string(), serde_json::json!(snippet));
+    if let Some(ref n) = notes {
+        obj.metadata.insert("notes".to_string(), serde_json::json!(n));
+    }
+    obj.metadata.insert("saved_at".to_string(), serde_json::json!(chrono::Utc::now().to_rfc3339()));
+
+    // Add tags
+    obj.tags.push("kind:research".to_string());
+    obj.tags.push("source:mobile".to_string());
+    if let Some(custom_tags) = tags {
+        obj.tags.extend(custom_tags);
+    }
+
+    // Store
+    let suid = obj.suid.to_string();
+    {
+        let store = search.store.write().await;
+        store.create(&obj).map_err(|e| e.to_string())?;
+    }
+
+    // Generate embedding
+    let embed_text = format!("{} {}", title, snippet);
+    if let Ok(embedding) = search.embeddings().embed(&embed_text).await {
+        let store = search.store.write().await;
+        let model = search.embeddings().model_info().id.clone();
+        let _ = store.store_embedding(&obj.suid, &embedding, &model);
+    }
+
+    log::info!("Saved research source: {} ({})", title, suid);
+    Ok(suid)
+}
+
+/// Get saved research sources
+#[tauri::command]
+pub async fn get_saved_sources(
+    limit: Option<usize>,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let limit = limit.unwrap_or(50);
+    let store = search.store.read().await;
+
+    let objects = store.list(500, 0).map_err(|e| e.to_string())?;
+
+    // Filter to research sources and sort by date
+    let mut sources: Vec<_> = objects.iter()
+        .filter(|obj| obj.tags.contains(&"kind:research".to_string()))
+        .collect();
+
+    sources.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+
+    Ok(sources.into_iter()
+        .take(limit)
+        .map(|obj| {
+            serde_json::json!({
+                "id": obj.suid.to_string(),
+                "title": obj.name.clone().unwrap_or_else(|| "Untitled".to_string()),
+                "url": obj.metadata.get("url").and_then(|v| v.as_str()).unwrap_or(""),
+                "content": obj.content_as_str().map(|s| s.chars().take(300).collect::<String>()),
+                "notes": obj.metadata.get("notes").and_then(|v| v.as_str()),
+                "tags": obj.tags.iter()
+                    .filter(|t| !t.starts_with("kind:") && !t.starts_with("source:"))
+                    .collect::<Vec<_>>(),
+                "saved_at": obj.metadata.get("saved_at")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&obj.created_at.to_rfc3339()),
+            })
+        })
+        .collect())
+}
+
+/// Open external URL (uses system browser)
+#[tauri::command]
+pub async fn open_external_url(url: String) -> Result<(), String> {
+    open::that(&url).map_err(|e| format!("Failed to open URL: {}", e))
+}
+
+// ============================================================================
+// Thinking Debugger Commands
+// ============================================================================
+
+/// Message in a conversation for thinking analysis
+#[derive(Deserialize)]
+pub struct ConversationMessageInput {
+    pub role: String,
+    pub content: String,
+}
+
+/// Analyze a conversation for thinking errors (with automatic chunking for long conversations)
+#[tauri::command]
+pub async fn analyze_thinking(
+    conversation: Vec<ConversationMessageInput>,
+    topic: Option<String>,
+    ai_manager: State<'_, Arc<AiManager>>,
+) -> Result<serde_json::Value, String> {
+    use crate::llm_tasks::{
+        TaskRunner, AnalyzeChunkTask, ConversationMessage,
+        chunk_conversation, merge_analyses, ThinkingAnalysis,
+    };
+
+    let messages: Vec<ConversationMessage> = conversation.into_iter()
+        .map(|m| ConversationMessage {
+            role: m.role,
+            content: m.content,
+        })
+        .collect();
+
+    // Split into chunks that fit within context window
+    let chunks = chunk_conversation(&messages);
+
+    if chunks.is_empty() {
+        return Err("No conversation to analyze".to_string());
+    }
+
+    log::info!("Analyzing conversation in {} chunk(s)", chunks.len());
+
+    let runner = TaskRunner::new(&ai_manager);
+    let mut chunk_results: Vec<ThinkingAnalysis> = Vec::new();
+
+    // Analyze each chunk
+    for chunk in chunks {
+        log::info!("Analyzing chunk {} of {}", chunk.chunk_index + 1, chunk.total_chunks);
+
+        let task = AnalyzeChunkTask {
+            chunk,
+            topic: topic.clone(),
+        };
+
+        match runner.execute(task).await {
+            Ok(result) => chunk_results.push(result),
+            Err(e) => {
+                log::warn!("Failed to analyze chunk: {}", e);
+                // Continue with other chunks instead of failing entirely
+            }
+        }
+    }
+
+    if chunk_results.is_empty() {
+        return Err("Failed to analyze any chunks of the conversation".to_string());
+    }
+
+    // Merge all chunk results into final analysis
+    let final_result = merge_analyses(chunk_results);
+
+    serde_json::to_value(final_result).map_err(|e| e.to_string())
+}
+
+/// Fact-check a specific claim
+#[tauri::command]
+pub async fn fact_check_claim(
+    claim: String,
+    context: Option<String>,
+    ai_manager: State<'_, Arc<AiManager>>,
+) -> Result<serde_json::Value, String> {
+    use crate::llm_tasks::{TaskRunner, ClaimFactCheckTask};
+
+    let task = ClaimFactCheckTask { claim, context };
+
+    let runner = TaskRunner::new(&ai_manager);
+    let result = runner.execute(task).await?;
+
+    serde_json::to_value(result).map_err(|e| e.to_string())
+}
+
+/// Suggest better questions
+#[tauri::command]
+pub async fn suggest_better_questions(
+    question: String,
+    topic: Option<String>,
+    ai_manager: State<'_, Arc<AiManager>>,
+) -> Result<serde_json::Value, String> {
+    use crate::llm_tasks::{TaskRunner, BetterQuestionsTask};
+
+    let task = BetterQuestionsTask {
+        original_question: question,
+        topic,
+    };
+
+    let runner = TaskRunner::new(&ai_manager);
+    let result = runner.execute(task).await?;
+
+    serde_json::to_value(result).map_err(|e| e.to_string())
+}
+
+// ============================================================================
+// Session Browser Commands (for Thinking Debugger)
+// ============================================================================
+
+/// List all available Claude Code sessions
+#[tauri::command]
+pub async fn list_sessions(
+    limit: Option<usize>,
+) -> Result<Vec<serde_json::Value>, String> {
+    use crate::providers::session::{SessionScanner, ChunkedSessionParser};
+
+    let scanner = SessionScanner::new();
+    let session_paths = scanner.find_all_sessions()?;
+
+    let limit = limit.unwrap_or(20);
+    let mut sessions = Vec::new();
+
+    // Parse sessions and collect metadata (most recent first)
+    let mut session_paths: Vec<_> = session_paths.into_iter().collect();
+    session_paths.sort_by(|a, b| {
+        let a_time = a.metadata().and_then(|m| m.modified()).ok();
+        let b_time = b.metadata().and_then(|m| m.modified()).ok();
+        b_time.cmp(&a_time)
+    });
+
+    for path in session_paths.into_iter().take(limit) {
+        if let Ok(session) = ChunkedSessionParser::parse_file(&path) {
+            let preview: String = session.chunks.first()
+                .map(|c| c.user_content.chars().take(100).collect())
+                .unwrap_or_default();
+
+            sessions.push(serde_json::json!({
+                "id": session.id,
+                "project_path": session.project_path,
+                "git_branch": session.git_branch,
+                "chunk_count": session.chunks.len(),
+                "message_count": session.message_count,
+                "started_at": session.started_at,
+                "ended_at": session.ended_at,
+                "preview": preview,
+                "source_file": session.source_file,
+            }));
+        }
+    }
+
+    Ok(sessions)
+}
+
+/// Get a session's conversation for the thinking debugger
+#[tauri::command]
+pub async fn get_session_conversation(
+    session_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    use crate::providers::session::{SessionScanner, ChunkedSessionParser};
+
+    let scanner = SessionScanner::new();
+    let session_paths = scanner.find_all_sessions()?;
+
+    // Find the session by ID
+    for path in session_paths {
+        let file_id = path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+
+        if file_id == session_id || path.to_string_lossy().contains(&session_id) {
+            let session = ChunkedSessionParser::parse_file(&path)?;
+
+            // Convert chunks to conversation messages
+            let mut messages = Vec::new();
+            for chunk in session.chunks {
+                if !chunk.user_content.is_empty() {
+                    messages.push(serde_json::json!({
+                        "role": "user",
+                        "content": chunk.user_content,
+                    }));
+                }
+                if !chunk.assistant_content.is_empty() {
+                    messages.push(serde_json::json!({
+                        "role": "assistant",
+                        "content": chunk.assistant_content,
+                    }));
+                }
+            }
+
+            return Ok(messages);
+        }
+    }
+
+    Err(format!("Session not found: {}", session_id))
+}
+
+// ============================================================================
+// Browser Sync Commands (Real-time ChatGPT import)
+// ============================================================================
+
+/// Detect available browsers that have ChatGPT data
+#[tauri::command]
+pub async fn detect_browsers() -> Result<Vec<serde_json::Value>, String> {
+    use crate::providers::importers::browser_sync::{detect_browsers, BrowserType};
+
+    let browsers = detect_browsers();
+
+    let result: Vec<serde_json::Value> = browsers.into_iter()
+        .map(|b| {
+            let name = match b {
+                BrowserType::Chrome => "Chrome",
+                BrowserType::ChromeBeta => "Chrome Beta",
+                BrowserType::ChromeDev => "Chrome Dev",
+                BrowserType::Chromium => "Chromium",
+                BrowserType::Edge => "Microsoft Edge",
+                BrowserType::Brave => "Brave",
+                BrowserType::Vivaldi => "Vivaldi",
+                BrowserType::Opera => "Opera",
+            };
+
+            serde_json::json!({
+                "browser_type": format!("{:?}", b),
+                "name": name,
+                "storage_path": b.chatgpt_storage_path().map(|p| p.to_string_lossy().to_string()),
+            })
+        })
+        .collect();
+
+    Ok(result)
+}
+
+/// Request permission to access browser data
+#[tauri::command]
+pub async fn request_browser_access(browser_type: String) -> Result<bool, String> {
+    use crate::providers::importers::browser_sync::BrowserType;
+
+    let browser = match browser_type.as_str() {
+        "Chrome" => BrowserType::Chrome,
+        "Edge" => BrowserType::Edge,
+        "Brave" => BrowserType::Brave,
+        "Chromium" => BrowserType::Chromium,
+        _ => return Err("Unknown browser type".to_string()),
+    };
+
+    // In a real implementation, this would:
+    // 1. Show a permission dialog to the user
+    // 2. Store the permission decision
+    // 3. Return whether access was granted
+
+    // For now, just check if we can access the path
+    let path = browser.chatgpt_storage_path()
+        .ok_or("Cannot determine browser path")?;
+
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    // Try to access the directory
+    std::fs::read_dir(&path)
+        .map(|_| true)
+        .map_err(|e| format!("Cannot access browser data: {}", e))
+}
+
+/// Scan for new ChatGPT conversations (doesn't import yet)
+#[tauri::command]
+pub async fn scan_chatgpt_conversations(
+    browser_type: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    use crate::providers::importers::browser_sync::BrowserType;
+
+    let browser = match browser_type.as_str() {
+        "Chrome" => BrowserType::Chrome,
+        "Edge" => BrowserType::Edge,
+        "Brave" => BrowserType::Brave,
+        "Chromium" => BrowserType::Chromium,
+        _ => return Err("Unknown browser type".to_string()),
+    };
+
+    // TODO: Implement actual browser DB scanning
+    // For now, return empty with note that this needs implementation
+
+    Ok(vec![])
+}
+
+/// Sync ChatGPT conversations (manual or auto)
+#[tauri::command]
+pub async fn sync_chatgpt_conversations(
+    browser_type: String,
+    state: State<'_, Arc<AiManager>>,
+) -> Result<serde_json::Value, String> {
+    // This would use the BrowserSync manager to import conversations
+    // For now, return placeholder result
+
+    Ok(serde_json::json!({
+        "imported": [],
+        "skipped": [],
+        "total_found": 0,
+        "message": "Browser sync implementation in progress - need to parse Chrome/Edge IndexedDB"
+    }))
+}
+
+/// Skip a specific conversation from auto-import
+#[tauri::command]
+pub async fn skip_conversation(
+    conversation_id: String,
+    reason: String,
+) -> Result<(), String> {
+    // Store the skip reason
+    // TODO: Implement persistent storage for skipped conversations
+    Ok(())
+}
+
+/// Get current sync state
+#[tauri::command]
+pub async fn get_sync_state() -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "last_sync": null,
+        "auto_sync_enabled": false,
+        "imported_count": 0,
+        "skipped_count": 0,
+        "message": "Sync state tracking to be implemented"
+    }))
+}
+
+/// Set auto-sync enabled/disabled
+#[tauri::command]
+pub async fn set_auto_sync(enabled: bool) -> Result<(), String> {
+    // TODO: Implement persistent settings storage
+    Ok(())
+}
+
+// ============================================================================
+// Session Commands (Session-Based Continuity)
+// ============================================================================
+
+/// Start a new work session
+#[tauri::command]
+pub async fn start_session(
+    title: String,
+    intent_type: String,
+    intent_value: String,
+    description: Option<String>,
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+) -> Result<serde_json::Value, String> {
+    use crate::sessions::SessionIntent;
+
+    let intent = match intent_type.as_str() {
+        "research" => SessionIntent::Research { topic: intent_value },
+        "writing" => SessionIntent::Writing { project: intent_value },
+        "coding" => SessionIntent::Coding { project: intent_value },
+        "learning" => SessionIntent::Learning { subject: intent_value },
+        "planning" => SessionIntent::Planning { goal: intent_value },
+        "debugging" => SessionIntent::Debugging { issue: intent_value },
+        "brainstorming" => SessionIntent::Brainstorming { theme: intent_value },
+        _ => SessionIntent::Other { description: intent_value },
+    };
+
+    let session = manager.start_session(title, intent, description)
+        .map_err(|e| format!("Failed to start session: {}", e))?;
+
+    Ok(serde_json::to_value(session).map_err(|e| e.to_string())?)
+}
+
+/// End the current session
+#[tauri::command]
+pub async fn end_session(
+    next_steps: Vec<String>,
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+) -> Result<Option<serde_json::Value>, String> {
+    let session = manager.end_session(next_steps)
+        .map_err(|e| format!("Failed to end session: {}", e))?;
+
+    Ok(session.map(|s| serde_json::to_value(s).map_err(|e| e.to_string())).transpose()?)
+}
+
+/// Get the current active session
+#[tauri::command]
+pub async fn get_current_session(
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+) -> Result<Option<serde_json::Value>, String> {
+    Ok(manager.get_current_session()
+        .map(|s| serde_json::to_value(s).map_err(|e| e.to_string()))
+        .transpose()?)
+}
+
+/// Get session history
+#[tauri::command]
+pub async fn get_session_history(
+    limit: Option<usize>,
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut sessions = manager.get_session_history();
+
+    // Sort by start time (most recent first)
+    sessions.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+
+    // Apply limit
+    if let Some(limit) = limit {
+        sessions.truncate(limit);
+    }
+
+    sessions.into_iter()
+        .map(|s| serde_json::to_value(s).map_err(|e| e.to_string()))
+        .collect()
+}
+
+/// Resume a previous session
+#[tauri::command]
+pub async fn resume_session(
+    session_id: String,
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+) -> Result<serde_json::Value, String> {
+    let session = manager.resume_session(&session_id)
+        .map_err(|e| format!("Failed to resume session: {}", e))?;
+
+    Ok(serde_json::to_value(session).map_err(|e| e.to_string())?)
+}
+
+/// Search sessions by meaning
+#[tauri::command]
+pub async fn search_sessions(
+    query: String,
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let sessions = manager.search_sessions(&query)
+        .map_err(|e| format!("Failed to search sessions: {}", e))?;
+
+    sessions.into_iter()
+        .map(|s| serde_json::to_value(s).map_err(|e| e.to_string()))
+        .collect()
+}
+
+/// Record an activity during the current session
+#[tauri::command]
+pub async fn record_session_activity(
+    activity_type: String,
+    details: serde_json::Value,
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+) -> Result<(), String> {
+    use crate::sessions::{SessionActivity, ActivityDetails, ActivityType};
+    use std::collections::HashMap;
+
+    // Parse activity type
+    let activity_type = match activity_type.as_str() {
+        "document_view" => ActivityType::DocumentView,
+        "note_taking" => ActivityType::NoteTaking,
+        "ai_chat" => ActivityType::AiChat,
+        "web_research" => ActivityType::WebResearch,
+        "coding" => ActivityType::Coding,
+        "writing" => ActivityType::Writing,
+        "thinking" => ActivityType::Thinking,
+        _ => ActivityType::Other,
+    };
+
+    // Parse details based on activity type
+    let details = match activity_type {
+        ActivityType::DocumentView => {
+            ActivityDetails::ViewedDocument {
+                title: details.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                path: details.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                page_number: details.get("page_number").and_then(|v| v.as_u64()).map(|v| v as usize),
+                duration_secs: details.get("duration_secs").and_then(|v| v.as_u64()).unwrap_or(0),
+            }
+        },
+        ActivityType::NoteTaking => {
+            ActivityDetails::TookNotes {
+                content: details.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                related_to: details.get("related_to")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                    .unwrap_or_default(),
+            }
+        },
+        ActivityType::AiChat => {
+            ActivityDetails::AiChat {
+                provider: details.get("provider").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                topic: details.get("topic").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                message_count: details.get("message_count").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(0),
+                summary: details.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            }
+        },
+        _ => ActivityDetails::Other {
+            description: details.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            metadata: HashMap::new(),
+        },
+    };
+
+    let activity = SessionActivity {
+        id: uuid::Uuid::new_v4().to_string(),
+        activity_type,
+        timestamp: chrono::Utc::now(),
+        duration: None,
+        details,
+    };
+
+    manager.record_activity(activity)
+        .map_err(|e| format!("Failed to record activity: {}", e))?;
+
+    Ok(())
+}
+
+/// Take a snapshot of the current session state
+#[tauri::command]
+pub async fn take_session_snapshot(
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+) -> Result<(), String> {
+    manager.take_snapshot()
+        .map_err(|e| format!("Failed to take snapshot: {}", e))?;
+
+    Ok(())
+}
+
+/// Get current session context for AI injection
+/// Returns a formatted string with session information
+#[tauri::command]
+pub async fn get_session_context(
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+) -> Result<String, String> {
+    let current = manager.get_current_session();
+
+    match current {
+        Some(session) => {
+            let mut context = format!("=== Current Session ===\n");
+            context.push_str(&format!("Title: {}\n", session.title));
+            context.push_str(&format!("Intent: {:?}\n", session.intent));
+
+            if let Some(desc) = &session.description {
+                context.push_str(&format!("Description: {}\n", desc));
+            }
+
+            context.push_str(&format!("Started: {}\n", session.started_at));
+            context.push_str(&format!("Activities: {}\n", session.activities.len()));
+
+            // Add recent activities
+            if !session.activities.is_empty() {
+                context.push_str("\nRecent Activities:\n");
+                for activity in session.activities.iter().take(5) {
+                    context.push_str(&format!("- {:?}: {:?} at {}\n",
+                        activity.activity_type,
+                        activity.details,
+                        activity.timestamp));
+                }
+            }
+
+            // Add next steps if available
+            if !session.next_steps.is_empty() {
+                context.push_str("\nNext Steps:\n");
+                for step in &session.next_steps {
+                    context.push_str(&format!("- {}\n", step));
+                }
+            }
+
+            Ok(context)
+        },
+        None => Ok("No active session".to_string()),
+    }
+}
+
+/// Create a backfilled session (for work done in the past)
+#[tauri::command]
+pub async fn create_backfill_session(
+    title: String,
+    intent_type: String,
+    intent_value: String,
+    description: Option<String>,
+    start_time: String,
+    end_time: Option<String>,
+    activities: Vec<serde_json::Value>,
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+) -> Result<serde_json::Value, String> {
+    use crate::sessions::{Session, SessionIntent, SessionActivity, ActivityDetails, ActivityType, SessionContext, SessionSnapshot};
+    use chrono::DateTime;
+
+    let intent = match intent_type.as_str() {
+        "research" => SessionIntent::Research { topic: intent_value },
+        "writing" => SessionIntent::Writing { project: intent_value },
+        "coding" => SessionIntent::Coding { project: intent_value },
+        "learning" => SessionIntent::Learning { subject: intent_value },
+        "planning" => SessionIntent::Planning { goal: intent_value },
+        "debugging" => SessionIntent::Debugging { issue: intent_value },
+        "brainstorming" => SessionIntent::Brainstorming { theme: intent_value },
+        _ => SessionIntent::Other { description: intent_value },
+    };
+
+    // Parse timestamps
+    let started_at = start_time.parse::<DateTime<Utc>>()
+        .map_err(|e| format!("Invalid start time: {}", e))?;
+    let ended_at = end_time.and_then(|t| t.parse::<DateTime<Utc>>().ok());
+
+    // Parse activities
+    let parsed_activities: Vec<SessionActivity> = activities.into_iter()
+        .filter_map(|act| {
+            let activity_type_str = act.get("activityType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("other");
+
+            let details = act.get("details").unwrap_or(&serde_json::Value::Null);
+
+            let activity_type = match activity_type_str {
+                "thinking" => ActivityType::Thinking,
+                _ => ActivityType::Other,
+            };
+
+            let activity_details = match activity_type {
+                ActivityType::Thinking => {
+                    ActivityDetails::Thinking {
+                        notes: details.get("notes").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        insights: details.get("insights")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                            .unwrap_or_default(),
+                    }
+                },
+                _ => ActivityDetails::Other {
+                    description: format!("{:?}", details),
+                    metadata: std::collections::HashMap::new(),
+                }
+            };
+
+            Some(SessionActivity {
+                id: uuid::Uuid::new_v4().to_string(),
+                activity_type,
+                timestamp: started_at, // Use session start time for all activities
+                duration: None,
+                details: activity_details,
+            })
+        })
+        .collect();
+
+    let session = Session {
+        id: uuid::Uuid::new_v4().to_string(),
+        title,
+        description,
+        intent,
+        started_at,
+        ended_at,
+        activities: parsed_activities,
+        snapshots: vec![],
+        context: SessionContext {
+            project: None,
+            related_sessions: vec![],
+            prerequisites: vec![],
+            environment: format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
+        },
+        next_steps: vec![],
+        tags: vec![],
+    };
+
+    // Serialize before moving
+    let session_json = serde_json::to_value(&session).map_err(|e| e.to_string())?;
+
+    // Add to history directly
+    manager.add_session_to_history(session)
+        .map_err(|e| format!("Failed to add backfill session: {}", e))?;
+
+    // Save to disk
+    manager.save()
+        .map_err(|e| format!("Failed to save sessions: {}", e))?;
+
+    Ok(session_json)
+}
+
+/// Create sample sessions for testing
+#[tauri::command]
+pub async fn create_sample_sessions(
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+) -> Result<String, String> {
+    use crate::sessions::{Session, SessionIntent, SessionActivity, ActivityDetails, ActivityType, SessionContext};
+    use chrono::Utc;
+
+    let now = Utc::now();
+    let yesterday = now - chrono::Duration::days(1);
+
+    // Sample coding session with Claude
+    let claude_session = Session {
+        id: uuid::Uuid::new_v4().to_string(),
+        title: "Fixed authentication bug with Claude".to_string(),
+        description: Some("Debugged JWT token validation issue".to_string()),
+        intent: SessionIntent::Coding { project: "marlos-rust".to_string() },
+        started_at: yesterday,
+        ended_at: Some(yesterday + chrono::Duration::hours(2)),
+        activities: vec![
+            SessionActivity {
+                id: uuid::Uuid::new_v4().to_string(),
+                activity_type: ActivityType::AiChat,
+                timestamp: yesterday,
+                duration: Some(std::time::Duration::from_secs(1800)),
+                details: ActivityDetails::AiChat {
+                    provider: "Claude".to_string(),
+                    topic: "Authentication error debugging".to_string(),
+                    message_count: 15,
+                    summary: "Identified issue with JWT token validation in middleware".to_string(),
+                },
+            },
+            SessionActivity {
+                id: uuid::Uuid::new_v4().to_string(),
+                activity_type: ActivityType::Coding,
+                timestamp: yesterday + chrono::Duration::minutes(30),
+                duration: Some(std::time::Duration::from_secs(3600)),
+                details: ActivityDetails::Coding {
+                    files_modified: vec!["src/auth.rs".to_string(), "src/middleware.rs".to_string()],
+                    language: "Rust".to_string(),
+                    commit_message: Some("Fix JWT validation".to_string()),
+                },
+            },
+        ],
+        snapshots: vec![],
+        context: SessionContext {
+            project: Some("marlos-rust".to_string()),
+            related_sessions: vec![],
+            prerequisites: vec![],
+            environment: format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
+        },
+        next_steps: vec!["Add more tests for auth".to_string(), "Document the fix".to_string()],
+        tags: vec!["bug".to_string(), "authentication".to_string()],
+    };
+
+    // Sample coding session with Codex
+    let codex_session = Session {
+        id: uuid::Uuid::new_v4().to_string(),
+        title: "Refactored database schema".to_string(),
+        description: Some("Used Codex to refactor SQL queries".to_string()),
+        intent: SessionIntent::Coding { project: "marlos-rust".to_string() },
+        started_at: now - chrono::Duration::hours(4),
+        ended_at: Some(now - chrono::Duration::hours(2)),
+        activities: vec![
+            SessionActivity {
+                id: uuid::Uuid::new_v4().to_string(),
+                activity_type: ActivityType::AiChat,
+                timestamp: now - chrono::Duration::hours(4),
+                duration: Some(std::time::Duration::from_secs(2400)),
+                details: ActivityDetails::AiChat {
+                    provider: "Codex".to_string(),
+                    topic: "Database schema refactoring".to_string(),
+                    message_count: 20,
+                    summary: "Generated optimized SQL queries for new schema".to_string(),
+                },
+            },
+            SessionActivity {
+                id: uuid::Uuid::new_v4().to_string(),
+                activity_type: ActivityType::Coding,
+                timestamp: now - chrono::Duration::hours(3),
+                duration: Some(std::time::Duration::from_secs(5400)),
+                details: ActivityDetails::Coding {
+                    files_modified: vec!["src/db/schema.rs".to_string(), "src/db/migrations/*.rs".to_string()],
+                    language: "Rust".to_string(),
+                    commit_message: Some("Refactor database schema".to_string()),
+                },
+            },
+        ],
+        snapshots: vec![],
+        context: SessionContext {
+            project: Some("marlos-rust".to_string()),
+            related_sessions: vec![],
+            prerequisites: vec![],
+            environment: format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
+        },
+        next_steps: vec!["Update database documentation".to_string()],
+        tags: vec!["refactor".to_string(), "database".to_string()],
+    };
+
+    // Add both sessions to history
+    manager.add_session_to_history(claude_session)
+        .map_err(|e| format!("Failed to add session: {}", e))?;
+    manager.add_session_to_history(codex_session)
+        .map_err(|e| format!("Failed to add session: {}", e))?;
+    manager.save()
+        .map_err(|e| format!("Failed to save sessions: {}", e))?;
+
+    Ok("Created 2 sample coding sessions".to_string())
+}
+
+/// Debug: List all objects in ObjectStore
+#[tauri::command]
+pub async fn debug_list_objects(
+    semantic_search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+) -> Result<String, String> {
+    let store = semantic_search.store.read().await;
+    let all_objects = store.list(1000, 0)
+        .map_err(|e| format!("Failed to list objects: {}", e))?;
+
+    // Count by content type
+    let mut type_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut tag_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut conversation_count = 0;
+
+    for obj in &all_objects {
+        let type_name = format!("{:?}", obj.content_type);
+        *type_counts.entry(type_name).or_insert(0) += 1;
+
+        for tag in &obj.tags {
+            *tag_counts.entry(tag.clone()).or_insert(0) += 1;
+        }
+
+        // Check if it looks like a conversation
+        if let Some(content) = obj.content_as_str() {
+            if content.to_lowercase().contains("user:") && content.to_lowercase().contains("assistant:") {
+                conversation_count += 1;
+            }
+        }
+    }
+
+    drop(store);
+
+    let mut info = format!("Total objects: {}\n\n", all_objects.len());
+    info.push_str("By content type:\n");
+    for (type_name, count) in type_counts.iter() {
+        info.push_str(&format!("  {}: {}\n", type_name, count));
+    }
+
+    info.push_str("\nTop tags:\n");
+    let mut sorted_tags: Vec<_> = tag_counts.iter().collect();
+    sorted_tags.sort_by(|a, b| b.1.cmp(a.1));
+    for (tag, count) in sorted_tags.iter().take(10) {
+        info.push_str(&format!("  {}: {}\n", tag, count));
+    }
+
+    info.push_str(&format!("\nConversations (detected): {}\n", conversation_count));
+
+    info.push_str("\nNote: Full details logged to console (F12)");
+    log::info!("=== DEBUG: All Objects ===");
+    for obj in all_objects.iter().take(100) {
+        log::info!("Object: name={:?}, type={:?}, tags={:?}",
+            obj.name, obj.content_type, obj.tags);
+    }
+
+    Ok(info)
+}
+
+/// Import Claude Code conversations from repos
+#[tauri::command]
+pub async fn import_claude_code_conversations(
+    semantic_search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+) -> Result<String, String> {
+    use crate::providers::importers::claude_code::ClaudeCodeImporter;
+
+    // Create importer with the user's specified path
+    let mut importer = ClaudeCodeImporter::new();
+    importer.add_scan_path(std::path::PathBuf::from(r"X:\ARCH\Software"));
+
+    // Import conversations
+    let result = importer.import_from_repos();
+
+    // Store all imported objects
+    let store = semantic_search.store.write().await;
+    let mut stored = 0;
+    for obj in result.imported {
+        store.create(&obj)
+            .map_err(|e| format!("Failed to store object: {}", e))?;
+        stored += 1;
+    }
+    drop(store);
+
+    let mut response = result.summary;
+    response.push_str(&format!("\nStored {} objects in database", stored));
+
+    if !result.errors.is_empty() {
+        response.push_str(&format!("\nErrors: {}", result.errors.join(", ")));
+    }
+
+    Ok(response)
+}
+
+/// Import Claude Code session files directly into Session system
+#[tauri::command]
+pub async fn import_claude_code_sessions(
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+) -> Result<String, String> {
+    use crate::providers::{SessionScanner, SessionParser};
+
+    // Scan for all session files
+    let scanner = SessionScanner::new();
+    let session_files = scanner.find_all_sessions()
+        .map_err(|e| format!("Failed to scan for sessions: {}", e))?;
+
+    log::info!("Found {} session files", session_files.len());
+
+    let mut imported = 0;
+    let mut errors = Vec::new();
+
+    for session_path in session_files {
+        // Parse the session file
+        let session = match SessionParser::parse_file(&session_path) {
+            Ok(s) => s,
+            Err(e) => {
+                errors.push(format!("Failed to parse {:?}: {}", session_path, e));
+                continue;
+            }
+        };
+
+        // Convert to our Session format
+        let marlos_session = crate::sessions::importer::claude_session_to_marlos_session(session, &session_path)?;
+
+        // Add to history
+        manager.add_session_to_history(marlos_session)
+            .map_err(|e| format!("Failed to add session: {}", e))?;
+        imported += 1;
+
+        if imported % 50 == 0 {
+            log::info!("Imported {} sessions...", imported);
+        }
+    }
+
+    // Save all sessions
+    manager.save()
+        .map_err(|e| format!("Failed to save sessions: {}", e))?;
+
+    let mut result = format!("Imported {} Claude Code sessions", imported);
+    if !errors.is_empty() {
+        result.push_str(&format!("\nErrors: {}", errors.join(", ")));
+    }
+
+    Ok(result)
+}
+
+/// Sync sessions from Andor Hub server
+#[tauri::command]
+pub async fn sync_from_andor(
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+) -> Result<String, String> {
+    use crate::andor_client::AndorClient;
+
+    let client = AndorClient::new();
+
+    // Check if Andor is running
+    let stats = match client.session_stats() {
+        Ok(s) => s,
+        Err(e) => {
+            return Err(format!("Andor Hub not available: {}. Make sure it's running on http://localhost:8080", e));
+        }
+    };
+
+    log::info!("Andor has {} sessions", stats.total);
+
+    // Fetch all sessions (get completed ones, limit 1000)
+    let response = client.list_sessions(Some("completed"), None, None, Some(1000))
+        .map_err(|e| format!("Failed to list sessions: {}", e))?;
+
+    log::info!("Fetched {} sessions from Andor", response.sessions.len());
+
+    let mut imported = 0;
+    let mut skipped = 0;
+    let existing_sessions = manager.get_session_history();
+    let existing_ids: std::collections::HashSet<String> = existing_sessions
+        .iter()
+        .map(|s| s.id.clone())
+        .collect();
+
+    for andor_session in response.sessions {
+        // Skip if already imported
+        if existing_ids.contains(&andor_session.session_id) {
+            skipped += 1;
+            continue;
+        }
+
+        // Convert Andor session to MarlOS session
+        let marlos_session = crate::sessions::importer::andor_session_to_marlos_session(andor_session)?;
+
+        // Add to history
+        manager.add_session_to_history(marlos_session)
+            .map_err(|e| format!("Failed to add session: {}", e))?;
+        imported += 1;
+
+        if imported % 50 == 0 {
+            log::info!("Imported {} sessions from Andor...", imported);
+        }
+    }
+
+    // Save all sessions
+    manager.save()
+        .map_err(|e| format!("Failed to save sessions: {}", e))?;
+
+    let result = format!(
+        "Synced from Andor Hub: {} new sessions, {} already exists ({} total)",
+        imported,
+        skipped,
+        stats.total
+    );
+
+    Ok(result)
+}
+
+/// Import ChatGPT conversations from export file
+#[tauri::command]
+pub async fn import_chatgpt_export(
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+    semantic_search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+) -> Result<String, String> {
+    use crate::providers::importers::chatgpt::ChatGptImporter;
+
+    // For now, we'll scan the ObjectStore for ChatGPT conversations that were already imported
+    // and convert them to sessions
+    let store = semantic_search.store.read().await;
+
+    // Get total count
+    let total_count = store.count()
+        .map_err(|e| format!("Failed to count objects: {}", e))?;
+
+    // Fetch all objects that might be ChatGPT conversations
+    let all_objects = store.list(total_count.min(10000), 0)
+        .map_err(|e| format!("Failed to list objects: {}", e))?;
+    drop(store);
+
+    // Filter for ChatGPT-related objects
+    let chatgpt_objects: Vec<_> = all_objects.into_iter()
+        .filter(|obj| {
+            let content = obj.content_as_str().unwrap_or("");
+            content.to_lowercase().contains("chatgpt")
+                || content.to_lowercase().contains("gpt-")
+                || obj.tags.iter().any(|t| t.to_lowercase().contains("chatgpt"))
+        })
+        .collect();
+
+    log::info!("Found {} ChatGPT objects", chatgpt_objects.len());
+
+    let mut imported = 0;
+    let existing_sessions = manager.get_session_history();
+    let existing_ids: std::collections::HashSet<String> = existing_sessions
+        .iter()
+        .map(|s| s.id.clone())
+        .collect();
+
+    for obj in chatgpt_objects {
+        // Skip if already imported
+        if existing_ids.contains(&obj.suid.to_string()) {
+            continue;
+        }
+
+        // Convert to session
+        let session = crate::sessions::importer::chatgpt_object_to_session(obj)?;
+
+        // Add to history
+        manager.add_session_to_history(session)
+            .map_err(|e| format!("Failed to add session: {}", e))?;
+        imported += 1;
+    }
+
+    // Save all sessions
+    manager.save()
+        .map_err(|e| format!("Failed to save sessions: {}", e))?;
+
+    Ok(format!("Imported {} ChatGPT conversations from database", imported))
+}
+
+/// Get detailed information about a specific session (for LLM access)
+#[tauri::command]
+pub async fn get_session_details(
+    session_id: String,
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+) -> Result<serde_json::Value, String> {
+    let sessions = manager.get_session_history();
+
+    let session = sessions.iter()
+        .find(|s| s.id == session_id)
+        .ok_or_else(|| format!("Session {} not found", session_id))?;
+
+    // Convert to a more detailed JSON format for LLM consumption
+    Ok(serde_json::json!({
+        "id": session.id,
+        "title": session.title,
+        "description": session.description,
+        "intent": format!("{:?}", session.intent),
+        "started_at": session.started_at.to_rfc3339(),
+        "ended_at": session.ended_at.map(|dt| dt.to_rfc3339()),
+        "activities": session.activities.iter().map(|a| {
+            serde_json::json!({
+                "type": format!("{:?}", a.activity_type),
+                "timestamp": a.timestamp.to_rfc3339(),
+                "duration_secs": a.duration.map(|d| d.as_secs()),
+                "summary": match &a.details {
+                    crate::sessions::ActivityDetails::AiChat { summary, .. } => summary.clone(),
+                    crate::sessions::ActivityDetails::Coding { commit_message, .. } => {
+                        commit_message.clone().unwrap_or_else(|| "Coding work".to_string())
+                    },
+                    _ => "Activity".to_string(),
+                }
+            })
+        }).collect::<Vec<_>>(),
+        "snapshots": session.snapshots.len(),
+        "next_steps": session.next_steps,
+        "tags": session.tags,
+        "project": session.context.project,
+    }))
+}
+
+/// Get sessions by provider (for LLM to query specific AI interactions)
+#[tauri::command]
+pub async fn get_sessions_by_provider(
+    provider: String,
+    limit: Option<usize>,
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut sessions = manager.get_session_history();
+
+    // Filter by provider (check tags and activities)
+    let provider_lower = provider.to_lowercase();
+    let filtered: Vec<_> = sessions.into_iter()
+        .filter(|s| {
+            // Check tags
+            if s.tags.iter().any(|t| t.to_lowercase().contains(&provider_lower)) {
+                return true;
+            }
+            // Check activities
+            s.activities.iter().any(|a| {
+                if let crate::sessions::ActivityDetails::AiChat { provider: p, .. } = &a.details {
+                    p.to_lowercase().contains(&provider_lower)
+                } else {
+                    false
+                }
+            })
+        })
+        .collect();
+
+    // Sort by date
+    let mut sorted = filtered;
+    sorted.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+
+    // Apply limit
+    let limited: Vec<_> = sorted.into_iter()
+        .take(limit.unwrap_or(50))
+        .map(|s| serde_json::json!({
+            "id": s.id,
+            "title": s.title,
+            "date": s.started_at.to_rfc3339(),
+            "activities": s.activities.len(),
+            "tags": s.tags,
+        }))
+        .collect();
+
+    Ok(limited)
+}
+
+/// Recent file entry for the frontend
+#[derive(Serialize)]
+pub struct RecentFile {
+    pub path: String,
+    pub name: String,
+    pub file_type: String,
+    pub last_opened: String, // ISO 8601 timestamp
+}
+
+/// Get recently opened files from session activity history
+#[tauri::command]
+pub async fn get_recent_files(
+    limit: Option<usize>,
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+) -> Result<Vec<RecentFile>, String> {
+    use std::collections::HashMap;
+
+    let sessions = manager.get_session_history();
+    let limit = limit.unwrap_or(10);
+
+    // Collect all document views with their timestamps
+    let mut file_timestamps: HashMap<String, (String, DateTime<Utc>)> = HashMap::new();
+
+    for session in sessions {
+        for activity in &session.activities {
+            if let crate::sessions::ActivityDetails::ViewedDocument { title, path, .. } = &activity.details {
+                // Keep the most recent timestamp for each file
+                let current = file_timestamps.get(path);
+                if current.is_none() || current.unwrap().1 < activity.timestamp {
+                    file_timestamps.insert(path.clone(), (title.clone(), activity.timestamp));
+                }
+            }
+        }
+    }
+
+    // Sort by timestamp (most recent first)
+    let mut files: Vec<_> = file_timestamps.into_iter().collect();
+    files.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+
+    // Take the limit and convert to RecentFile
+    let recent_files: Vec<RecentFile> = files
+        .into_iter()
+        .take(limit)
+        .map(|(path, (title, timestamp))| {
+            // Determine file type from extension
+            let file_type = path
+                .rsplit('.')
+                .next()
+                .map(|ext| ext.to_lowercase())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            // Get the filename from path
+            let name = path
+                .rsplit(|c| c == '/' || c == '\\')
+                .next()
+                .unwrap_or(&title)
+                .to_string();
+
+            RecentFile {
+                path,
+                name,
+                file_type,
+                last_opened: timestamp.to_rfc3339(),
+            }
+        })
+        .collect();
+
+    Ok(recent_files)
+}
+
+/// Active AI coding session entry
+#[derive(Serialize)]
+pub struct ActiveAiSession {
+    pub id: String,
+    pub project_name: String,
+    pub project_path: String,
+    pub slug: Option<String>,
+    pub git_branch: Option<String>,
+    pub last_active: String,
+    pub tool: String, // "claude-code" or "cursor"
+}
+
+/// Get active/recent AI coding sessions from Claude Code and Cursor
+#[tauri::command]
+pub async fn get_active_ai_sessions(
+    limit: Option<usize>,
+    hours_ago: Option<u64>,
+) -> Result<Vec<ActiveAiSession>, String> {
+    use std::fs;
+    use std::io::{BufRead, BufReader};
+    use std::path::PathBuf;
+
+    let limit = limit.unwrap_or(10);
+    let hours_ago = hours_ago.unwrap_or(48); // Default to last 48 hours
+    let cutoff = chrono::Utc::now() - chrono::Duration::hours(hours_ago as i64);
+
+    let mut sessions: Vec<ActiveAiSession> = Vec::new();
+
+    // Get Claude Code sessions from ~/.claude/projects/
+    if let Some(home) = dirs::home_dir() {
+        let claude_projects = home.join(".claude").join("projects");
+
+        if claude_projects.exists() {
+            if let Ok(entries) = fs::read_dir(&claude_projects) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        continue;
+                    }
+
+                    // Find the most recent .jsonl file in this project
+                    let mut latest_session: Option<(PathBuf, std::time::SystemTime, String)> = None;
+
+                    if let Ok(files) = fs::read_dir(&path) {
+                        for file in files.filter_map(|f| f.ok()) {
+                            let file_path = file.path();
+                            if file_path.extension().map(|e| e == "jsonl").unwrap_or(false) {
+                                if let Ok(metadata) = file_path.metadata() {
+                                    if let Ok(modified) = metadata.modified() {
+                                        // Check if this is newer than our current latest
+                                        let dominated = latest_session.as_ref()
+                                            .map(|(_, time, _)| modified > *time)
+                                            .unwrap_or(true);
+
+                                        if dominated {
+                                            // Get session ID from filename
+                                            let session_id = file_path
+                                                .file_stem()
+                                                .and_then(|s| s.to_str())
+                                                .unwrap_or("")
+                                                .to_string();
+                                            latest_session = Some((file_path, modified, session_id));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Process the latest session for this project
+                    if let Some((session_path, modified, session_id)) = latest_session {
+                        // Check if it's within our time window
+                        let modified_datetime: chrono::DateTime<chrono::Utc> = modified.into();
+                        if modified_datetime < cutoff {
+                            continue;
+                        }
+
+                        // Parse first few lines to get session metadata
+                        let mut slug = None;
+                        let mut git_branch = None;
+                        let mut cwd = None;
+
+                        if let Ok(file) = fs::File::open(&session_path) {
+                            let reader = BufReader::new(file);
+                            for line in reader.lines().take(5).filter_map(|l| l.ok()) {
+                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
+                                    if slug.is_none() {
+                                        slug = json.get("slug")
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.to_string());
+                                    }
+                                    if git_branch.is_none() {
+                                        git_branch = json.get("gitBranch")
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.to_string());
+                                    }
+                                    if cwd.is_none() {
+                                        cwd = json.get("cwd")
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.to_string());
+                                    }
+                                }
+                            }
+                        }
+
+                        // Derive project name from folder name or cwd
+                        let project_name = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|n| {
+                                // Convert folder name like "X--ARCH-Software-marlos-rust" to readable form
+                                n.replace("--", "/").replace("-", " ")
+                            })
+                            .unwrap_or_else(|| "Unknown Project".to_string());
+
+                        let project_path = cwd.unwrap_or_else(|| {
+                            path.file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("")
+                                .replace("--", ":\\")
+                                .replace("-", "\\")
+                        });
+
+                        sessions.push(ActiveAiSession {
+                            id: session_id,
+                            project_name,
+                            project_path,
+                            slug,
+                            git_branch,
+                            last_active: modified_datetime.to_rfc3339(),
+                            tool: "claude-code".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort by last_active (most recent first)
+    sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+
+    // Apply limit
+    sessions.truncate(limit);
+
+    Ok(sessions)
+}
+
+/// Open a terminal at the given path, optionally running a command
+#[tauri::command]
+pub async fn open_terminal(
+    path: String,
+    command: Option<String>,
+) -> Result<(), String> {
+    use std::process::Command;
+
+    #[cfg(target_os = "windows")]
+    {
+        // Try Windows Terminal first, fall back to cmd
+        let cmd_to_run = command.unwrap_or_else(|| "claude".to_string());
+
+        // Check if Windows Terminal is available
+        let wt_result = Command::new("where")
+            .arg("wt")
+            .output();
+
+        let result = if wt_result.map(|o| o.status.success()).unwrap_or(false) {
+            // Use Windows Terminal
+            Command::new("wt")
+                .args(["-d", &path, "cmd", "/k", &cmd_to_run])
+                .spawn()
+        } else {
+            // Fall back to cmd
+            Command::new("cmd")
+                .args(["/c", "start", "cmd", "/k", &format!("cd /d \"{}\" && {}", path, cmd_to_run)])
+                .spawn()
+        };
+
+        result.map_err(|e| format!("Failed to open terminal: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let cmd_to_run = command.unwrap_or_else(|| "claude".to_string());
+        let script = format!(
+            r#"tell application "Terminal"
+                do script "cd '{}' && {}"
+                activate
+            end tell"#,
+            path, cmd_to_run
+        );
+
+        Command::new("osascript")
+            .args(["-e", &script])
+            .spawn()
+            .map_err(|e| format!("Failed to open terminal: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let cmd_to_run = command.unwrap_or_else(|| "claude".to_string());
+        // Try common terminal emulators
+        let terminals = ["gnome-terminal", "konsole", "xterm", "alacritty"];
+        let mut opened = false;
+
+        for term in &terminals {
+            let result = match *term {
+                "gnome-terminal" => Command::new(term)
+                    .args(["--working-directory", &path, "--", "bash", "-c", &format!("{}; exec bash", cmd_to_run)])
+                    .spawn(),
+                "konsole" => Command::new(term)
+                    .args(["--workdir", &path, "-e", "bash", "-c", &format!("{}; exec bash", cmd_to_run)])
+                    .spawn(),
+                _ => Command::new(term)
+                    .args(["-e", "bash", "-c", &format!("cd '{}' && {}; exec bash", path, cmd_to_run)])
+                    .spawn(),
+            };
+
+            if result.is_ok() {
+                opened = true;
+                break;
+            }
+        }
+
+        if !opened {
+            return Err("No supported terminal emulator found".to_string());
+        }
+    }
+
+    Ok(())
+}
+
+/// Estimate the character size of a session when formatted
+/// This helps with smart chunking for LLM processing
+fn estimate_session_size(session: &crate::sessions::Session) -> usize {
+    // Base size for metadata (date, title, project, intent)
+    let mut size = 200;
+
+    // Add size for activities
+    for activity in &session.activities {
+        size += match activity.activity_type {
+            crate::sessions::ActivityType::AiChat => 100,
+            crate::sessions::ActivityType::Coding => 80,
+            crate::sessions::ActivityType::DocumentView => 60,
+            crate::sessions::ActivityType::NoteTaking => 150,
+            crate::sessions::ActivityType::WebResearch => 100,
+            crate::sessions::ActivityType::Writing => 80,
+            crate::sessions::ActivityType::Thinking => 120,
+            crate::sessions::ActivityType::Other => 50,
+        };
+    }
+
+    // Add description size if present
+    if let Some(ref desc) = session.description {
+        size += desc.len();
+    }
+
+    // Add next steps size
+    for step in &session.next_steps {
+        size += step.len() + 10;
+    }
+
+    size
+}
+
+/// Get recent session context for LLM awareness
+/// Returns a summary of recent work across all sessions
+/// Uses hierarchical LLM summarization to condense large amounts of session data
+#[tauri::command]
+pub async fn get_recent_context(
+    days: Option<usize>,
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+    ai_manager: tauri::State<'_, std::sync::Arc<crate::ai::AiManager>>,
+) -> Result<String, String> {
+    use crate::llm_tasks::{TaskRunner, SummarizeSessionsTask, SummarizeSummariesTask};
+
+    let days = days.unwrap_or(7);
+    let max_target_length = 2000; // Target ~500 tokens
+
+    // Get recent sessions
+    let cutoff_date = chrono::Utc::now() - chrono::Duration::days(days as i64);
+    let sessions = manager.get_session_history();
+
+    let recent: Vec<&crate::sessions::Session> = sessions.iter()
+        .filter(|s| s.started_at > cutoff_date)
+        .collect();
+
+    if recent.is_empty() {
+        return Ok(format!("No sessions in the last {} days", days));
+    }
+
+    // If we have a small number of sessions, use simple formatting
+    if recent.len() <= 10 {
+        let formatted = crate::sessions::SessionManager::format_sessions_for_llm(&recent, days);
+        if formatted.chars().count() <= max_target_length {
+            return Ok(formatted);
+        }
+    }
+
+    // Hierarchical summarization:
+    // 1. Chunk sessions into groups based on actual content size
+    // 2. Summarize each chunk with LLM
+    // 3. Combine summaries and summarize again if needed
+
+    // Estimate session sizes and create smart chunks
+    const MAX_CHARS_PER_CHUNK: usize = 4000; // Target ~1000 tokens per chunk
+    let mut chunks: Vec<Vec<&crate::sessions::Session>> = Vec::new();
+    let mut current_chunk: Vec<&crate::sessions::Session> = Vec::new();
+    let mut current_chunk_size = 0;
+
+    for session in &recent {
+        // Estimate this session's formatted size
+        let estimated_size = estimate_session_size(session);
+
+        // If adding this session would exceed the limit and we already have some sessions
+        if current_chunk_size + estimated_size > MAX_CHARS_PER_CHUNK && !current_chunk.is_empty() {
+            chunks.push(current_chunk);
+            current_chunk = Vec::new();
+            current_chunk_size = 0;
+        }
+
+        current_chunk.push(session);
+        current_chunk_size += estimated_size;
+    }
+
+    // Don't forget the last chunk
+    if !current_chunk.is_empty() {
+        chunks.push(current_chunk);
+    }
+
+    log::info!("Smart chunking: {} sessions -> {} chunks (avg {} sessions/chunk)",
+        recent.len(), chunks.len(), recent.len() / chunks.len().max(1));
+
+    let mut chunk_summaries = Vec::new();
+
+    for chunk in chunks {
+        // Format this chunk for the LLM
+        let chunk_text = crate::sessions::SessionManager::format_sessions_for_llm(&chunk, days);
+
+        log::debug!("Processing chunk: {} sessions, {} chars", chunk.len(), chunk_text.chars().count());
+
+        // Ask LLM to summarize this chunk
+        let task = SummarizeSessionsTask::new(chunk_text.clone(), days, recent.len());
+        let ctx = crate::llm_tasks::TaskContext::new().with_max_tokens(500);
+        match TaskRunner::new(&ai_manager)
+            .with_context(ctx)
+            .execute(task)
+            .await
+        {
+            Ok(summary) => {
+                chunk_summaries.push(format!(
+                    "Summary:\n{}\nProjects: {}\nTopics: {}\nActivities: {}",
+                    summary.summary,
+                    summary.key_projects.join(", "),
+                    summary.key_topics.join(", "),
+                    summary.activity_summary
+                ));
+            }
+            Err(e) => {
+                log::warn!("LLM summarization failed for chunk: {}", e);
+                // Fall back to raw text for this chunk
+                chunk_summaries.push(chunk_text);
+            }
+        }
+    }
+
+    // Combine all summaries
+    let combined = chunk_summaries.join("\n\n---\n\n");
+
+    // If combined is still too long, summarize the summaries
+    if combined.chars().count() > max_target_length && chunk_summaries.len() > 1 {
+        let task = SummarizeSummariesTask::new(combined.clone());
+        let ctx = crate::llm_tasks::TaskContext::new().with_max_tokens(300);
+        match TaskRunner::new(&ai_manager)
+            .with_context(ctx)
+            .execute(task)
+            .await
+        {
+            Ok(final_summary) => {
+                return Ok(format!(
+                    "Recent Work ({} days, {} sessions):\n\nOverview: {}\n\nProjects: {}\n\nMain Themes: {}",
+                    days,
+                    recent.len(),
+                    final_summary.overview,
+                    final_summary.projects_worked_on.join(", "),
+                    final_summary.main_themes.join(", ")
+                ));
+            }
+            Err(e) => {
+                log::warn!("LLM summary-of-summaries failed: {}", e);
+                // Fall back to combined summaries
+            }
+        }
+    }
+
+    Ok(combined)
+}
+
+/// Get vector-based analysis of sessions (no LLM needed)
+/// Much faster than LLM analysis and scales to entire database
+#[tauri::command]
+pub async fn get_session_vector_analysis(
+    days: Option<usize>,
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+) -> Result<String, String> {
+    let days = days.unwrap_or(7);
+
+    let analysis = manager.get_vector_analysis(days)
+        .map_err(|e| format!("Failed to analyze sessions: {}", e))?;
+
+    Ok(analysis.format())
+}
+
+
+/// Import existing AI conversations as Sessions
+#[tauri::command]
+pub async fn import_conversations_as_sessions(
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+    semantic_search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+) -> Result<String, String> {
+    use crate::sessions::importer::import_conversations_as_sessions;
+
+    // Get ALL objects, not just first 1000
+    let store = semantic_search.store.read().await;
+
+    // First get total count
+    let total_count = store.count()
+        .map_err(|e| format!("Failed to count objects: {}", e))?;
+
+    log::info!("Total objects in database: {}", total_count);
+
+    // Now fetch all objects in batches
+    let mut all_objects = Vec::new();
+    let mut offset = 0;
+    let batch_size = 1000;
+
+    loop {
+        let batch = store.list(batch_size, offset)
+            .map_err(|e| format!("Failed to list objects: {}", e))?;
+
+        if batch.is_empty() {
+            break;
+        }
+
+        all_objects.extend(batch);
+        offset += batch_size;
+
+        log::info!("Fetched {} objects so far...", all_objects.len());
+
+        if all_objects.len() >= total_count {
+            break;
+        }
+    }
+
+    drop(store); // Release lock before async operation
+
+    log::info!("Total objects loaded: {}", all_objects.len());
+
+    let imported = import_conversations_as_sessions(&manager, all_objects).await
+        .map_err(|e| format!("Failed to import: {}", e))?;
+
+    Ok(format!("Imported {} conversations as sessions", imported))
+}
+
+// ============================================================================
+// Vector Database Query UI Commands
+// ============================================================================
+
+/// Helper function to format ContentType as string
+fn format_content_type(ct: &crate::semantic_object::ContentType) -> String {
+    match ct {
+        crate::semantic_object::ContentType::Text => "Text".to_string(),
+        crate::semantic_object::ContentType::Markdown => "Markdown".to_string(),
+        crate::semantic_object::ContentType::Code { language } => format!("Code({})", language),
+        crate::semantic_object::ContentType::Json => "Json".to_string(),
+        crate::semantic_object::ContentType::Binary { mime } => format!("Binary({})", mime),
+        crate::semantic_object::ContentType::Structured { schema } => format!("Structured({})", schema),
+        crate::semantic_object::ContentType::Unknown => "Unknown".to_string(),
+    }
+}
+
+/// Helper function to format SecurityTier as string
+fn format_security_tier(st: &crate::memory::SecurityTier) -> String {
+    match st {
+        crate::memory::SecurityTier::Open => "Open".to_string(),
+        crate::memory::SecurityTier::Guarded => "Guarded".to_string(),
+        crate::memory::SecurityTier::Sealed => "Sealed".to_string(),
+    }
+}
+
+/// Vector search result with similarity score
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VectorSearchResult {
+    pub suid: String,
+    pub title: Option<String>,
+    pub content_type: String,
+    pub similarity: f32,
+    pub preview: String,
+    pub tags: Vec<String>,
+    pub security_tier: String,
+    pub path: Option<String>,
+    pub created_at: String,
+}
+
+/// A cluster of similar objects
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VectorCluster {
+    pub id: String,
+    pub theme: String,
+    pub objects: Vec<VectorSearchResult>,
+    pub avg_similarity: f32,
+}
+
+/// Index all sessions into the vector database
+/// Only indexes new or modified sessions, skips already-indexed ones
+/// Uses semantic chunks directly for embedding (no AI summaries during indexing)
+#[tauri::command]
+pub async fn index_sessions_to_vector_db(
+    manager: tauri::State<'_, crate::sessions::SessionManager>,
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+) -> Result<String, String> {
+    use crate::sessions::vector_bridge;
+
+    // Get all sessions from history
+    let sessions = manager.get_session_history();
+    log::info!("Checking {} sessions for vector indexing...", sessions.len());
+
+    // Get existing session chunks to avoid re-indexing
+    let existing_session_chunks = {
+        let store = search.store.read().await;
+        let all_objects = store.list(10000, 0)
+            .map_err(|e| format!("Failed to list objects: {}", e))?;
+
+        // Extract session IDs from existing chunks
+        all_objects.into_iter()
+            .filter(|obj| obj.tags.contains(&"kind:session-chunk".to_string()))
+            .filter_map(|obj| {
+                obj.tags.iter()
+                    .find(|t| t.starts_with("session:"))
+                    .map(|t| t.strip_prefix("session:").unwrap_or("").to_string())
+            })
+            .collect::<std::collections::HashSet<_>>()
+    };
+
+    let mut indexed_count = 0;
+    let mut skipped_count = 0;
+    let mut chunk_count = 0;
+
+    for session in sessions {
+        // Skip if already indexed
+        if existing_session_chunks.contains(&session.id) {
+            skipped_count += 1;
+            continue;
+        }
+
+        // Chunk the session into Q&A pairs and topic sections
+        let chunks = vector_bridge::chunk_session_for_vectors(&session);
+
+        if chunks.is_empty() {
+            log::debug!("Session {} has no indexable content", session.id);
+            continue;
+        }
+
+        let num_chunks = chunks.len();
+
+        for chunk in chunks {
+            // Get the full content
+            let full_content = chunk.to_text();
+
+            // Create semantic object from chunk (using full content directly)
+            let mut obj = crate::semantic_object::SemanticObject::new(
+                full_content.as_bytes().to_vec(),
+                crate::semantic_object::ContentType::Structured {
+                    schema: "claude-qa-chunk".to_string()
+                }
+            );
+
+            obj.name = Some(chunk.title());
+            obj.tags = vec![
+                "kind:session-chunk".to_string(),
+                "claude-code".to_string(),
+                chunk.chunk_type.to_string(),
+                format!("session:{}", session.id),
+            ];
+            obj.tags.extend(session.tags.iter().cloned());
+            obj.tags.extend(session.context.project.iter().map(|p| format!("project:{}", p)));
+
+            // Store metadata including full content
+            obj.summary = Some(serde_json::json!({
+                "session_id": session.id,
+                "session_title": session.title,
+                "chunk_type": chunk.chunk_type.to_string(),
+                "content": full_content,
+                "metadata": chunk.metadata.clone(),
+            }).to_string());
+
+            // Store with embedding
+            search.store(&obj).await
+                .map_err(|e| format!("Failed to store chunk: {}", e))?;
+
+            chunk_count += 1;
+        }
+
+        indexed_count += 1;
+        log::debug!("Indexed session: {} ({} chunks)", session.title, num_chunks);
+    }
+
+    let message = if indexed_count == 0 && skipped_count > 0 {
+        format!("All {} sessions already indexed", skipped_count)
+    } else if skipped_count > 0 {
+        format!("Indexed {} new sessions ({} chunks), skipped {} already indexed",
+            indexed_count, chunk_count, skipped_count)
+    } else {
+        format!("Indexed {} sessions into {} chunks", indexed_count, chunk_count)
+    };
+
+    log::info!("Session indexing complete: {}", message);
+    Ok(message)
+}
+
+/// Vector search across all objects with similarity scores
+#[tauri::command]
+pub async fn vector_search(
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    query: String,
+    limit: Option<usize>,
+    min_score: Option<f32>,
+    content_type: Option<String>,
+    security_tier: Option<String>,
+) -> Result<Vec<VectorSearchResult>, String> {
+    use crate::semantic_search::SearchOptions;
+
+    let options = SearchOptions {
+        limit: limit.unwrap_or(50),
+        min_score: min_score.unwrap_or(0.3),
+        include_keyword: true,
+        ..Default::default()
+    };
+
+    let hits = search.search(&query, options).await
+        .map_err(|e| format!("Search failed: {}", e))?;
+
+    // Convert to VectorSearchResult
+    let mut results: Vec<VectorSearchResult> = hits.into_iter()
+        .filter(|hit| {
+            // Filter by content type if specified
+            if let Some(ref ct) = content_type {
+                if !format_content_type(&hit.object.content_type).contains(ct) {
+                    return false;
+                }
+            }
+            // Filter by security tier if specified
+            if let Some(ref st) = security_tier {
+                if format_security_tier(&hit.object.security_tier) != *st {
+                    return false;
+                }
+            }
+            true
+        })
+        .map(|hit| {
+            let preview = hit.object.content_as_str()
+                .unwrap_or_default()
+                .chars()
+                .take(200)
+                .collect::<String>();
+
+            VectorSearchResult {
+                suid: hit.object.suid.to_string(),
+                title: hit.object.name.clone(),
+                content_type: format_content_type(&hit.object.content_type),
+                similarity: hit.score,
+                preview,
+                tags: hit.object.tags.clone(),
+                security_tier: format_security_tier(&hit.object.security_tier),
+                path: hit.object.path.clone(),
+                created_at: hit.object.created_at.to_rfc3339(),
+            }
+        })
+        .collect();
+
+    // Sort by similarity descending
+    results.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
+
+    Ok(results)
+}
+
+/// Clear all session chunks from the vector database for a fresh start
+#[tauri::command]
+pub async fn clear_vector_database(
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+) -> Result<String, String> {
+    let store = search.store.write().await;
+
+    // Get all objects with session-chunk tag
+    let all_objects = store.list(10000, 0)
+        .map_err(|e| format!("Failed to list objects: {}", e))?;
+
+    let session_chunks: Vec<_> = all_objects.into_iter()
+        .filter(|obj| obj.tags.contains(&"kind:session-chunk".to_string()))
+        .collect();
+
+    let count = session_chunks.len();
+
+    if count == 0 {
+        return Ok("Vector database is already clean (no session chunks found)".to_string());
+    }
+
+    // Delete each session chunk
+    let mut deleted = 0;
+    for obj in session_chunks {
+        match store.delete(&obj.suid) {
+            Ok(true) => deleted += 1,
+            Ok(false) => {}, // Didn't exist
+            Err(e) => {
+                log::warn!("Failed to delete object {}: {}", obj.suid, e);
+            }
+        }
+    }
+
+    Ok(format!("Cleared {} session chunks from vector database", deleted))
+}
+
+/// Find objects similar to a specific object
+#[tauri::command]
+pub async fn find_similar(
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    suid: String,
+    limit: Option<usize>,
+) -> Result<Vec<VectorSearchResult>, String> {
+    let parsed_suid = crate::semantic_object::Suid::parse(&suid)
+        .map_err(|e| format!("Invalid SUID: {}", e))?;
+
+    let hits = search.find_similar(&parsed_suid, limit.unwrap_or(20)).await
+        .map_err(|e| format!("Find similar failed: {}", e))?;
+
+    let results: Vec<VectorSearchResult> = hits.into_iter()
+        .map(|hit| {
+            let preview = hit.object.content_as_str()
+                .unwrap_or_default()
+                .chars()
+                .take(200)
+                .collect::<String>();
+
+            VectorSearchResult {
+                suid: hit.object.suid.to_string(),
+                title: hit.object.name.clone(),
+                content_type: format_content_type(&hit.object.content_type),
+                similarity: hit.score,
+                preview,
+                tags: hit.object.tags.clone(),
+                security_tier: format_security_tier(&hit.object.security_tier),
+                path: hit.object.path.clone(),
+                created_at: hit.object.created_at.to_rfc3339(),
+            }
+        })
+        .collect();
+
+    Ok(results)
+}
+
+/// Get vector clusters (grouping similar objects)
+#[tauri::command]
+pub async fn get_vector_clusters(
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    min_similarity: Option<f32>,
+    max_clusters: Option<usize>,
+) -> Result<Vec<VectorCluster>, String> {
+    use crate::semantic_search::SearchOptions;
+
+    let min_sim = min_similarity.unwrap_or(0.7);
+    let max_clusters = max_clusters.unwrap_or(10);
+
+    // Get all objects with embeddings
+    let all_objects = {
+        let store = search.store.read().await;
+        store.get_objects_with_embeddings(crate::memory::SecurityTier::Sealed)
+            .map_err(|e| format!("Failed to get objects: {}", e))?
+    };
+
+    if all_objects.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Simple clustering: group by similarity using a greedy algorithm
+    let mut clusters: Vec<VectorCluster> = Vec::new();
+    let mut clustered_suids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for (obj, embedding) in &all_objects {
+        if clustered_suids.contains(&obj.suid.to_string()) {
+            continue;
+        }
+
+        if clusters.len() >= max_clusters {
+            break;
+        }
+
+        // Find similar objects to form a cluster
+        let mut cluster_objects = Vec::new();
+
+        for (other_obj, other_embedding) in &all_objects {
+            if clustered_suids.contains(&other_obj.suid.to_string()) {
+                continue;
+            }
+
+            let similarity = crate::embeddings::cosine_similarity(embedding, other_embedding);
+
+            if similarity >= min_sim {
+                let preview = other_obj.content_as_str()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(200)
+                    .collect::<String>();
+
+                cluster_objects.push(VectorSearchResult {
+                    suid: other_obj.suid.to_string(),
+                    title: other_obj.name.clone(),
+                    content_type: format_content_type(&other_obj.content_type),
+                    similarity,
+                    preview,
+                    tags: other_obj.tags.clone(),
+                    security_tier: format_security_tier(&other_obj.security_tier),
+                    path: other_obj.path.clone(),
+                    created_at: other_obj.created_at.to_rfc3339(),
+                });
+
+                clustered_suids.insert(other_obj.suid.to_string());
+            }
+        }
+
+        if !cluster_objects.is_empty() {
+            let avg_similarity: f32 = cluster_objects.iter()
+                .map(|o| o.similarity)
+                .sum::<f32>() / cluster_objects.len() as f32;
+
+            // Derive theme from tags and titles
+            let theme = derive_cluster_theme(&cluster_objects);
+
+            clusters.push(VectorCluster {
+                id: format!("cluster-{}", clusters.len()),
+                theme,
+                objects: cluster_objects,
+                avg_similarity,
+            });
+        }
+    }
+
+    Ok(clusters)
+}
+
+/// Derive a theme name from cluster contents
+fn derive_cluster_theme(objects: &[VectorSearchResult]) -> String {
+    // Count tag prefixes (kind:*, project:*, etc.)
+    let mut tag_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    for obj in objects {
+        for tag in &obj.tags {
+            if let Some(prefix) = tag.split(':').next() {
+                *tag_counts.entry(prefix.to_string()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // Get most common tag prefix
+    let most_common = tag_counts.into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(tag, _)| tag)
+        .unwrap_or_else(|| "mixed".to_string());
+
+    match most_common.as_str() {
+        "kind" => {
+            // Look at the kind value
+            for obj in objects {
+                for tag in &obj.tags {
+                    if tag.starts_with("kind:") {
+                        return tag.replace("kind:", "").replace('-', " ");
+                    }
+                }
+            }
+            "Mixed Content".to_string()
+        }
+        "project" => {
+            // Look at project tags
+            for obj in objects {
+                for tag in &obj.tags {
+                    if tag.starts_with("project:") {
+                        return tag.replace("project:", "");
+                    }
+                }
+            }
+            "Project Group".to_string()
+        }
+        _ => format!("{} Cluster", capitalize(&most_common)),
+    }
+}
+
+fn capitalize(s: &str) -> String {
+    s.chars()
+        .next()
+        .map(|c| c.to_uppercase().collect::<String>() + &s[c.len_utf8()..])
+        .unwrap_or_else(|| s.to_string())
+}
+
+/// Get all objects with embeddings (bypasses semantic search)
+#[tauri::command]
+pub async fn get_all_vector_objects(
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<Vec<VectorSearchResult>, String> {
+    let limit = limit.unwrap_or(100);
+    let offset = offset.unwrap_or(0);
+
+    // Get all objects with embeddings
+    let all_objects = {
+        let store = search.store.read().await;
+        store.get_objects_with_embeddings(crate::memory::SecurityTier::Sealed)
+            .map_err(|e| format!("Failed to get objects: {}", e))?
+    };
+
+    // Paginate
+    let paginated: Vec<_> = all_objects.into_iter()
+        .skip(offset)
+        .take(limit)
+        .collect();
+
+    // Convert to VectorSearchResult (similarity = 1.0 since it's exact match)
+    let results: Vec<VectorSearchResult> = paginated.into_iter()
+        .map(|(obj, _embedding)| {
+            let preview = obj.content_as_str()
+                .unwrap_or_default()
+                .chars()
+                .take(200)
+                .collect::<String>();
+
+            VectorSearchResult {
+                suid: obj.suid.to_string(),
+                title: obj.name.clone(),
+                content_type: format_content_type(&obj.content_type),
+                similarity: 1.0, // Perfect match since it's the actual object
+                preview,
+                tags: obj.tags.clone(),
+                security_tier: format_security_tier(&obj.security_tier),
+                path: obj.path.clone(),
+                created_at: obj.created_at.to_rfc3339(),
+            }
+        })
+        .collect();
+
+    Ok(results)
+}
+
+// ============================================================================
+// Image Viewer Commands
+// ============================================================================
+
+/// Get image info (metadata without loading full image)
+#[tauri::command]
+pub async fn get_image_info(path: String) -> Result<ImageInfo, String> {
+    let manager = ImageManager::new();
+    let path = std::path::Path::new(&path);
+
+    manager.get_info(path)
+        .map_err(|e| format!("Failed to get image info: {}", e))
+}
+
+/// Render image to base64 PNG for display
+#[tauri::command]
+pub async fn render_image(
+    path: String,
+    max_dimension: Option<u32>,
+    exposure: Option<f32>,
+    gamma: Option<f32>,
+) -> Result<String, String> {
+    let mut manager = ImageManager::new();
+
+    // Set custom tone mapping if provided
+    if exposure.is_some() || gamma.is_some() {
+        manager.set_tone_map_options(ToneMapOptions {
+            exposure: exposure.unwrap_or(0.0),
+            gamma: gamma.unwrap_or(2.2),
+            reinhard: true,
+            highlight_compression: 1.0,
+        });
+    }
+
+    let path = std::path::Path::new(&path);
+    let base64 = manager.render_to_base64(path, max_dimension)
+        .map_err(|e| format!("Failed to render image: {}", e))?;
+
+    Ok(format!("data:image/png;base64,{}", base64))
+}
+
+/// Get list of supported image formats
+#[tauri::command]
+pub fn get_supported_image_formats() -> Vec<String> {
+    crate::images::supported_extensions()
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Check if a file is a supported image
+#[tauri::command]
+pub fn is_supported_image(path: String) -> bool {
+    crate::images::is_supported(std::path::Path::new(&path))
 }

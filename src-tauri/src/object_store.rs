@@ -368,6 +368,55 @@ impl ObjectStore {
         Ok(objects)
     }
 
+    /// List objects containing a specific tag (more efficient than list + filter)
+    pub fn list_by_tag(&self, tag: &str, limit: usize) -> Result<Vec<SemanticObject>> {
+        let conn = self.conn.lock().map_err(|_| ObjectStoreError::Lock)?;
+
+        // Use SQL LIKE to filter by tag in the JSON array
+        // Tags are stored as JSON array, e.g., '["kind:source", "user_tag:foo"]'
+        let pattern = format!("%\"{}%", tag);
+
+        let mut stmt = conn.prepare(
+            "SELECT suid, name, path, content, content_type, content_hash, size_bytes,
+                    tags, summary, security_tier, created_at, modified_at, version, metadata
+             FROM objects
+             WHERE tags LIKE ?1
+             ORDER BY created_at DESC
+             LIMIT ?2"
+        )?;
+
+        let rows = stmt.query_map(params![pattern, limit as i64], |row| {
+            Ok(ObjectRow {
+                suid: row.get(0)?,
+                name: row.get(1)?,
+                path: row.get(2)?,
+                content: row.get(3)?,
+                content_type: row.get(4)?,
+                content_hash: row.get(5)?,
+                size_bytes: row.get(6)?,
+                tags: row.get(7)?,
+                summary: row.get(8)?,
+                security_tier: row.get(9)?,
+                created_at: row.get(10)?,
+                modified_at: row.get(11)?,
+                version: row.get(12)?,
+                metadata: row.get(13)?,
+            })
+        })?;
+
+        let mut objects = Vec::new();
+        for row in rows {
+            let row = row?;
+            let suid = Suid::parse(&row.suid)
+                .map_err(|_| ObjectStoreError::InvalidSuid(row.suid.clone()))?;
+            let mut obj = self.row_to_object(row)?;
+            obj.relations = self.get_relations_internal(&conn, &suid)?;
+            objects.push(obj);
+        }
+
+        Ok(objects)
+    }
+
     /// Search objects by text (keyword search)
     pub fn search_text(&self, query: &str, limit: usize) -> Result<Vec<SemanticObject>> {
         let conn = self.conn.lock().map_err(|_| ObjectStoreError::Lock)?;
