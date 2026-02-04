@@ -89,6 +89,13 @@ const CITATION_STYLES = [
   { value: "bibtex", label: "BibTeX" },
 ];
 
+// Paper view for filtering
+interface PaperInfo {
+  id: string;
+  title: string;
+  source_ids: string[];
+}
+
 interface ResearchHubProps {
   onClose?: () => void;
 }
@@ -101,6 +108,8 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
   const [selectedSources, setSelectedSources] = createSignal<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = createSignal("");
   const [tagFilter, setTagFilter] = createSignal("");
+  const [paperFilter, setPaperFilter] = createSignal<string>(""); // Paper ID to filter by
+  const [papers, setPapers] = createSignal<PaperInfo[]>([]); // All papers for filter dropdown
   const [isLoading, setIsLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [successMsg, setSuccessMsg] = createSignal<string | null>(null);
@@ -138,9 +147,92 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
   const [searchMode, setSearchMode] = createSignal<SearchMode>("web"); // web or academic
   const [mcpResult, setMcpResult] = createSignal<McpResearchResult | null>(null);
 
+  // Tag editing state
+  const [newTagInput, setNewTagInput] = createSignal("");
+
+  // Time filter state
+  const [timeFilter, setTimeFilter] = createSignal<string>("all"); // all, 7d, 30d, 90d
+
   onMount(() => {
     loadSources();
+    loadPapers();
   });
+
+  // Load all papers for the filter dropdown
+  const loadPapers = async () => {
+    try {
+      const result = await invoke<any[]>("paper_list", { limit: 100 });
+      // Load full paper details to get source_ids
+      const paperInfos: PaperInfo[] = [];
+      for (const p of result) {
+        try {
+          const full = await invoke<any>("paper_get", { paperId: p.id });
+          paperInfos.push({
+            id: full.id,
+            title: full.title,
+            source_ids: full.source_ids || [],
+          });
+        } catch {
+          // Skip papers that fail to load
+        }
+      }
+      setPapers(paperInfos);
+    } catch (e) {
+      console.error("Failed to load papers:", e);
+    }
+  };
+
+  // Get papers that contain a specific source
+  const getPapersForSource = (sourceId: string): PaperInfo[] => {
+    return papers().filter(p => p.source_ids.includes(sourceId));
+  };
+
+  // Get filtered sources based on paper filter and time filter
+  const getFilteredSources = (): SourceView[] => {
+    let filtered = sources();
+
+    // Apply time filter
+    const time = timeFilter();
+    if (time !== "all") {
+      const now = new Date();
+      const cutoff = new Date();
+      if (time === "7d") cutoff.setDate(now.getDate() - 7);
+      else if (time === "30d") cutoff.setDate(now.getDate() - 30);
+      else if (time === "90d") cutoff.setDate(now.getDate() - 90);
+
+      filtered = filtered.filter(s => new Date(s.accessed_date) >= cutoff);
+    }
+
+    // Apply paper filter
+    const filter = paperFilter();
+    if (!filter) return filtered;
+
+    // Show sources not assigned to any paper
+    if (filter === "__unassigned__") {
+      const allAssigned = new Set(papers().flatMap(p => p.source_ids));
+      return filtered.filter(s => !allAssigned.has(s.id));
+    }
+
+    const paper = papers().find(p => p.id === filter);
+    if (!paper) return filtered;
+
+    return filtered.filter(s => paper.source_ids.includes(s.id));
+  };
+
+  // Format relative time (e.g., "2 days ago", "3 weeks ago")
+  const formatRelativeTime = (dateStr: string): string => {
+    const date = new Date(dateStr);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+    if (diffDays === 0) return "Today";
+    if (diffDays === 1) return "Yesterday";
+    if (diffDays < 7) return `${diffDays} days ago`;
+    if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks ago`;
+    if (diffDays < 365) return `${Math.floor(diffDays / 30)} months ago`;
+    return `${Math.floor(diffDays / 365)} years ago`;
+  };
 
   const loadSources = async () => {
     setIsLoading(true);
@@ -290,6 +382,53 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
       setSuccessMsg("Summary generated");
     } catch (e) {
       setError(`Failed to summarize: ${e}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const addTag = async (tag: string) => {
+    const source = selectedSource();
+    if (!source || !tag.trim()) return;
+
+    const newTag = tag.trim().toLowerCase();
+    if (source.tags.includes(newTag)) {
+      setError("Tag already exists");
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const updatedSource = await invoke<SourceView>("research_update_tags", {
+        sourceId: source.id,
+        tags: [...source.tags, newTag],
+      });
+      setSelectedSource(updatedSource);
+      setNewTagInput("");
+      setSuccessMsg("Tag added");
+      loadSources(); // Refresh list
+    } catch (e) {
+      setError(`Failed to add tag: ${e}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const removeTag = async (tagToRemove: string) => {
+    const source = selectedSource();
+    if (!source) return;
+
+    setIsLoading(true);
+    try {
+      const updatedSource = await invoke<SourceView>("research_update_tags", {
+        sourceId: source.id,
+        tags: source.tags.filter(t => t !== tagToRemove),
+      });
+      setSelectedSource(updatedSource);
+      setSuccessMsg("Tag removed");
+      loadSources(); // Refresh list
+    } catch (e) {
+      setError(`Failed to remove tag: ${e}`);
     } finally {
       setIsLoading(false);
     }
@@ -612,16 +751,59 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
               </button>
             </div>
 
-            {/* Tag filter */}
-            <div class="tag-filter">
-              <input
-                type="text"
-                placeholder="Filter by tag..."
-                value={tagFilter()}
-                onInput={(e) => setTagFilter(e.currentTarget.value)}
-                onKeyPress={(e) => e.key === "Enter" && loadSources()}
-              />
+            {/* Filters row */}
+            <div class="filters-row">
+              <div class="tag-filter">
+                <input
+                  type="text"
+                  placeholder="Filter by tag..."
+                  value={tagFilter()}
+                  onInput={(e) => setTagFilter(e.currentTarget.value)}
+                  onKeyPress={(e) => e.key === "Enter" && loadSources()}
+                />
+              </div>
+              <div class="time-filter">
+                <select
+                  value={timeFilter()}
+                  onChange={(e) => setTimeFilter(e.currentTarget.value)}
+                >
+                  <option value="all">All time</option>
+                  <option value="7d">Last 7 days</option>
+                  <option value="30d">Last 30 days</option>
+                  <option value="90d">Last 90 days</option>
+                </select>
+              </div>
+              <div class="paper-filter">
+                <select
+                  value={paperFilter()}
+                  onChange={(e) => setPaperFilter(e.currentTarget.value)}
+                >
+                  <option value="">All papers</option>
+                  <option value="__unassigned__">Unassigned</option>
+                  <For each={papers()}>
+                    {(paper) => (
+                      <option value={paper.id}>
+                        {paper.title} ({paper.source_ids.length})
+                      </option>
+                    )}
+                  </For>
+                </select>
+              </div>
             </div>
+
+            {/* Filter summary */}
+            <Show when={paperFilter()}>
+              <div class="filter-summary">
+                <span class="filter-info">
+                  {paperFilter() === "__unassigned__"
+                    ? `Showing ${getFilteredSources().length} unassigned sources`
+                    : `Showing ${getFilteredSources().length} sources in "${papers().find(p => p.id === paperFilter())?.title || 'Unknown'}"`}
+                </span>
+                <button class="btn-clear-filter" onClick={() => setPaperFilter("")}>
+                  Clear filter
+                </button>
+              </div>
+            </Show>
 
             {/* Source list */}
             <div class="source-list">
@@ -629,7 +811,16 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
                 <div class="loading-indicator">Loading...</div>
               </Show>
 
-              <Show when={!isLoading() && sources().length === 0}>
+              <Show when={!isLoading() && getFilteredSources().length === 0 && paperFilter()}>
+                <div class="empty-state">
+                  <p>No sources match this filter</p>
+                  <button class="btn-secondary" onClick={() => setPaperFilter("")}>
+                    Clear filter
+                  </button>
+                </div>
+              </Show>
+
+              <Show when={!isLoading() && sources().length === 0 && !paperFilter()}>
                 <div class="empty-state">
                   <p>No sources yet</p>
                   <button class="btn-primary" onClick={() => setViewMode("add")}>
@@ -638,7 +829,7 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
                 </div>
               </Show>
 
-              <For each={sources()}>
+              <For each={getFilteredSources()}>
                 {(source) => (
                   <div class="source-item">
                     <input
@@ -659,7 +850,29 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
                         <Show when={source.published_date}>
                           <span class="source-date">{source.published_date}</span>
                         </Show>
+                        <span class="source-added" title={`Added: ${formatDate(source.accessed_date)}`}>
+                          {formatRelativeTime(source.accessed_date)}
+                        </span>
                       </div>
+                      {/* Paper badges - show which papers this source belongs to */}
+                      <Show when={getPapersForSource(source.id).length > 0}>
+                        <div class="source-papers">
+                          <For each={getPapersForSource(source.id)}>
+                            {(paper) => (
+                              <span
+                                class="paper-badge"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPaperFilter(paper.id);
+                                }}
+                                title={`Filter by: ${paper.title}`}
+                              >
+                                📄 {paper.title.length > 20 ? paper.title.slice(0, 20) + "..." : paper.title}
+                              </span>
+                            )}
+                          </For>
+                        </div>
+                      </Show>
                       <Show when={source.summary}>
                         <div class="source-summary">{source.summary}</div>
                       </Show>
@@ -921,6 +1134,51 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
                 <p>{selectedSource()!.notes}</p>
               </div>
             </Show>
+
+            <div class="detail-section">
+              <h3>Tags</h3>
+              <div class="tags-editor">
+                <div class="current-tags">
+                  <Show when={selectedSource()!.tags.length === 0}>
+                    <span class="no-tags">No tags yet</span>
+                  </Show>
+                  <For each={selectedSource()!.tags}>
+                    {(tag) => (
+                      <span class="editable-tag">
+                        {tag}
+                        <button
+                          class="tag-remove-btn"
+                          onClick={() => removeTag(tag)}
+                          title="Remove tag"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    )}
+                  </For>
+                </div>
+                <div class="add-tag-form">
+                  <input
+                    type="text"
+                    placeholder="Add a tag..."
+                    value={newTagInput()}
+                    onInput={(e) => setNewTagInput(e.currentTarget.value)}
+                    onKeyPress={(e) => {
+                      if (e.key === "Enter") {
+                        addTag(newTagInput());
+                      }
+                    }}
+                  />
+                  <button
+                    class="btn-secondary"
+                    onClick={() => addTag(newTagInput())}
+                    disabled={!newTagInput().trim()}
+                  >
+                    Add
+                  </button>
+                </div>
+              </div>
+            </div>
 
             <div class="detail-section">
               <h3>Citations</h3>

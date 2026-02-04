@@ -147,9 +147,17 @@
   border-color: var(--accent);
 }
 
+/* Filters row - tag and paper filters */
+.filters-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
 .tag-filter {
   display: flex;
   gap: 8px;
+  flex: 1;
 }
 
 .tag-filter input {
@@ -165,6 +173,66 @@
 .tag-filter input:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* Paper filter dropdown */
+.paper-filter {
+  flex-shrink: 0;
+}
+
+.paper-filter select {
+  padding: 8px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  min-width: 150px;
+  max-width: 200px;
+}
+
+.paper-filter select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.paper-filter select:hover {
+  border-color: var(--accent);
+}
+
+/* Filter summary bar */
+.filter-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(147, 51, 234, 0.1) 100%);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.filter-info {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.btn-clear-filter {
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-clear-filter:hover {
+  background: var(--bg-secondary);
+  border-color: var(--accent);
+  color: var(--text-primary);
 }
 
 .source-list {
@@ -249,6 +317,31 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
   margin-bottom: 6px;
+}
+
+/* Paper badges showing which papers a source belongs to */
+.source-papers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.paper-badge {
+  padding: 3px 8px;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.15) 0%, rgba(147, 51, 234, 0.15) 100%);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  color: var(--accent);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.paper-badge:hover {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.25) 0%, rgba(147, 51, 234, 0.25) 100%);
+  border-color: var(--accent);
 }
 
 .source-tags {
@@ -1253,4 +1346,112 @@
   font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+/* Tag Editor */
+.tags-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.current-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 32px;
+  align-items: center;
+}
+
+.no-tags {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-style: italic;
+}
+
+.editable-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.editable-tag:hover {
+  background: var(--bg-secondary);
+  border-color: var(--accent);
+}
+
+.tag-remove-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: pointer;
+  border-radius: 50%;
+  line-height: 1;
+}
+
+.tag-remove-btn:hover {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+
+.add-tag-form {
+  display: flex;
+  gap: 8px;
+}
+
+.add-tag-form input {
+  flex: 1;
+  padding: 8px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.add-tag-form input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.add-tag-form input::placeholder {
+  color: var(--text-muted);
+}
+
+/* Time Filter */
+.time-filter select {
+  padding: 8px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  min-width: 120px;
+}
+
+.time-filter select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Source Added Date */
+.source-added {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-left: auto;
+  white-space: nowrap;
 }
