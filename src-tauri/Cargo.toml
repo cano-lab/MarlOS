@@ -20,17 +20,22 @@ path = "src/bin/healing_test_runner.rs"
 name = "marlos-cli"
 path = "src/bin/marlos.rs"
 
+[[bin]]
+name = "marlos-mcp"
+path = "src/bin/marlos-mcp.rs"
+
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-shell = "2"
-tauri-plugin-dialog = "2"
-tauri-plugin-fs = "2"
+tauri = { version = "2", features = [], optional = true }
+tauri-plugin-shell = { version = "2", optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-fs = { version = "2", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
+futures = "0.3"
 rusqlite = { version = "0.34", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -39,7 +44,11 @@ log = "0.4"
 env_logger = "0.11"
 dirs = "6"
 pdfium-render = "0.8"
+pdf-extract = "0.7"
 image = "0.25"
+tiff = "0.9"
+exr = "1.7"
+half = "2"  # For f16 half-precision floats in EXR
 base64 = "0.22"
 epub = "2"
 html2text = "0.12"
@@ -49,6 +58,8 @@ async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
 urlencoding = "2"
 scraper = "0.22"
+open = "5"
+walkdir = "2"
 
 # For embeddings (optional, add later)
 # ort = "2"  # ONNX Runtime
@@ -57,5 +68,6 @@ scraper = "0.22"
 tauri-plugin-opener = "2"
 
 [features]
-default = ["custom-protocol"]
+default = ["custom-protocol", "tauri-app"]
 custom-protocol = ["tauri/custom-protocol"]
+tauri-app = ["dep:tauri", "dep:tauri-plugin-shell", "dep:tauri-plugin-dialog", "dep:tauri-plugin-fs", "dep:tauri-build"]

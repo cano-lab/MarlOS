@@ -29,9 +29,11 @@ use std::collections::HashMap;
 
 pub mod tools;
 pub mod web_search;
+pub mod memory_server;
 
 pub use tools::*;
 pub use web_search::*;
+pub use memory_server::*;
 
 // ============================================================================
 // MCP Protocol Types

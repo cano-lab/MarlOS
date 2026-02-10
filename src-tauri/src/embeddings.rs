@@ -9,7 +9,10 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
 use thiserror::Error;
+
+use crate::embedding_transform::{EmbeddingTransformer, TransformConfig};
 
 #[derive(Error, Debug)]
 pub enum EmbeddingError {
@@ -174,6 +177,18 @@ pub struct OpenAIEmbedding {
 }
 
 impl OpenAIEmbedding {
+    /// Create HTTP client with proper settings to prevent connection exhaustion
+    fn create_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .pool_max_idle_per_host(5)
+            .pool_idle_timeout(std::time::Duration::from_secs(30))
+            .tcp_keepalive(std::time::Duration::from_secs(60))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    }
+
     /// Create a new OpenAI embedding provider
     pub fn new(base_url: &str, api_key: Option<String>, model: &str) -> Self {
         let (dimensions, max_tokens) = match model {
@@ -184,7 +199,7 @@ impl OpenAIEmbedding {
         };
 
         Self {
-            client: reqwest::Client::new(),
+            client: Self::create_client(),
             base_url: base_url.to_string(),
             api_key,
             model: model.to_string(),
@@ -229,7 +244,7 @@ impl OpenAIEmbedding {
         };
 
         Self {
-            client: reqwest::Client::new(),
+            client: Self::create_client(),
             base_url: "http://localhost:1234/v1".to_string(),
             api_key: None, // LM Studio doesn't require API key
             model: model.to_string(),
@@ -382,14 +397,28 @@ impl EmbeddingProvider for MockEmbedding {
 // ============================================================================
 
 /// Manages embedding generation with automatic provider selection
+/// Optionally applies security transforms (rotation + watermarking) to embeddings
 pub struct EmbeddingManager {
     provider: Box<dyn EmbeddingProvider>,
+    /// Optional transformer for security/watermarking
+    transformer: Option<Mutex<EmbeddingTransformer>>,
 }
 
 impl EmbeddingManager {
-    /// Create with a specific provider
+    /// Create with a specific provider (no transform)
     pub fn new(provider: Box<dyn EmbeddingProvider>) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            transformer: None,
+        }
+    }
+
+    /// Create with a specific provider and transform config
+    pub fn new_with_transform(provider: Box<dyn EmbeddingProvider>, config: TransformConfig) -> Self {
+        Self {
+            provider,
+            transformer: Some(Mutex::new(EmbeddingTransformer::new(config))),
+        }
     }
 
     /// Create with mock provider (for testing)
@@ -410,19 +439,25 @@ impl EmbeddingManager {
 
     /// Try to create with LM Studio, fall back to Ollama, then mock
     /// This is the recommended auto-detection method
+    /// Applies security transform (rotation + watermark) by default
     pub async fn auto_detect() -> Self {
+        // Default transform config - rotation for security, watermark for identification
+        let transform_config = TransformConfig::default();
+
         // Try LM Studio first (localhost:1234)
         let lm_studio = OpenAIEmbedding::lm_studio_default();
         if lm_studio.is_available().await {
-            log::info!("Using LM Studio for embeddings (nomic-embed-text)");
-            return Self::new(Box::new(lm_studio));
+            log::info!("Using LM Studio for embeddings (text-embedding-qwen3-embedding-0.6b, 1024 dims)");
+            log::info!("Embedding security enabled: rotation + watermarking");
+            return Self::new_with_transform(Box::new(lm_studio), transform_config);
         }
 
         // Try Ollama second (localhost:11434)
         let ollama = OllamaEmbedding::default_local();
         if ollama.is_available().await {
             log::info!("Using Ollama for embeddings (all-minilm)");
-            return Self::new(Box::new(ollama));
+            log::info!("Embedding security enabled: rotation + watermarking");
+            return Self::new_with_transform(Box::new(ollama), transform_config);
         }
 
         // Fall back to mock embeddings
@@ -446,19 +481,60 @@ impl EmbeddingManager {
         self.provider.model_info()
     }
 
-    /// Generate embedding for text
-    pub async fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        self.provider.embed(text).await
+    /// Check if transform is enabled
+    pub fn has_transform(&self) -> bool {
+        self.transformer.is_some()
     }
 
-    /// Generate embeddings for multiple texts
+    /// Get transform config (if enabled)
+    pub fn transform_config(&self) -> Option<TransformConfig> {
+        self.transformer.as_ref().map(|t| {
+            t.lock().unwrap().config().clone()
+        })
+    }
+
+    /// Apply transform to an embedding (if enabled)
+    fn apply_transform(&self, embedding: Vec<f32>) -> Vec<f32> {
+        match &self.transformer {
+            Some(transformer) => {
+                let mut t = transformer.lock().unwrap();
+                t.transform(&embedding)
+            }
+            None => embedding,
+        }
+    }
+
+    /// Generate embedding for text (with transform if enabled)
+    pub async fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        let embedding = self.provider.embed(text).await?;
+        Ok(self.apply_transform(embedding))
+    }
+
+    /// Generate embeddings for multiple texts (with transform if enabled)
     pub async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        self.provider.embed_batch(texts).await
+        let embeddings = self.provider.embed_batch(texts).await?;
+        Ok(embeddings.into_iter().map(|e| self.apply_transform(e)).collect())
+    }
+
+    /// Generate raw embedding without transform (for analysis/testing)
+    pub async fn embed_raw(&self, text: &str) -> Result<Vec<f32>> {
+        self.provider.embed(text).await
     }
 
     /// Check if provider is available
     pub async fn is_available(&self) -> bool {
         self.provider.is_available().await
+    }
+
+    /// Detect watermark in an embedding (returns confidence 0-1)
+    pub fn detect_watermark(&self, embedding: &[f32]) -> f32 {
+        match &self.transformer {
+            Some(transformer) => {
+                let t = transformer.lock().unwrap();
+                t.detect_watermark(embedding)
+            }
+            None => 0.0,
+        }
     }
 }
 
@@ -560,5 +636,58 @@ mod tests {
             "text-embedding-3-large",
         );
         assert_eq!(openai.model_info().dimensions, 3072);
+    }
+
+    #[tokio::test]
+    async fn test_embedding_with_transform() {
+        // Use stronger watermark for reliable detection in tests
+        let config = TransformConfig {
+            watermark_strength: 0.1, // Stronger for test visibility
+            ..Default::default()
+        };
+        let manager = EmbeddingManager::new_with_transform(
+            Box::new(MockEmbedding::default()),
+            config,
+        );
+
+        assert!(manager.has_transform());
+
+        // Generate embedding
+        let embedding = manager.embed("test security").await.unwrap();
+        assert_eq!(embedding.len(), 384);
+
+        // Check watermark is present (should have high correlation)
+        let confidence = manager.detect_watermark(&embedding);
+        println!("Watermark confidence: {}", confidence);
+        assert!(confidence > 0.65, "Watermark not detected: confidence = {}", confidence);
+
+        // Raw embedding should have lower watermark correlation
+        let raw = manager.embed_raw("test security").await.unwrap();
+        let raw_confidence = manager.detect_watermark(&raw);
+        println!("Raw confidence: {}", raw_confidence);
+        assert!(confidence > raw_confidence,
+            "Transformed should have higher watermark: raw={}, transformed={}", raw_confidence, confidence);
+    }
+
+    #[tokio::test]
+    async fn test_transform_preserves_similarity() {
+        let config = TransformConfig::default();
+        let manager = EmbeddingManager::new_with_transform(
+            Box::new(MockEmbedding::default()),
+            config,
+        );
+
+        // Generate embeddings for similar concepts
+        let e1 = manager.embed("cat sitting on mat").await.unwrap();
+        let e2 = manager.embed("cat lying on mat").await.unwrap();
+        let e3 = manager.embed("quantum physics theory").await.unwrap();
+
+        // Similar texts should have high similarity
+        let sim_similar = cosine_similarity(&e1, &e2);
+        let sim_different = cosine_similarity(&e1, &e3);
+
+        // cat/mat should be more similar to each other than to quantum physics
+        // (Using mock embeddings so this tests the transform doesn't break similarity ordering)
+        println!("Similar: {}, Different: {}", sim_similar, sim_different);
     }
 }

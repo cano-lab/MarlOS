@@ -1,0 +1,218 @@
+.decision-logger-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(2px);
+}
+
+.decision-logger-modal {
+  background: var(--bg-secondary, #1e1e2e);
+  border-radius: 12px;
+  width: 90%;
+  max-width: 500px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--border-color, #313244);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-color, #313244);
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary, #cdd6f4);
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary, #a6adc8);
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  transition: all 0.15s ease;
+}
+
+.close-btn:hover:not(:disabled) {
+  background: var(--bg-hover, #262637);
+  color: var(--text-primary, #cdd6f4);
+}
+
+.close-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+form {
+  padding: 20px;
+}
+
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary, #cdd6f4);
+}
+
+.form-group input,
+.form-group textarea {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--bg-primary, #11111b);
+  border: 1px solid var(--border-color, #313244);
+  border-radius: 6px;
+  color: var(--text-primary, #cdd6f4);
+  font-size: 14px;
+  font-family: inherit;
+  transition: border-color 0.15s ease;
+}
+
+.form-group input:focus,
+.form-group textarea:focus {
+  outline: none;
+  border-color: var(--accent-color, #89b4fa);
+}
+
+.form-group input::placeholder,
+.form-group textarea::placeholder {
+  color: var(--text-tertiary, #6c7086);
+}
+
+.form-group input:disabled,
+.form-group textarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.form-group textarea {
+  resize: vertical;
+  min-height: 80px;
+}
+
+.context-info {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--bg-primary, #11111b);
+  border-radius: 6px;
+  margin-bottom: 16px;
+  font-size: 12px;
+}
+
+.context-label {
+  color: var(--text-secondary, #a6adc8);
+}
+
+.context-value {
+  color: var(--text-primary, #cdd6f4);
+  font-family: monospace;
+}
+
+.error-message {
+  padding: 10px 12px;
+  background: rgba(243, 139, 168, 0.1);
+  border: 1px solid var(--error-color, #f38ba8);
+  border-radius: 6px;
+  color: var(--error-color, #f38ba8);
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.success-message {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 40px 20px;
+  color: var(--success-color, #a6e3a1);
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.success-message svg {
+  width: 48px;
+  height: 48px;
+}
+
+.form-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.cancel-btn,
+.submit-btn {
+  padding: 10px 20px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.cancel-btn {
+  background: transparent;
+  border: 1px solid var(--border-color, #313244);
+  color: var(--text-secondary, #a6adc8);
+}
+
+.cancel-btn:hover:not(:disabled) {
+  background: var(--bg-hover, #262637);
+  color: var(--text-primary, #cdd6f4);
+}
+
+.submit-btn {
+  background: var(--accent-color, #89b4fa);
+  border: none;
+  color: var(--bg-primary, #11111b);
+}
+
+.submit-btn:hover:not(:disabled) {
+  background: var(--accent-hover, #74a8f7);
+}
+
+.cancel-btn:disabled,
+.submit-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.modal-footer {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-color, #313244);
+  background: var(--bg-tertiary, #181825);
+}
+
+.footer-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-tertiary, #6c7086);
+  text-align: center;
+}

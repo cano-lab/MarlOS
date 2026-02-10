@@ -6,11 +6,14 @@
 //! - Cosine similarity for semantic matching
 //!
 //! Supports both pure semantic search and hybrid (semantic + keyword) search.
+//! Enhanced with recency boosting and field-weighted keyword scoring.
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use chrono::{DateTime, Utc};
 
 use crate::embeddings::{cosine_similarity, EmbeddingManager};
+use crate::embedding_store::{FieldWeights, SearchConfig};
 use crate::memory::SecurityTier;
 use crate::object_store::{ObjectStore, ObjectStoreError};
 use crate::semantic_object::{GuardedObjectView, SemanticObject, Suid};
@@ -49,6 +52,86 @@ impl std::error::Error for SearchError {}
 
 pub type Result<T> = std::result::Result<T, SearchError>;
 
+// ============================================================================
+// Enhanced Scoring Functions
+// ============================================================================
+
+/// Calculate recency boost based on document age
+/// Returns a boost value between 0.0 and 0.15 (max 15% boost for recent items)
+pub fn calculate_recency_boost(modified_at: &DateTime<Utc>, decay_days: f32) -> f32 {
+    if decay_days <= 0.0 {
+        return 0.0;
+    }
+
+    let days_old = (Utc::now() - *modified_at).num_days() as f32;
+    if days_old < 0.0 {
+        return 0.15; // Future dates get max boost
+    }
+
+    // Exponential decay: e^(-days / decay_days) * 0.15
+    (-days_old / decay_days).exp() * 0.15
+}
+
+/// Calculate field-weighted keyword score
+/// Returns a normalized score based on which fields contain the query
+pub fn calculate_field_weighted_score(
+    query: &str,
+    object: &SemanticObject,
+    weights: &FieldWeights,
+) -> f32 {
+    let mut score = 0.0;
+    let query_lower = query.to_lowercase();
+    let query_terms: Vec<&str> = query_lower.split_whitespace().collect();
+
+    if query_terms.is_empty() {
+        return 0.0;
+    }
+
+    // Check name field
+    if let Some(ref name) = object.name {
+        let name_lower = name.to_lowercase();
+        let matches = query_terms.iter().filter(|t| name_lower.contains(*t)).count();
+        if matches > 0 {
+            score += weights.name * (matches as f32 / query_terms.len() as f32);
+        }
+    }
+
+    // Check summary field
+    if let Some(ref summary) = object.summary {
+        let summary_lower = summary.to_lowercase();
+        let matches = query_terms.iter().filter(|t| summary_lower.contains(*t)).count();
+        if matches > 0 {
+            score += weights.summary * (matches as f32 / query_terms.len() as f32);
+        }
+    }
+
+    // Check tags
+    let tag_matches = object.tags.iter().filter(|tag| {
+        let tag_lower = tag.to_lowercase();
+        query_terms.iter().any(|t| tag_lower.contains(*t))
+    }).count();
+    if tag_matches > 0 {
+        score += weights.tags * (tag_matches as f32 / object.tags.len().max(1) as f32).min(1.0);
+    }
+
+    // Check content (with lower weight)
+    if let Some(content) = object.content_as_str() {
+        let content_lower = content.to_lowercase();
+        let matches = query_terms.iter().filter(|t| content_lower.contains(*t)).count();
+        if matches > 0 {
+            score += weights.content * (matches as f32 / query_terms.len() as f32);
+        }
+    }
+
+    // Normalize to 0-1 range based on max possible score
+    let max_score = weights.name + weights.summary + weights.tags + weights.content;
+    if max_score > 0.0 {
+        (score / max_score).min(1.0)
+    } else {
+        0.0
+    }
+}
+
 /// A search result with relevance score
 #[derive(Debug, Clone)]
 pub struct SearchHit {
@@ -84,6 +167,10 @@ pub struct SearchOptions {
     pub include_keyword: bool,
     /// Boost factor for keyword matches in hybrid search
     pub keyword_boost: f32,
+    /// Recency decay half-life in days (0 = disabled)
+    pub recency_decay: f32,
+    /// Field weights for keyword scoring
+    pub field_weights: FieldWeights,
 }
 
 impl Default for SearchOptions {
@@ -94,7 +181,33 @@ impl Default for SearchOptions {
             max_tier: SecurityTier::Guarded,
             include_keyword: true,
             keyword_boost: 0.2,
+            recency_decay: 7.0,
+            field_weights: FieldWeights::default(),
         }
+    }
+}
+
+impl SearchOptions {
+    /// Create SearchOptions from a SearchConfig
+    pub fn from_config(config: &SearchConfig) -> Self {
+        Self {
+            min_score: config.min_score,
+            keyword_boost: config.keyword_boost,
+            include_keyword: config.include_keyword,
+            recency_decay: config.recency_decay,
+            field_weights: config.field_weights.clone(),
+            ..Default::default()
+        }
+    }
+
+    /// Apply a SearchConfig to these options
+    pub fn with_config(mut self, config: &SearchConfig) -> Self {
+        self.min_score = config.min_score;
+        self.keyword_boost = config.keyword_boost;
+        self.include_keyword = config.include_keyword;
+        self.recency_decay = config.recency_decay;
+        self.field_weights = config.field_weights.clone();
+        self
     }
 }
 
@@ -106,6 +219,16 @@ pub struct SemanticSearch {
 }
 
 impl SemanticSearch {
+    /// Create a new semantic search engine with shared Arc<ObjectStore>
+    pub fn with_arc(store: Arc<ObjectStore>, embeddings: EmbeddingManager) -> Self {
+        Self {
+            store: Arc::new(RwLock::new(Arc::try_unwrap(store).unwrap_or_else(|_| {
+                panic!("Cannot unwrap Arc - multiple references exist")
+            }))),
+            embeddings: Arc::new(embeddings),
+        }
+    }
+
     /// Create a new semantic search engine
     pub fn new(store: ObjectStore, embeddings: EmbeddingManager) -> Self {
         Self {
@@ -247,7 +370,7 @@ impl SemanticSearch {
     // Search
     // ========================================================================
 
-    /// Search objects by semantic similarity
+    /// Search objects by semantic similarity with enhanced scoring
     pub async fn search(&self, query: &str, options: SearchOptions) -> Result<Vec<SearchHit>> {
         // Generate query embedding
         let query_embedding = self.embeddings.embed(query).await?;
@@ -258,11 +381,19 @@ impl SemanticSearch {
             store.get_objects_with_embeddings(options.max_tier)?
         };
 
-        // Calculate similarity scores
+        // Calculate similarity scores with recency boost
         let mut hits: Vec<SearchHit> = objects_with_embeddings
             .into_iter()
             .map(|(obj, embedding)| {
-                let score = cosine_similarity(&query_embedding, &embedding);
+                // Base semantic score
+                let semantic_score = cosine_similarity(&query_embedding, &embedding);
+
+                // Calculate recency boost
+                let recency_boost = calculate_recency_boost(&obj.modified_at, options.recency_decay);
+
+                // Combined score (semantic + recency)
+                let score = (semantic_score + recency_boost).min(1.0);
+
                 SearchHit {
                     object: obj,
                     score,
@@ -274,13 +405,19 @@ impl SemanticSearch {
 
         // Add keyword matches if requested
         if options.include_keyword {
-            let keyword_hits = self.search_keyword(query, &options).await?;
+            let keyword_hits = self.search_keyword_weighted(query, &options).await?;
 
             // Merge results, boosting keyword matches
             for kw_hit in keyword_hits {
                 if let Some(existing) = hits.iter_mut().find(|h| h.object.suid == kw_hit.object.suid) {
-                    // Object found by both - boost score and mark as hybrid
-                    existing.score = (existing.score + options.keyword_boost).min(1.0);
+                    // Object found by both - calculate combined boost
+                    let keyword_weight = calculate_field_weighted_score(
+                        query,
+                        &existing.object,
+                        &options.field_weights,
+                    );
+                    let boost = keyword_weight * options.keyword_boost;
+                    existing.score = (existing.score + boost).min(1.0);
                     existing.match_type = MatchType::Hybrid;
                 } else {
                     // Only found by keyword
@@ -298,18 +435,34 @@ impl SemanticSearch {
         Ok(hits)
     }
 
-    /// Search objects by keyword only
+    /// Search objects by keyword only (legacy method)
     async fn search_keyword(&self, query: &str, options: &SearchOptions) -> Result<Vec<SearchHit>> {
+        self.search_keyword_weighted(query, options).await
+    }
+
+    /// Search objects by keyword with field-weighted scoring
+    async fn search_keyword_weighted(&self, query: &str, options: &SearchOptions) -> Result<Vec<SearchHit>> {
         let store = self.store.read().await;
         let objects = store.search_text(query, options.limit * 2)?; // Get more for merging
 
         Ok(objects
             .into_iter()
             .filter(|obj| obj.security_tier.can_access(options.max_tier))
-            .map(|obj| SearchHit {
-                object: obj,
-                score: 0.5, // Base keyword match score
-                match_type: MatchType::Keyword,
+            .map(|obj| {
+                // Calculate field-weighted score
+                let field_score = calculate_field_weighted_score(query, &obj, &options.field_weights);
+
+                // Calculate recency boost
+                let recency_boost = calculate_recency_boost(&obj.modified_at, options.recency_decay);
+
+                // Base keyword score (0.5) + field weighting + recency
+                let score = (0.5 + field_score * 0.3 + recency_boost).min(1.0);
+
+                SearchHit {
+                    object: obj,
+                    score,
+                    match_type: MatchType::Keyword,
+                }
             })
             .collect())
     }

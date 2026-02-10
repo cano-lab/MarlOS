@@ -19,11 +19,13 @@ use marlos_lib::object_store::ObjectStore;
 use marlos_lib::providers::{
     SessionScanner, SessionParser, session_to_objects,
     ChunkedSessionParser, chunked_session_to_objects,
+    Importer, detect_source, ChatGptImporter, CursorImporter, ObsidianImporter,
 };
 use marlos_lib::semantic_object::{ContentType, SemanticObject, Suid, FileBoundary, RelationType};
 use marlos_lib::semantic_search::{SemanticSearch, SearchOptions};
+use marlos_lib::pdf::{PdfManager, pdf_to_markdown_file_simple, extract_text_simple};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 use std::thread;
@@ -168,6 +170,61 @@ enum Commands {
         #[command(subcommand)]
         command: SessionCommands,
     },
+
+    /// Import from external AI tools (ChatGPT, Cursor, Obsidian)
+    ImportFrom {
+        #[command(subcommand)]
+        command: ImportFromCommands,
+    },
+
+    /// PDF utilities
+    Pdf {
+        #[command(subcommand)]
+        command: PdfCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ImportFromCommands {
+    /// Import from ChatGPT export file
+    Chatgpt {
+        /// Path to conversations.json export file
+        path: PathBuf,
+        /// Generate embeddings for imported conversations
+        #[arg(long)]
+        embed: bool,
+    },
+
+    /// Import from Cursor AI sessions
+    Cursor {
+        /// Path to Cursor workspace or use default
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+        /// Generate embeddings
+        #[arg(long)]
+        embed: bool,
+    },
+
+    /// Import from Obsidian vault
+    Obsidian {
+        /// Path to Obsidian vault directory
+        path: PathBuf,
+        /// Generate embeddings
+        #[arg(long)]
+        embed: bool,
+    },
+
+    /// Auto-detect and import from a path
+    Auto {
+        /// Path to import from
+        path: PathBuf,
+        /// Generate embeddings
+        #[arg(long)]
+        embed: bool,
+    },
+
+    /// Show available import sources
+    List,
 }
 
 #[derive(Subcommand)]
@@ -252,6 +309,33 @@ enum AndorCommands {
         /// Minimum score threshold
         #[arg(short = 's', long)]
         min_score: Option<f32>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PdfCommands {
+    /// Convert PDF to markdown
+    ToMarkdown {
+        /// Path to PDF file
+        path: PathBuf,
+        /// Output path (defaults to same directory with .md extension)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Extract text from PDF
+    ExtractText {
+        /// Path to PDF file
+        path: PathBuf,
+        /// Page number (0-indexed, extracts all if not specified)
+        #[arg(short, long)]
+        page: Option<u32>,
+    },
+
+    /// Get PDF info (page count, metadata)
+    Info {
+        /// Path to PDF file
+        path: PathBuf,
     },
 }
 
@@ -833,6 +917,12 @@ fn run_command(cli: &Cli) -> CliResponse<serde_json::Value> {
         }
 
         Commands::Reindex { dry_run } => {
+            use marlos_lib::chunking::{chunk_text, ChunkConfig};
+            use marlos_lib::semantic_object::Relation;
+
+            const BATCH_SIZE: usize = 8;   // Small batches for reliability
+            const TIMEOUT_SECS: u64 = 60;  // Timeout per batch
+
             let model_info = search.embeddings().model_info();
 
             // Check if LM Studio is available
@@ -844,8 +934,16 @@ fn run_command(cli: &Cli) -> CliResponse<serde_json::Value> {
                 };
             }
 
-            let store = search.store.blocking_read();
-            let objects = match store.list(10000, 0) {
+            let chunk_config = ChunkConfig {
+                target_size: 2000,
+                min_size: 200,
+                max_size: 4000,
+                overlap: 100,
+            };
+
+            // Get all objects and separate chunks from parents
+            let store = search.store.blocking_write();
+            let objects = match store.list(100000, 0) {
                 Ok(objs) => objs,
                 Err(e) => {
                     return CliResponse {
@@ -855,48 +953,232 @@ fn run_command(cli: &Cli) -> CliResponse<serde_json::Value> {
                     };
                 }
             };
-            drop(store);
 
-            let text_objects: Vec<_> = objects
-                .iter()
-                .filter(|obj| obj.content_type.is_text())
+            // Count existing chunks and parent objects
+            let mut chunk_count = 0;
+            let parent_objects: Vec<_> = objects.into_iter().filter(|obj| {
+                if obj.tags.iter().any(|t| t == "kind:chunk") {
+                    chunk_count += 1;
+                    false
+                } else {
+                    true
+                }
+            }).collect();
+
+            let code_objects: Vec<_> = parent_objects.iter()
+                .filter(|obj| obj.tags.iter().any(|t| t == "kind:code"))
+                .collect();
+
+            let large_code_objects: Vec<_> = code_objects.iter()
+                .filter(|obj| {
+                    obj.content.as_ref().map(|c| c.len() > chunk_config.max_size).unwrap_or(false)
+                })
                 .collect();
 
             if *dry_run {
+                drop(store);
                 return CliResponse {
                     success: true,
                     data: Some(serde_json::json!({
                         "dry_run": true,
-                        "total_objects": objects.len(),
-                        "text_objects_to_reindex": text_objects.len(),
+                        "total_objects": parent_objects.len(),
+                        "existing_chunks": chunk_count,
+                        "code_objects": code_objects.len(),
+                        "large_code_to_chunk": large_code_objects.len(),
                         "embedding_model": model_info.id,
                         "dimensions": model_info.dimensions,
+                        "batch_size": BATCH_SIZE,
                     })),
                     error: None,
                 };
             }
 
-            eprintln!("Reindexing {} objects with {} ({} dimensions)...",
-                text_objects.len(), model_info.id, model_info.dimensions);
-
-            match rt.block_on(search.reindex_all()) {
-                Ok(count) => {
-                    eprintln!("Successfully reindexed {} objects", count);
-                    CliResponse {
-                        success: true,
-                        data: Some(serde_json::json!({
-                            "reindexed": count,
-                            "embedding_model": model_info.id,
-                            "dimensions": model_info.dimensions,
-                        })),
-                        error: None,
+            // Delete existing chunks
+            eprintln!("Deleting {} existing chunks...", chunk_count);
+            let store_for_delete = search.store.blocking_write();
+            let all_for_delete = store_for_delete.list(100000, 0).unwrap_or_default();
+            let mut chunks_deleted = 0;
+            for obj in all_for_delete {
+                if obj.tags.iter().any(|t| t == "kind:chunk") {
+                    if store_for_delete.delete(&obj.suid).is_ok() {
+                        chunks_deleted += 1;
                     }
                 }
-                Err(e) => CliResponse {
-                    success: false,
-                    data: None,
-                    error: Some(format!("Failed to reindex: {}", e)),
-                },
+            }
+            drop(store_for_delete);
+
+            // Step 1: Create chunk objects and collect all items for batch embedding
+            eprintln!("Preparing {} objects for batch embedding...", parent_objects.len());
+
+            #[derive(Clone)]
+            struct EmbedItem {
+                suid: Suid,
+                text: String,
+            }
+
+            let mut embed_items: Vec<EmbedItem> = Vec::new();
+            let mut chunks_created = 0;
+
+            for (i, obj) in parent_objects.iter().enumerate() {
+                if i % 50 == 0 {
+                    eprintln!("  Preparing {}/{}...", i + 1, parent_objects.len());
+                }
+
+                // Get text content
+                let text = if let Some(content) = &obj.content {
+                    String::from_utf8_lossy(content).to_string()
+                } else if let Some(summary) = &obj.summary {
+                    format!("{}\n{}", obj.name.clone().unwrap_or_default(), summary)
+                } else {
+                    obj.name.clone().unwrap_or_default()
+                };
+
+                if text.trim().is_empty() {
+                    continue;
+                }
+
+                // Check if this is a code file that should be chunked
+                let is_code_file = obj.tags.iter().any(|t| t == "kind:code");
+                let file_ext = obj.name.as_ref()
+                    .and_then(|n| n.rsplit('.').next())
+                    .filter(|ext| ext.len() <= 5);
+
+                if is_code_file && text.len() > chunk_config.max_size {
+                    let chunks = chunk_text(&text, file_ext, &chunk_config);
+
+                    if chunks.len() > 1 {
+                        let store = search.store.blocking_write();
+
+                        for (chunk_idx, chunk) in chunks.iter().enumerate() {
+                            let chunk_name = format!("{}#chunk{}",
+                                obj.name.as_deref().unwrap_or("chunk"),
+                                chunk_idx);
+
+                            let context_suffix = chunk.context.as_ref()
+                                .map(|c| format!(" ({})", c))
+                                .unwrap_or_default();
+
+                            let mut chunk_tags = obj.tags.clone();
+                            chunk_tags.push("kind:chunk".to_string());
+                            chunk_tags.push(format!("chunk:{}", chunk_idx));
+                            chunk_tags.push(format!("parent:{}", obj.suid));
+
+                            let mut chunk_obj = SemanticObject::from_text(&chunk.text)
+                                .with_name(&format!("{}{}", chunk_name, context_suffix));
+                            chunk_obj.tags = chunk_tags;
+
+                            chunk_obj.relations.push(Relation::new(
+                                obj.suid.clone(),
+                                RelationType::DerivedFrom,
+                            ));
+
+                            if let Err(e) = store.create(&chunk_obj) {
+                                eprintln!("    Failed to store chunk {}: {}", chunk_idx, e);
+                                continue;
+                            }
+
+                            embed_items.push(EmbedItem {
+                                suid: chunk_obj.suid,
+                                text: chunk.text.clone(),
+                            });
+                            chunks_created += 1;
+                        }
+
+                        // Add parent with first chunk text
+                        if let Some(first_chunk) = chunks.first() {
+                            let text_to_embed = if first_chunk.text.len() > 4000 {
+                                first_chunk.text[..4000].to_string()
+                            } else {
+                                first_chunk.text.clone()
+                            };
+                            embed_items.push(EmbedItem {
+                                suid: obj.suid.clone(),
+                                text: text_to_embed,
+                            });
+                        }
+                        continue;
+                    }
+                }
+
+                // Regular object
+                let text_to_embed = if text.len() > 8000 {
+                    text[..8000].to_string()
+                } else {
+                    text
+                };
+                embed_items.push(EmbedItem {
+                    suid: obj.suid.clone(),
+                    text: text_to_embed,
+                });
+            }
+
+            // Step 2: Sequential batch embedding with timeout
+            let total_items = embed_items.len();
+            let total_batches = (total_items + BATCH_SIZE - 1) / BATCH_SIZE;
+
+            eprintln!("Embedding {} items in {} batches...", total_items, total_batches);
+
+            let model_name = search.embeddings().model_info().name.clone();
+            let mut reindexed = 0;
+            let mut errors = 0;
+            let mut completed = 0;
+
+            for (batch_idx, batch) in embed_items.chunks(BATCH_SIZE).enumerate() {
+                eprintln!("  Batch {}/{} ({} items)...", batch_idx + 1, total_batches, batch.len());
+
+                let texts: Vec<&str> = batch.iter().map(|item| item.text.as_str()).collect();
+
+                // Embed with timeout
+                let embed_result = rt.block_on(async {
+                    tokio::time::timeout(
+                        tokio::time::Duration::from_secs(TIMEOUT_SECS),
+                        search.embeddings().embed_batch(&texts)
+                    ).await
+                });
+
+                match embed_result {
+                    Ok(Ok(embeddings)) => {
+                        let store = search.store.blocking_read();
+                        for (item, embedding) in batch.iter().zip(embeddings.iter()) {
+                            if store.store_embedding(&item.suid, embedding, &model_name).is_ok() {
+                                reindexed += 1;
+                            } else {
+                                errors += 1;
+                            }
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        eprintln!("    Batch {} failed: {}", batch_idx, e);
+                        errors += batch.len();
+                    }
+                    Err(_) => {
+                        eprintln!("    Batch {} timed out after {}s", batch_idx, TIMEOUT_SECS);
+                        errors += batch.len();
+                    }
+                }
+
+                completed += batch.len();
+                eprintln!("  Embedded {}/{} items...", completed, total_items);
+
+                // Small delay between batches
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+
+            eprintln!("Successfully embedded {} items, created {} chunks ({} errors)",
+                reindexed, chunks_created, errors);
+
+            CliResponse {
+                success: true,
+                data: Some(serde_json::json!({
+                    "reindexed": reindexed,
+                    "chunks_created": chunks_created,
+                    "chunks_deleted": chunks_deleted,
+                    "errors": errors,
+                    "embedding_model": model_info.id,
+                    "dimensions": model_info.dimensions,
+                    "batch_size": BATCH_SIZE,
+                })),
+                error: None,
             }
         }
 
@@ -950,6 +1232,165 @@ fn run_command(cli: &Cli) -> CliResponse<serde_json::Value> {
         Commands::Sessions { command } => {
             run_session_command(command, &rt, &search)
         }
+
+        Commands::ImportFrom { command } => {
+            run_import_command(command, &rt, &search)
+        }
+
+        Commands::Pdf { command } => {
+            run_pdf_command(command)
+        }
+    }
+}
+
+fn run_import_command(
+    command: &ImportFromCommands,
+    rt: &tokio::runtime::Runtime,
+    search: &SemanticSearch,
+) -> CliResponse<serde_json::Value> {
+    match command {
+        ImportFromCommands::Chatgpt { path, embed } => {
+            let importer = ChatGptImporter::new();
+            import_with_importer(&importer, path, *embed, rt, search)
+        }
+
+        ImportFromCommands::Cursor { path, embed } => {
+            let importer = CursorImporter::new();
+            let import_path = path.clone()
+                .or_else(|| CursorImporter::default_cursor_path())
+                .unwrap_or_else(|| PathBuf::from("."));
+            import_with_importer(&importer, &import_path, *embed, rt, search)
+        }
+
+        ImportFromCommands::Obsidian { path, embed } => {
+            let importer = ObsidianImporter::new();
+            import_with_importer(&importer, path, *embed, rt, search)
+        }
+
+        ImportFromCommands::Auto { path, embed } => {
+            match detect_source(path) {
+                Some(importer) => {
+                    eprintln!("Detected source: {}", importer.source_name());
+                    import_with_importer(importer.as_ref(), path, *embed, rt, search)
+                }
+                None => CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(format!(
+                        "Could not detect source type for {:?}. Supported: ChatGPT (.json), Cursor (.cursor), Obsidian (.obsidian)",
+                        path
+                    )),
+                },
+            }
+        }
+
+        ImportFromCommands::List => {
+            CliResponse {
+                success: true,
+                data: Some(serde_json::json!({
+                    "sources": [
+                        {
+                            "name": "ChatGPT",
+                            "format": "JSON export file (conversations.json)",
+                            "location": "Export from chat.openai.com → Settings → Data controls → Export data",
+                        },
+                        {
+                            "name": "Cursor",
+                            "format": "Cursor workspace storage",
+                            "location": CursorImporter::default_cursor_path().map(|p| p.to_string_lossy().to_string()),
+                        },
+                        {
+                            "name": "Obsidian",
+                            "format": "Obsidian vault directory (contains .obsidian folder)",
+                            "location": "Any directory with .obsidian subfolder",
+                        },
+                    ]
+                })),
+                error: None,
+            }
+        }
+    }
+}
+
+fn import_with_importer(
+    importer: &dyn Importer,
+    path: &Path,
+    embed: bool,
+    rt: &tokio::runtime::Runtime,
+    search: &SemanticSearch,
+) -> CliResponse<serde_json::Value> {
+    if !importer.can_import(path) {
+        return CliResponse {
+            success: false,
+            data: None,
+            error: Some(format!(
+                "Cannot import from {:?} with {} importer",
+                path,
+                importer.source_name()
+            )),
+        };
+    }
+
+    eprintln!("Importing from {} ({:?})...", importer.source_name(), path);
+
+    match importer.import(path, embed) {
+        Ok(result) => {
+            let mut stored = 0;
+            let mut failed = 0;
+
+            for obj in result.objects {
+                let suid = obj.suid;
+                let embed_text: Option<String> = obj.metadata
+                    .get("embedding_text")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| obj.content_as_str().map(|s| s.to_string()));
+
+                let store = search.store.blocking_write();
+                match store.create(&obj) {
+                    Ok(()) => {
+                        drop(store);
+                        if embed {
+                            if let Some(content) = embed_text {
+                                if let Ok(embedding) = rt.block_on(search.embeddings().embed(&content)) {
+                                    let store = search.store.blocking_write();
+                                    let model = search.embeddings().model_info().id.clone();
+                                    let _ = store.store_embedding(&suid, &embedding, &model);
+                                }
+                            }
+                        }
+                        stored += 1;
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to store object: {}", e);
+                        failed += 1;
+                    }
+                }
+            }
+
+            CliResponse {
+                success: true,
+                data: Some(serde_json::json!({
+                    "source": result.source,
+                    "items_imported": result.items_imported,
+                    "objects_stored": stored,
+                    "failed": failed,
+                    "warnings": result.warnings,
+                    "message": format!(
+                        "Imported {} items from {} ({} objects stored)",
+                        result.items_imported,
+                        result.source,
+                        stored
+                    ),
+                })),
+                error: None,
+            }
+        }
+        Err(e) => CliResponse {
+            success: false,
+            data: None,
+            error: Some(format!("Import failed: {}", e)),
+        },
     }
 }
 
@@ -1663,6 +2104,97 @@ fn run_andor_command(command: &AndorCommands) -> CliResponse<serde_json::Value> 
                     success: false,
                     data: None,
                     error: Some(e.to_string()),
+                },
+            }
+        }
+    }
+}
+
+fn run_pdf_command(command: &PdfCommands) -> CliResponse<serde_json::Value> {
+    match command {
+        PdfCommands::ToMarkdown { path, output } => {
+            let output_str = output.as_ref().map(|p| p.to_string_lossy().to_string());
+            // Use the simple pdf-extract version (no PDFium needed)
+            match pdf_to_markdown_file_simple(
+                &path.to_string_lossy(),
+                output_str.as_deref(),
+            ) {
+                Ok(output_path) => {
+                    // Read the generated file to get size info
+                    let file_size = std::fs::metadata(&output_path)
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+
+                    CliResponse {
+                        success: true,
+                        data: Some(serde_json::json!({
+                            "input": path.to_string_lossy(),
+                            "output": output_path,
+                            "size_bytes": file_size,
+                            "message": format!("PDF converted to markdown: {}", output_path),
+                        })),
+                        error: None,
+                    }
+                }
+                Err(e) => CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(format!("Failed to convert PDF: {}", e)),
+                },
+            }
+        }
+
+        PdfCommands::ExtractText { path, page } => {
+            // Use pdf-extract for simple text extraction (no PDFium needed)
+            if page.is_some() {
+                // pdf-extract doesn't support per-page extraction
+                return CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some("Per-page extraction not supported with simple mode. Use without --page flag.".to_string()),
+                };
+            }
+
+            match extract_text_simple(&path.to_string_lossy()) {
+                Ok(text) => {
+                    CliResponse {
+                        success: true,
+                        data: Some(serde_json::json!({
+                            "text": text,
+                            "char_count": text.len(),
+                        })),
+                        error: None,
+                    }
+                }
+                Err(e) => CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(format!("Failed to extract text: {}", e)),
+                },
+            }
+        }
+
+        PdfCommands::Info { path } => {
+            // Try PDFium first for detailed info, fall back to simple info
+            match PdfManager::new() {
+                Ok(manager) => {
+                    match manager.open(&path.to_string_lossy()) {
+                        Ok(info) => CliResponse {
+                            success: true,
+                            data: Some(serde_json::to_value(info).unwrap()),
+                            error: None,
+                        },
+                        Err(e) => CliResponse {
+                            success: false,
+                            data: None,
+                            error: Some(format!("Failed to open PDF: {:?}", e)),
+                        },
+                    }
+                }
+                Err(e) => CliResponse {
+                    success: false,
+                    data: None,
+                    error: Some(format!("Failed to initialize PDF manager: {:?}", e)),
                 },
             }
         }

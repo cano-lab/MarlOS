@@ -152,6 +152,23 @@
   flex: 1;
 }
 
+.dpi-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dpi-control input[type="range"] {
+  width: 80px;
+  height: 4px;
+  accent-color: #0078d4;
+}
+
+.dpi-value {
+  min-width: 30px;
+  text-align: right;
+}
+
 /* Scrollbar for PDF content */
 .pdf-content::-webkit-scrollbar {
   width: 12px;

@@ -289,6 +289,7 @@ pub mod markdown_language;
 pub mod coding_agent;
 pub mod session;
 pub mod research;
+pub mod importers;
 
 // Re-export built-in providers
 pub use word_count::WordCountProvider;
@@ -303,4 +304,10 @@ pub use research::{
     Source, SourceType, CitationStyle,
     CitationGenerator, WebFetcher, FetchedContent, ContentMetadata,
     SourceConnection, FactCheckResult, WebSearchResult,
+};
+
+// Re-export universal importers
+pub use importers::{
+    Importer, ImportResult, detect_source,
+    ChatGptImporter, CursorImporter, ObsidianImporter,
 };

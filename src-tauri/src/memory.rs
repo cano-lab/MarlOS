@@ -386,32 +386,39 @@ impl MemoryStore {
     }
 
     /// Get recent memories with tier filtering
+    /// SECURITY: Uses parameterized queries to prevent SQL injection
     pub fn recent_with_tier(&self, memory_type: Option<MemoryType>, max_tier: SecurityTier, limit: usize) -> Result<Vec<MemoryEntry>> {
         let conn = self.conn.lock().map_err(|_| MemoryError::Lock)?;
-        let query = match memory_type {
-            Some(t) => format!(
-                "SELECT id, content, memory_type, security_tier, created_at, updated_at, metadata, summary
-                 FROM memories WHERE memory_type = '{}' AND security_tier <= {} ORDER BY created_at DESC LIMIT {}",
-                t.as_str(),
-                max_tier.as_u8(),
-                limit
-            ),
-            None => format!(
-                "SELECT id, content, memory_type, security_tier, created_at, updated_at, metadata, summary
-                 FROM memories WHERE security_tier <= {} ORDER BY created_at DESC LIMIT {}",
-                max_tier.as_u8(),
-                limit
-            ),
-        };
 
-        let mut stmt = conn.prepare(&query)?;
-
-        let entries = stmt
-            .query_map([], |row| Self::row_to_entry(row))?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        Ok(entries)
+        // LIMIT must be interpolated (SQLite limitation), but it's a usize so safe
+        match memory_type {
+            Some(t) => {
+                let query = format!(
+                    "SELECT id, content, memory_type, security_tier, created_at, updated_at, metadata, summary
+                     FROM memories WHERE memory_type = ?1 AND security_tier <= ?2 ORDER BY created_at DESC LIMIT {}",
+                    limit
+                );
+                let mut stmt = conn.prepare(&query)?;
+                let entries: Vec<MemoryEntry> = stmt
+                    .query_map(rusqlite::params![t.as_str(), max_tier.as_u8()], |row| Self::row_to_entry(row))?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                Ok(entries)
+            },
+            None => {
+                let query = format!(
+                    "SELECT id, content, memory_type, security_tier, created_at, updated_at, metadata, summary
+                     FROM memories WHERE security_tier <= ?1 ORDER BY created_at DESC LIMIT {}",
+                    limit
+                );
+                let mut stmt = conn.prepare(&query)?;
+                let entries: Vec<MemoryEntry> = stmt
+                    .query_map(rusqlite::params![max_tier.as_u8()], |row| Self::row_to_entry(row))?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                Ok(entries)
+            },
+        }
     }
 
     /// Get recent memories (backward compatible - returns all tiers)

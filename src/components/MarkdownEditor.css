@@ -49,6 +49,17 @@
   background-color: var(--border);
 }
 
+.toolbar-btn-save {
+  background-color: var(--accent);
+  color: white;
+  font-weight: 500;
+}
+
+.toolbar-btn-save:hover {
+  background-color: var(--accent-hover);
+  color: white;
+}
+
 .editor-container {
   flex: 1;
   overflow: hidden;

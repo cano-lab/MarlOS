@@ -5,9 +5,11 @@
 pub mod kernel;
 pub mod memory;
 pub mod document;
+#[cfg(feature = "tauri-app")]
 pub mod commands;
 pub mod pdf;
 pub mod epub;
+pub mod images;
 pub mod ai;
 pub mod healing_test;
 pub mod llm_client;
@@ -22,11 +24,24 @@ pub mod andor_client;
 pub mod llm_tasks;
 pub mod mcp;
 pub mod paper_generator;
+pub mod platform;
+pub mod proactive;
+pub mod sessions;
+pub mod provider_store;
+pub mod embedding_store;
+pub mod embedding_analysis;
+pub mod embedding_transform;
+pub mod pca_cache;
+pub mod repo_tracker;
+pub mod chunking;
 
+#[cfg(feature = "tauri-app")]
 use std::sync::Arc;
+#[cfg(feature = "tauri-app")]
 use tauri::Manager;
 
 /// Initialize and run the Tauri application
+#[cfg(feature = "tauri-app")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
@@ -90,6 +105,39 @@ pub fn run() {
             let semantic_search = semantic_search::SemanticSearch::new(object_store, embedding_manager);
             log::info!("Semantic search initialized");
 
+            // Initialize SessionManager
+            let session_manager = sessions::SessionManager::new()
+                .expect("Failed to create session manager");
+
+            // Load existing sessions from disk
+            if let Err(e) = session_manager.load() {
+                log::warn!("Failed to load sessions: {}", e);
+            } else {
+                log::info!("Loaded {} sessions from disk", session_manager.get_session_history().len());
+            }
+
+            app.manage(session_manager);
+
+            // Initialize ProviderStore for custom AI providers
+            let provider_store = provider_store::ProviderStore::new();
+            log::info!("Provider store initialized");
+            app.manage(provider_store);
+
+            // Initialize EmbeddingStore for embedding configuration
+            let embedding_store = embedding_store::EmbeddingStore::new();
+            log::info!("Embedding store initialized");
+            app.manage(embedding_store);
+
+            // Initialize PCA cache for fast 3D space loading
+            let pca_cache = pca_cache::PCACacheManager::new(app_data_dir.clone());
+            log::info!("PCA cache initialized");
+            app.manage(pca_cache);
+
+            // Initialize RepoTracker for watched repositories
+            let repo_tracker = repo_tracker::RepoTracker::new();
+            log::info!("Repository tracker initialized with {} repos", repo_tracker.list_repos().len());
+            app.manage(repo_tracker);
+
             // Wrap in Arc for shared access across commands
             app.manage(Arc::new(semantic_search));
 
@@ -122,6 +170,18 @@ pub fn run() {
             commands::ai_chat,
             commands::ai_run_task,
             commands::ai_generate,
+            // Custom Provider commands
+            commands::custom_provider_list,
+            commands::custom_provider_get_active,
+            commands::custom_provider_get_active_id,
+            commands::custom_provider_get,
+            commands::custom_provider_add,
+            commands::custom_provider_update,
+            commands::custom_provider_delete,
+            commands::custom_provider_set_active,
+            commands::custom_provider_test,
+            commands::custom_provider_get_presets,
+            commands::custom_provider_create_from_preset,
             // Provider commands
             commands::provider_list,
             commands::provider_list_commands,
@@ -143,6 +203,7 @@ pub fn run() {
             commands::object_search,
             commands::object_find_similar,
             commands::object_import_file,
+            commands::import_repository,
             commands::object_export_file,
             // Tier management commands (LLM can use these)
             commands::object_get_tier,
@@ -192,6 +253,111 @@ pub fn run() {
             commands::paper_export,
             commands::paper_get_sections,
             commands::paper_get_findings,
+            // Proactive Intelligence commands
+            commands::proactive_on_file_opened,
+            commands::proactive_on_query,
+            commands::proactive_on_session_start,
+            commands::proactive_check_decision,
+            commands::proactive_log_decision,
+            commands::proactive_decision_stats,
+            // Mobile capture commands
+            commands::quick_capture,
+            commands::get_recent_objects,
+            commands::semantic_search,
+            commands::save_research_source,
+            commands::get_saved_sources,
+            commands::open_external_url,
+            // Thinking Debugger commands
+            commands::analyze_thinking,
+            commands::fact_check_claim,
+            commands::suggest_better_questions,
+            commands::list_sessions,
+            commands::get_session_conversation,
+            // Browser Sync commands
+            commands::detect_browsers,
+            commands::request_browser_access,
+            commands::scan_chatgpt_conversations,
+            commands::sync_chatgpt_conversations,
+            commands::skip_conversation,
+            commands::get_sync_state,
+            commands::set_auto_sync,
+            // Session commands
+            commands::start_session,
+            commands::end_session,
+            commands::get_current_session,
+            commands::get_session_history,
+            commands::resume_session,
+            commands::search_sessions,
+            commands::record_session_activity,
+            commands::take_session_snapshot,
+            commands::get_session_context,
+            commands::create_backfill_session,
+            commands::create_sample_sessions,
+            commands::import_conversations_as_sessions,
+            commands::debug_list_objects,
+            commands::import_claude_code_conversations,
+            commands::import_claude_code_sessions,
+            commands::sync_from_andor,
+            commands::import_chatgpt_export,
+            // LLM-accessible session queries
+            commands::get_session_details,
+            commands::get_sessions_by_provider,
+            commands::get_recent_files,
+            commands::get_active_ai_sessions,
+            commands::open_terminal,
+            commands::get_recent_context,
+            commands::get_session_vector_analysis,
+            // Vector Database Query UI commands
+            commands::index_sessions_to_vector_db,
+            commands::vector_search,
+            commands::find_similar,
+            commands::get_vector_clusters,
+            commands::get_all_vector_objects,
+            commands::clear_vector_database,
+            commands::force_reindex_all,
+            // Embedding configuration commands
+            commands::embedding_get_config,
+            commands::embedding_set_config,
+            commands::embedding_test_provider,
+            commands::embedding_get_presets,
+            commands::search_get_config,
+            commands::search_set_config,
+            commands::embedding_reset_to_defaults,
+            // Embedding Analysis commands
+            commands::analyze_embedding_space,
+            commands::test_vector_arithmetic,
+            commands::generate_toward_vector,
+            commands::interpolate_concepts,
+            commands::find_semantic_midpoint,
+            commands::analyze_vector_difference,
+            // 3D Idea Space commands
+            commands::get_idea_space_3d,
+            commands::get_idea_space_custom_axes,
+            commands::find_near_point_3d,
+            commands::get_idea_clusters,
+            commands::export_idea_space_vr,
+            commands::analyze_knowledge_center,
+            // Image Viewer commands
+            commands::get_image_info,
+            commands::render_image,
+            commands::get_supported_image_formats,
+            commands::is_supported_image,
+            // Repository Tracker commands
+            commands::repo_add,
+            commands::repo_remove,
+            commands::repo_list,
+            commands::repo_get_status,
+            commands::repo_sync,
+            commands::repo_set_auto_sync,
+            commands::repo_check_path,
+            // Semantic Calculator commands
+            commands::vector_calculate,
+            commands::vector_info,
+            // File operation commands (for chat slash commands)
+            commands::read_file_content,
+            commands::list_directory,
+            commands::ingest_file_to_memory,
+            commands::get_object_embedding,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

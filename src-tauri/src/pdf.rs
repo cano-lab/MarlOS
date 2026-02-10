@@ -365,10 +365,222 @@ impl PdfManager {
             y: y_points,
         })
     }
+
+    /// Extract text from a single page
+    pub fn extract_page_text(&self, page_index: u32) -> Result<String> {
+        let (bytes, page_count) = {
+            let state = self.state.lock().map_err(|_| PdfError::Lock)?;
+            let loaded = state.current_document.as_ref().ok_or(PdfError::NotLoaded)?;
+            (loaded.bytes.clone(), loaded.info.page_count)
+        };
+
+        if page_index >= page_count {
+            return Err(PdfError::InvalidPage(page_index));
+        }
+
+        let pdfium = Self::create_pdfium()?;
+        let document = pdfium.load_pdf_from_byte_slice(&bytes, None)?;
+        let page = document.pages().get(page_index as u16)?;
+        let text = page.text()?.all();
+
+        Ok(text)
+    }
+
+    /// Extract text from all pages
+    pub fn extract_all_text(&self) -> Result<Vec<String>> {
+        let (bytes, page_count) = {
+            let state = self.state.lock().map_err(|_| PdfError::Lock)?;
+            let loaded = state.current_document.as_ref().ok_or(PdfError::NotLoaded)?;
+            (loaded.bytes.clone(), loaded.info.page_count)
+        };
+
+        let pdfium = Self::create_pdfium()?;
+        let document = pdfium.load_pdf_from_byte_slice(&bytes, None)?;
+
+        let mut pages_text = Vec::with_capacity(page_count as usize);
+        for page in document.pages().iter() {
+            let text = page.text().map(|t| t.all()).unwrap_or_default();
+            pages_text.push(text);
+        }
+
+        Ok(pages_text)
+    }
+
+    /// Convert PDF to markdown format
+    pub fn to_markdown(&self) -> Result<String> {
+        let state = self.state.lock().map_err(|_| PdfError::Lock)?;
+        let loaded = state.current_document.as_ref().ok_or(PdfError::NotLoaded)?;
+        let info = loaded.info.clone();
+        drop(state);
+
+        let pages_text = self.extract_all_text()?;
+
+        let mut markdown = String::new();
+
+        // Title from metadata or filename
+        let title = info.title.as_ref()
+            .filter(|t| !t.is_empty())
+            .map(|t| t.clone())
+            .unwrap_or_else(|| {
+                Path::new(&info.path)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Untitled".to_string())
+            });
+
+        markdown.push_str(&format!("# {}\n\n", title));
+
+        if let Some(author) = &info.author {
+            if !author.is_empty() {
+                markdown.push_str(&format!("**Author:** {}\n\n", author));
+            }
+        }
+
+        markdown.push_str("---\n\n");
+
+        // Process each page
+        for (i, text) in pages_text.iter().enumerate() {
+            if i > 0 {
+                markdown.push_str("\n---\n\n");
+            }
+            markdown.push_str(&format!("## Page {}\n\n", i + 1));
+
+            // Clean and format the text
+            let cleaned = Self::clean_extracted_text(text);
+            markdown.push_str(&cleaned);
+            markdown.push_str("\n\n");
+        }
+
+        Ok(markdown)
+    }
+
+    /// Clean extracted PDF text for markdown
+    fn clean_extracted_text(text: &str) -> String {
+        let mut result = String::new();
+        let mut prev_was_empty = false;
+
+        for line in text.lines() {
+            let trimmed = line.trim();
+
+            if trimmed.is_empty() {
+                if !prev_was_empty {
+                    result.push_str("\n\n");
+                    prev_was_empty = true;
+                }
+                continue;
+            }
+
+            prev_was_empty = false;
+
+            // Detect potential headers (short lines, often all caps or ending with numbers)
+            if trimmed.len() < 100 && !trimmed.ends_with('.') && !trimmed.ends_with(',') {
+                // Check if it looks like a section header
+                if trimmed.chars().filter(|c| c.is_uppercase()).count() > trimmed.len() / 2 {
+                    result.push_str(&format!("### {}\n\n", trimmed));
+                    continue;
+                }
+            }
+
+            result.push_str(trimmed);
+            result.push(' ');
+        }
+
+        result.trim().to_string()
+    }
+
+    /// Export PDF to markdown file (static helper for CLI)
+    pub fn pdf_to_markdown_file(pdf_path: &str, output_path: Option<&str>) -> Result<String> {
+        let manager = PdfManager::new()?;
+        manager.open(pdf_path)?;
+        let markdown = manager.to_markdown()?;
+
+        let output = output_path.map(|p| p.to_string()).unwrap_or_else(|| {
+            let path = Path::new(pdf_path);
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            let parent = path.parent().unwrap_or(Path::new("."));
+            parent.join(format!("{}.md", stem)).to_string_lossy().to_string()
+        });
+
+        std::fs::write(&output, &markdown)?;
+        log::info!("Exported PDF to markdown: {}", output);
+
+        Ok(output)
+    }
 }
 
 impl Default for PdfManager {
     fn default() -> Self {
         Self::new().expect("Failed to initialize PDFium")
     }
+}
+
+// Standalone PDF text extraction - tries fast methods first
+/// Extract text from a PDF file using the fastest available method:
+/// 1. pdftotext (poppler) - very fast, installed on many systems
+/// 2. pdf-extract (pure Rust fallback) - slower but no external deps
+pub fn extract_text_simple(path: &str) -> std::result::Result<String, String> {
+    // Try pdftotext first (much faster for large PDFs)
+    if let Ok(text) = extract_with_pdftotext(path) {
+        log::info!("Extracted PDF text using pdftotext");
+        return Ok(text);
+    }
+
+    // Fall back to pdf-extract (pure Rust, slower)
+    log::info!("Falling back to pdf-extract for PDF text extraction");
+    pdf_extract::extract_text(path).map_err(|e| format!("PDF extraction error: {}", e))
+}
+
+/// Extract text using pdftotext command (from poppler-utils)
+fn extract_with_pdftotext(path: &str) -> std::result::Result<String, String> {
+    use std::process::Command;
+
+    let output = Command::new("pdftotext")
+        .args(["-enc", "UTF-8", "-layout", path, "-"])
+        .output()
+        .map_err(|e| format!("Failed to run pdftotext: {}", e))?;
+
+    if output.status.success() {
+        String::from_utf8(output.stdout)
+            .map_err(|e| format!("UTF-8 conversion error: {}", e))
+    } else {
+        Err(format!("pdftotext failed: {}", String::from_utf8_lossy(&output.stderr)))
+    }
+}
+
+/// Convert PDF to markdown using pdf-extract (pure Rust)
+pub fn pdf_to_markdown_simple(path: &str) -> std::result::Result<String, String> {
+    let text = extract_text_simple(path)?;
+
+    let path_obj = Path::new(path);
+    let title = path_obj
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Untitled".to_string());
+
+    let mut markdown = String::new();
+    markdown.push_str(&format!("# {}\n\n", title));
+    markdown.push_str("---\n\n");
+
+    // Clean and format the extracted text
+    let cleaned = PdfManager::clean_extracted_text(&text);
+    markdown.push_str(&cleaned);
+
+    Ok(markdown)
+}
+
+/// Export PDF to markdown file using pdf-extract (simple version for CLI)
+pub fn pdf_to_markdown_file_simple(pdf_path: &str, output_path: Option<&str>) -> std::result::Result<String, String> {
+    let markdown = pdf_to_markdown_simple(pdf_path)?;
+
+    let output = output_path.map(|p| p.to_string()).unwrap_or_else(|| {
+        let path = Path::new(pdf_path);
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+        let parent = path.parent().unwrap_or(Path::new("."));
+        parent.join(format!("{}.md", stem)).to_string_lossy().to_string()
+    });
+
+    std::fs::write(&output, &markdown).map_err(|e| format!("Write error: {}", e))?;
+    log::info!("Exported PDF to markdown: {}", output);
+
+    Ok(output)
 }

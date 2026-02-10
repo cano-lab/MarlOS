@@ -130,6 +130,75 @@ const PrintPreview: Component<PrintPreviewProps> = (props) => {
     }
   };
 
+  const exportToPdf = () => {
+    if (props.type !== "markdown") return;
+
+    // Create a hidden iframe for printing/exporting
+    const printFrame = document.createElement("iframe");
+    printFrame.style.position = "fixed";
+    printFrame.style.right = "0";
+    printFrame.style.bottom = "0";
+    printFrame.style.width = "0";
+    printFrame.style.height = "0";
+    printFrame.style.border = "0";
+    document.body.appendChild(printFrame);
+
+    const doc = printFrame.contentDocument || printFrame.contentWindow?.document;
+    if (!doc) return;
+
+    // Get the rendered preview content
+    const previewContent = document.querySelector(".print-preview-markdown-content");
+    const htmlContent = previewContent?.innerHTML || "";
+
+    // Smart printing CSS rules
+    const smartPrintingStyles = smartPrinting() ? `
+          /* Widow/orphan control */
+          p, li { orphans: 3; widows: 3; }
+          h1, h2, h3, h4, h5, h6 { break-after: avoid; page-break-after: avoid; }
+          h1 + *, h2 + *, h3 + * { break-before: avoid; page-break-before: avoid; }
+          pre, blockquote { break-inside: avoid; page-break-inside: avoid; }
+          table { break-inside: auto; }
+          thead { display: table-header-group; }
+          tr { break-after: auto; break-before: auto; page-break-after: auto; page-break-before: auto; }
+          @media print {
+            .page-break { break-after: page; page-break-after: always; }
+          }
+        ` : '';
+
+    doc.open();
+    doc.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Export to PDF</title>
+          <style>
+            body {
+              font-family: 'Times New Roman', Times, serif;
+              font-size: 12pt;
+              line-height: 1.6;
+              color: #000;
+              background: #fff;
+              margin: 0;
+              padding: ${marginTop()}in ${marginRight()}in ${marginBottom()}in ${marginLeft()}in;
+            }
+            ${smartPrintingStyles}
+          </style>
+        </head>
+        <body>${htmlContent}</body>
+      </html>
+    `);
+    doc.close();
+
+    // Wait for content to load, then trigger print (which allows Save as PDF)
+    setTimeout(() => {
+      printFrame.contentWindow?.print();
+      // Clean up
+      setTimeout(() => {
+        document.body.removeChild(printFrame);
+      }, 1000);
+    }, 250);
+  };
+
   const printMarkdown = () => {
     // Create a hidden iframe for printing
     const printFrame = document.createElement("iframe");
@@ -681,6 +750,15 @@ const PrintPreview: Component<PrintPreviewProps> = (props) => {
 
         <div class="print-preview-footer">
           <button class="btn-secondary" onClick={props.onClose}>Cancel</button>
+          <Show when={props.type === "markdown"}>
+            <button
+              class="btn-secondary"
+              onClick={exportToPdf}
+              disabled={loading()}
+            >
+              📄 Export to PDF
+            </button>
+          </Show>
           <button
             class="btn-primary"
             onClick={handlePrint}

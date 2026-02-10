@@ -670,3 +670,147 @@ Respond in this exact JSON format:
         Ok(())
     }
 }
+
+// ============================================================================
+// Session Summarization
+//===========================================================================
+
+/// Summarize a chunk of work sessions
+pub struct SummarizeSessionsTask {
+    pub sessions_text: String,
+    pub days_spanned: usize,
+    pub total_session_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSummaryResult {
+    pub summary: String,
+    pub key_projects: Vec<String>,
+    pub key_topics: Vec<String>,
+    pub activity_summary: String,
+}
+
+impl SummarizeSessionsTask {
+    pub fn new(sessions_text: String, days_spanned: usize, total_session_count: usize) -> Self {
+        Self {
+            sessions_text,
+            days_spanned,
+            total_session_count,
+        }
+    }
+}
+
+#[async_trait]
+impl LlmTask for SummarizeSessionsTask {
+    type Output = SessionSummaryResult;
+
+    fn name(&self) -> &'static str {
+        "summarize_sessions"
+    }
+
+    fn system_prompt(&self) -> String {
+        "You are an analytical assistant that summarizes work sessions. \
+         Focus on identifying key themes, projects, and patterns. \
+         Be concise and structured."
+            .to_string()
+    }
+
+    fn user_prompt(&self, _ctx: &TaskContext) -> String {
+        format!(
+            r#"Analyze these work sessions from the past {} days (total: {} sessions):
+
+{}
+
+Provide:
+1. A concise summary of the work (2-3 sentences)
+2. Key projects worked on
+3. Main topics/themes
+4. Activity patterns (e.g., "mostly coding with some research")
+
+Respond in this exact JSON format:
+{{
+  "summary": "Overall summary of work done",
+  "key_projects": ["project1", "project2"],
+  "key_topics": ["topic1", "topic2", "topic3"],
+  "activity_summary": "Brief description of activity patterns"
+}}"#,
+            self.days_spanned, self.total_session_count, self.sessions_text
+        )
+    }
+
+    fn parse_response(&self, response: &str) -> Result<Self::Output, String> {
+        extract_json(response)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.sessions_text.trim().is_empty() {
+            return Err("Sessions text cannot be empty".to_string());
+        }
+        Ok(())
+    }
+}
+
+/// Summarize multiple session summaries into one
+pub struct SummarizeSummariesTask {
+    pub summaries_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CombinedSummaryResult {
+    pub overview: String,
+    pub projects_worked_on: Vec<String>,
+    pub main_themes: Vec<String>,
+}
+
+impl SummarizeSummariesTask {
+    pub fn new(summaries_text: String) -> Self {
+        Self { summaries_text }
+    }
+}
+
+#[async_trait]
+impl LlmTask for SummarizeSummariesTask {
+    type Output = CombinedSummaryResult;
+
+    fn name(&self) -> &'static str {
+        "summarize_summaries"
+    }
+
+    fn system_prompt(&self) -> String {
+        "You are an analytical assistant that synthesizes multiple summaries into a coherent overview. \
+         Extract the most important information and create a clean, organized summary."
+            .to_string()
+    }
+
+    fn user_prompt(&self, _ctx: &TaskContext) -> String {
+        format!(
+            r#"Synthesize these session summaries into one coherent overview:
+
+{}
+
+Provide:
+1. A high-level overview (2-3 sentences)
+2. Projects worked on (deduplicated list)
+3. Main themes across all sessions
+
+Respond in this exact JSON format:
+{{
+  "overview": "High-level overview of all work",
+  "projects_worked_on": ["project1", "project2"],
+  "main_themes": ["theme1", "theme2", "theme3"]
+}}"#,
+            self.summaries_text
+        )
+    }
+
+    fn parse_response(&self, response: &str) -> Result<Self::Output, String> {
+        extract_json(response)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.summaries_text.trim().is_empty() {
+            return Err("Summaries text cannot be empty".to_string());
+        }
+        Ok(())
+    }
+}

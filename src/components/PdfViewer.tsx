@@ -58,7 +58,7 @@ const PdfViewer: Component<PdfViewerProps> = (props) => {
   const [pdfInfo, setPdfInfo] = createSignal<PdfInfo | null>(null);
   const [currentPage, setCurrentPage] = createSignal(0);
   const [zoom, setZoom] = createSignal(100);
-  const [dpi, setDpi] = createSignal(150);
+  const [dpi, setDpi] = createSignal(200); // Higher DPI for sharper text
   const [renderedPage, setRenderedPage] = createSignal<RenderedPage | null>(null);
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
@@ -471,7 +471,19 @@ const PdfViewer: Component<PdfViewerProps> = (props) => {
           </span>
         </Show>
         <span class="status-spacer" />
-        <span>DPI: {dpi()}</span>
+        <span class="dpi-control">
+          DPI:
+          <input
+            type="range"
+            min="100"
+            max="300"
+            step="25"
+            value={dpi()}
+            onInput={(e) => setDpi(parseInt(e.currentTarget.value))}
+            title={`${dpi()} DPI - Higher = Sharper`}
+          />
+          <span class="dpi-value">{dpi()}</span>
+        </span>
       </div>
     </div>
   );

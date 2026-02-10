@@ -411,6 +411,107 @@ pub async fn ai_generate(
 }
 
 // ============================================================================
+// Custom Provider Commands
+// ============================================================================
+
+use crate::provider_store::{ProviderStore, CustomProviderConfig, ProviderPreset, get_presets};
+
+/// List all custom providers
+#[tauri::command]
+pub fn custom_provider_list(
+    store: State<'_, ProviderStore>,
+) -> Result<Vec<CustomProviderConfig>, String> {
+    store.list()
+}
+
+/// Get the active provider
+#[tauri::command]
+pub fn custom_provider_get_active(
+    store: State<'_, ProviderStore>,
+) -> Result<Option<CustomProviderConfig>, String> {
+    store.get_active()
+}
+
+/// Get the active provider ID
+#[tauri::command]
+pub fn custom_provider_get_active_id(
+    store: State<'_, ProviderStore>,
+) -> Result<Option<String>, String> {
+    store.get_active_id()
+}
+
+/// Get a provider by ID
+#[tauri::command]
+pub fn custom_provider_get(
+    id: String,
+    store: State<'_, ProviderStore>,
+) -> Result<Option<CustomProviderConfig>, String> {
+    store.get(&id)
+}
+
+/// Add a new custom provider
+#[tauri::command]
+pub fn custom_provider_add(
+    config: CustomProviderConfig,
+    store: State<'_, ProviderStore>,
+) -> Result<String, String> {
+    store.add(config)
+}
+
+/// Update an existing provider
+#[tauri::command]
+pub fn custom_provider_update(
+    id: String,
+    config: CustomProviderConfig,
+    store: State<'_, ProviderStore>,
+) -> Result<(), String> {
+    store.update(&id, config)
+}
+
+/// Delete a provider
+#[tauri::command]
+pub fn custom_provider_delete(
+    id: String,
+    store: State<'_, ProviderStore>,
+) -> Result<(), String> {
+    store.delete(&id)
+}
+
+/// Set the active provider
+#[tauri::command]
+pub fn custom_provider_set_active(
+    id: String,
+    store: State<'_, ProviderStore>,
+) -> Result<(), String> {
+    store.set_active(&id)
+}
+
+/// Test a provider connection
+#[tauri::command]
+pub async fn custom_provider_test(
+    id: String,
+    store: State<'_, ProviderStore>,
+) -> Result<bool, String> {
+    store.test_provider(&id).await
+}
+
+/// Get provider presets
+#[tauri::command]
+pub fn custom_provider_get_presets() -> Vec<ProviderPreset> {
+    get_presets()
+}
+
+/// Create a provider from a preset
+#[tauri::command]
+pub fn custom_provider_create_from_preset(
+    preset_name: String,
+    api_key: Option<String>,
+) -> Result<CustomProviderConfig, String> {
+    ProviderStore::create_from_preset(&preset_name, api_key)
+        .ok_or_else(|| format!("Preset not found: {}", preset_name))
+}
+
+// ============================================================================
 // Provider Commands
 // ============================================================================
 
@@ -926,6 +1027,279 @@ pub async fn object_import_file(
     );
 
     Ok(ObjectView::from(&result.object))
+}
+
+/// Import a repository/directory recursively
+#[tauri::command]
+pub async fn import_repository(
+    app: tauri::AppHandle,
+    path: String,
+    search: State<'_, Arc<SemanticSearch>>,
+    pca_cache: State<'_, crate::pca_cache::PCACacheManager>,
+) -> Result<String, String> {
+    use std::path::Path;
+    use tauri::Emitter;
+    use walkdir::WalkDir;
+    use crate::semantic_object::CreateOptions;
+
+    let repo_path = Path::new(&path);
+    if !repo_path.is_dir() {
+        return Err(format!("{} is not a directory", path));
+    }
+
+    // Get repo name for tagging
+    let repo_name = repo_path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let _ = app.emit("repo-import-progress", serde_json::json!({
+        "stage": "scanning",
+        "message": format!("Scanning {}...", repo_name),
+        "imported": 0,
+        "total": 0
+    }));
+
+    // Code file extensions to include
+    let code_extensions: std::collections::HashSet<&str> = [
+        "rs", "py", "js", "ts", "tsx", "jsx", "go", "java", "c", "cpp", "h", "hpp",
+        "cs", "rb", "php", "swift", "kt", "scala", "r", "sql", "sh", "bash", "zsh",
+        "yaml", "yml", "toml", "json", "md", "txt", "html", "css", "scss", "less",
+        "vue", "svelte", "astro", "ex", "exs", "zig", "nim", "lua", "pl", "pm"
+    ].iter().cloned().collect();
+
+    // Directories to skip
+    let skip_dirs: std::collections::HashSet<&str> = [
+        "node_modules", "target", "dist", "build", ".git", "__pycache__",
+        ".next", ".nuxt", "vendor", "venv", ".venv", "env", ".env",
+        "coverage", ".cache", ".idea", ".vscode"
+    ].iter().cloned().collect();
+
+    // Collect files to import
+    let mut files_to_import: Vec<std::path::PathBuf> = Vec::new();
+
+    for entry in WalkDir::new(repo_path)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_str().unwrap_or("");
+            !skip_dirs.contains(name)
+        })
+    {
+        if let Ok(entry) = entry {
+            if entry.file_type().is_file() {
+                if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
+                    if code_extensions.contains(ext) {
+                        // Skip very large files (>500KB)
+                        if let Ok(meta) = entry.metadata() {
+                            if meta.len() < 500_000 {
+                                files_to_import.push(entry.path().to_path_buf());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let total = files_to_import.len();
+    log::info!("Found {} code files in {}", total, repo_name);
+
+    let _ = app.emit("repo-import-progress", serde_json::json!({
+        "stage": "importing",
+        "message": format!("Found {} files to import", total),
+        "imported": 0,
+        "total": total
+    }));
+
+    let mut imported = 0;
+    let mut chunks_created = 0;
+    let mut errors = 0;
+
+    // Chunking config for code files
+    use crate::chunking::{chunk_text, ChunkConfig};
+    use crate::semantic_object::{Relation, RelationType};
+    let chunk_config = ChunkConfig {
+        target_size: 2000,
+        min_size: 200,
+        max_size: 4000,
+        overlap: 100,
+    };
+
+    for (i, file_path) in files_to_import.iter().enumerate() {
+        // Create tags for the file
+        let relative_path = file_path.strip_prefix(repo_path)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // Report progress for every file since embedding is the slow part
+        let file_name = file_path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        let _ = app.emit("repo-import-progress", serde_json::json!({
+            "stage": "importing",
+            "message": format!("Processing {}/{}: {}", i + 1, total, file_name),
+            "imported": imported,
+            "total": total,
+            "current_file": relative_path.clone(),
+            "chunks_created": chunks_created
+        }));
+
+        let tags = vec![
+            format!("repo:{}", repo_name),
+            format!("path:{}", relative_path),
+            "kind:code".to_string(),
+        ];
+
+        let options = Some(CreateOptions {
+            tags: tags.clone(),
+            source_hint: Some(file_path.to_string_lossy().to_string()),
+            ..Default::default()
+        });
+
+        match FileBoundary::import(file_path, options) {
+            Ok(result) => {
+                // Store the parent object
+                let store = search.store.write().await;
+                if let Err(e) = store.create(&result.object) {
+                    log::warn!("Failed to store {}: {}", relative_path, e);
+                    errors += 1;
+                    continue;
+                }
+
+                // Index if text content - with proper chunking
+                if result.object.content_type.is_text() {
+                    if let Some(text) = result.object.content_as_str() {
+                        let file_ext = file_path.extension()
+                            .and_then(|e| e.to_str());
+
+                        let chunks = chunk_text(text, file_ext, &chunk_config);
+                        let num_chunks = chunks.len();
+
+                        if num_chunks == 1 {
+                            // Small file - just embed directly
+                            let text_to_embed = if text.len() > 8000 {
+                                &text[..8000]
+                            } else {
+                                text
+                            };
+
+                            match search.embeddings().embed(text_to_embed).await {
+                                Ok(embedding) => {
+                                    let model = search.embeddings().model_info().id.clone();
+                                    let _ = store.store_embedding(&result.object.suid, &embedding, &model);
+                                }
+                                Err(e) => {
+                                    log::warn!("Failed to embed {}: {}", relative_path, e);
+                                }
+                            }
+                        } else {
+                            // Large file - create chunk objects
+                            log::info!("Chunking {} into {} parts", relative_path, num_chunks);
+
+                            for (chunk_idx, chunk) in chunks.iter().enumerate() {
+                                // Progress update for each chunk
+                                let _ = app.emit("repo-import-progress", serde_json::json!({
+                                    "stage": "chunking",
+                                    "message": format!("Embedding chunk {}/{} of {}", chunk_idx + 1, num_chunks, file_name),
+                                    "imported": imported,
+                                    "total": total,
+                                    "current_file": relative_path.clone(),
+                                    "chunk": chunk_idx + 1,
+                                    "chunk_total": num_chunks
+                                }));
+
+                                // Create chunk object
+                                let chunk_name = format!("{}#chunk{}",
+                                    result.object.name.as_deref().unwrap_or(file_name),
+                                    chunk_idx);
+
+                                let context_suffix = chunk.context.as_ref()
+                                    .map(|c| format!(" ({})", c))
+                                    .unwrap_or_default();
+
+                                let mut chunk_tags = tags.clone();
+                                chunk_tags.push("kind:chunk".to_string());
+                                chunk_tags.push(format!("chunk:{}", chunk_idx));
+                                chunk_tags.push(format!("parent:{}", result.object.suid));
+
+                                let mut chunk_obj = SemanticObject::from_text(&chunk.text)
+                                    .with_name(&format!("{}{}", chunk_name, context_suffix));
+                                chunk_obj.tags = chunk_tags;
+
+                                // Link to parent
+                                chunk_obj.relations.push(Relation::new(
+                                    result.object.suid.clone(),
+                                    RelationType::DerivedFrom,
+                                ));
+
+                                // Store chunk
+                                if let Err(e) = store.create(&chunk_obj) {
+                                    log::warn!("Failed to store chunk {} of {}: {}", chunk_idx, relative_path, e);
+                                    continue;
+                                }
+
+                                // Embed chunk
+                                match search.embeddings().embed(&chunk.text).await {
+                                    Ok(embedding) => {
+                                        let model = search.embeddings().model_info().id.clone();
+                                        let _ = store.store_embedding(&chunk_obj.suid, &embedding, &model);
+                                        chunks_created += 1;
+                                    }
+                                    Err(e) => {
+                                        log::warn!("Failed to embed chunk {} of {}: {}", chunk_idx, relative_path, e);
+                                    }
+                                }
+                            }
+
+                            // Also embed the parent with first chunk for discoverability
+                            if let Some(first_chunk) = chunks.first() {
+                                let text_to_embed = if first_chunk.text.len() > 4000 {
+                                    &first_chunk.text[..4000]
+                                } else {
+                                    &first_chunk.text
+                                };
+
+                                if let Ok(embedding) = search.embeddings().embed(text_to_embed).await {
+                                    let model = search.embeddings().model_info().id.clone();
+                                    let _ = store.store_embedding(&result.object.suid, &embedding, &model);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                imported += 1;
+            }
+            Err(e) => {
+                log::warn!("Failed to import {}: {}", relative_path, e);
+                errors += 1;
+            }
+        }
+    }
+
+    // Invalidate PCA cache
+    if imported > 0 || chunks_created > 0 {
+        pca_cache.invalidate();
+    }
+
+    let chunk_msg = if chunks_created > 0 {
+        format!(", {} chunks", chunks_created)
+    } else {
+        String::new()
+    };
+
+    let _ = app.emit("repo-import-progress", serde_json::json!({
+        "stage": "done",
+        "message": format!("Done! Imported {} files{}", imported, chunk_msg),
+        "imported": imported,
+        "total": total,
+        "chunks_created": chunks_created
+    }));
+
+    log::info!("Repository import complete: {} files, {} chunks, {} errors", imported, chunks_created, errors);
+    Ok(format!("Imported {} files, created {} objects from {} ({} errors)",
+        imported, imported + chunks_created, repo_name, errors))
 }
 
 /// Export an object to a file
@@ -4905,6 +5279,7 @@ pub struct VectorCluster {
 pub async fn index_sessions_to_vector_db(
     manager: tauri::State<'_, crate::sessions::SessionManager>,
     search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    pca_cache: tauri::State<'_, crate::pca_cache::PCACacheManager>,
 ) -> Result<String, String> {
     use crate::sessions::vector_bridge;
 
@@ -5002,6 +5377,13 @@ pub async fn index_sessions_to_vector_db(
     };
 
     log::info!("Session indexing complete: {}", message);
+
+    // Invalidate PCA cache since object count changed
+    if indexed_count > 0 {
+        pca_cache.invalidate();
+        log::info!("PCA cache invalidated - will recompute on next 3D space load");
+    }
+
     Ok(message)
 }
 
@@ -5075,6 +5457,7 @@ pub async fn vector_search(
 #[tauri::command]
 pub async fn clear_vector_database(
     search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    pca_cache: tauri::State<'_, crate::pca_cache::PCACacheManager>,
 ) -> Result<String, String> {
     let store = search.store.write().await;
 
@@ -5104,7 +5487,336 @@ pub async fn clear_vector_database(
         }
     }
 
+    // Invalidate PCA cache
+    if deleted > 0 {
+        pca_cache.invalidate();
+    }
+
     Ok(format!("Cleared {} session chunks from vector database", deleted))
+}
+
+/// Safely truncate a string at a character boundary
+fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    // Find the last character boundary at or before max_bytes
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Force reindex all objects with current embedding model
+/// This re-embeds ALL objects with proper chunking, fixing dimension mismatches
+/// Uses streaming approach - process small groups at a time to minimize memory usage
+#[tauri::command]
+pub async fn force_reindex_all(
+    app: tauri::AppHandle,
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    pca_cache: tauri::State<'_, crate::pca_cache::PCACacheManager>,
+) -> Result<String, String> {
+    use tauri::Emitter;
+    use crate::chunking::{chunk_text, ChunkConfig};
+    use crate::semantic_object::{Relation, RelationType};
+
+    const GROUP_SIZE: usize = 10;      // Process 10 objects at a time
+    const EMBED_BATCH: usize = 4;      // Embed 4 texts per API call
+    const TIMEOUT_SECS: u64 = 60;      // Timeout per embedding call
+    const MAX_CHUNKS_PER_FILE: usize = 5; // Limit chunks per file to avoid explosion
+
+    // Log start
+    log::info!("=== REINDEX STARTING (streaming mode) ===");
+
+    // Conservative chunking - larger chunks, fewer of them
+    let chunk_config = ChunkConfig {
+        target_size: 6000,   // Larger chunks
+        min_size: 1000,      // No tiny chunks
+        max_size: 10000,     // Allow fairly large chunks
+        overlap: 200,
+    };
+
+    // Step 1: Get only SUIds (minimal memory)
+    log::info!("Step 1: Scanning for object IDs...");
+    let _ = app.emit("reindex-progress", serde_json::json!({
+        "stage": "cleanup",
+        "message": "Scanning objects...",
+        "current": 0,
+        "total": 0
+    }));
+
+    let (chunk_ids, parent_suids): (Vec<String>, Vec<String>) = {
+        let store = search.store.read().await;
+        let all_objects = store.list(100000, 0)
+            .map_err(|e| format!("Failed to list objects: {}", e))?;
+
+        let mut chunks = Vec::new();
+        let mut parents = Vec::new();
+
+        // Only store SUID strings, not objects
+        for obj in all_objects {
+            let suid_str = obj.suid.to_string();
+            if obj.tags.iter().any(|t| t == "kind:chunk") {
+                chunks.push(suid_str);
+            } else {
+                parents.push(suid_str);
+            }
+        }
+        log::info!("Found {} chunks to delete, {} parent objects", chunks.len(), parents.len());
+        (chunks, parents)
+    }; // Release read lock - all_objects dropped here
+
+    // Delete chunks in small batches
+    let mut chunks_deleted = 0;
+    if !chunk_ids.is_empty() {
+        log::info!("Deleting {} chunks in batches of 10...", chunk_ids.len());
+        let _ = app.emit("reindex-progress", serde_json::json!({
+            "stage": "cleanup",
+            "message": format!("Deleting {} old chunks...", chunk_ids.len()),
+            "current": 0,
+            "total": chunk_ids.len()
+        }));
+
+        for (i, chunk_batch) in chunk_ids.chunks(10).enumerate() {
+            // Parse SUIds and delete
+            {
+                let store = search.store.write().await;
+                for suid_str in chunk_batch {
+                    if let Ok(suid) = crate::semantic_object::Suid::parse(suid_str) {
+                        if store.delete(&suid).is_ok() {
+                            chunks_deleted += 1;
+                        }
+                    }
+                }
+            } // Release write lock
+
+            if i % 5 == 0 {
+                log::info!("Deleted {}/{} chunks", chunks_deleted, chunk_ids.len());
+                let _ = app.emit("reindex-progress", serde_json::json!({
+                    "stage": "cleanup",
+                    "message": format!("Deleted {}/{}...", chunks_deleted, chunk_ids.len()),
+                    "current": chunks_deleted,
+                    "total": chunk_ids.len()
+                }));
+            }
+            tokio::task::yield_now().await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+        }
+    }
+
+    let total_parents = parent_suids.len();
+    if total_parents == 0 {
+        return Ok("No objects to reindex".to_string());
+    }
+
+    log::info!("Step 2: Streaming process {} objects in groups of {}...", total_parents, GROUP_SIZE);
+
+    let model_name = search.embeddings().model_info().name.clone();
+    let mut total_embedded = 0;
+    let mut total_chunks = 0;
+    let mut total_whole_files = 0;  // Files embedded without chunking
+    let mut total_errors = 0;
+    let mut total_skipped = 0;
+    let mut total_too_small = 0;    // Files too small to chunk (< 10k chars)
+
+    // STREAMING APPROACH: Process objects in small groups
+    // Each group: fetch -> prepare -> embed -> store -> release memory
+    let total_groups = (parent_suids.len() + GROUP_SIZE - 1) / GROUP_SIZE;
+
+    for (group_idx, group) in parent_suids.chunks(GROUP_SIZE).enumerate() {
+        let group_start = group_idx * GROUP_SIZE;
+
+        log::info!("=== GROUP {}/{}: Processing items {}-{} of {} ===",
+            group_idx + 1, total_groups, group_start + 1, group_start + group.len(), total_parents);
+
+        let _ = app.emit("reindex-progress", serde_json::json!({
+            "stage": "processing",
+            "message": format!("Group {}/{}: {} whole, {} chunks ({} small)",
+                group_idx + 1, total_groups, total_whole_files, total_chunks, total_too_small),
+            "current": group_start,
+            "total": total_parents,
+            "chunks_created": total_chunks,
+            "whole_files": total_whole_files,
+            "too_small": total_too_small
+        }));
+
+        // Collect items for this group (small memory footprint)
+        let mut group_items: Vec<(crate::semantic_object::Suid, String)> = Vec::new();
+
+        for suid_str in group {
+            // Fetch object
+            let obj = {
+                let store = search.store.read().await;
+                let suid = match crate::semantic_object::Suid::parse(suid_str) {
+                    Ok(s) => s,
+                    Err(_) => { total_skipped += 1; continue; }
+                };
+                match store.get(&suid) {
+                    Ok(Some(o)) => o,
+                    _ => { total_skipped += 1; continue; }
+                }
+            };
+
+            // Get text content
+            let text = if let Some(content) = &obj.content {
+                String::from_utf8_lossy(content).to_string()
+            } else if let Some(summary) = &obj.summary {
+                format!("{}\n{}", obj.name.clone().unwrap_or_default(), summary)
+            } else {
+                obj.name.clone().unwrap_or_default()
+            };
+
+            if text.trim().is_empty() {
+                total_skipped += 1;
+                continue;
+            }
+
+            // Check if this needs chunking - chunk ANY long content, not just code
+            let is_code_file = obj.tags.iter().any(|t| t == "kind:code");
+            let is_pdf = obj.tags.iter().any(|t| t == "kind:pdf");
+            let is_session = obj.tags.iter().any(|t| t.starts_with("session:"));
+            let file_ext = obj.name.as_ref()
+                .and_then(|n| n.rsplit('.').next())
+                .filter(|ext| ext.len() <= 5);
+
+            // Track why we're not chunking
+            let needs_chunking = text.len() > chunk_config.max_size;
+            if !needs_chunking {
+                total_too_small += 1;
+            }
+
+            if needs_chunking {
+                let all_chunks = chunk_text(&text, file_ext, &chunk_config);
+                // Limit chunks per file to avoid memory explosion
+                let chunks: Vec<_> = all_chunks.into_iter().take(MAX_CHUNKS_PER_FILE).collect();
+
+                if chunks.len() > 1 {
+                    // Create chunk objects
+                    {
+                        let store = search.store.write().await;
+
+                        for (chunk_idx, chunk) in chunks.iter().enumerate() {
+                            let chunk_name = format!("{}#chunk{}",
+                                obj.name.as_deref().unwrap_or("chunk"),
+                                chunk_idx);
+
+                            let context_suffix = chunk.context.as_ref()
+                                .map(|c| format!(" ({})", c))
+                                .unwrap_or_default();
+
+                            let mut chunk_tags = obj.tags.clone();
+                            chunk_tags.push("kind:chunk".to_string());
+                            chunk_tags.push(format!("chunk:{}", chunk_idx));
+                            chunk_tags.push(format!("parent:{}", obj.suid));
+
+                            let mut chunk_obj = SemanticObject::from_text(&chunk.text)
+                                .with_name(&format!("{}{}", chunk_name, context_suffix));
+                            chunk_obj.tags = chunk_tags;
+
+                            chunk_obj.relations.push(Relation::new(
+                                obj.suid.clone(),
+                                RelationType::DerivedFrom,
+                            ));
+
+                            if store.create(&chunk_obj).is_ok() {
+                                let chunk_text = safe_truncate(&chunk.text, 4000).to_string();
+                                group_items.push((chunk_obj.suid, chunk_text));
+                                total_chunks += 1;
+                            }
+                        }
+                    } // Release write lock
+
+                    // Add parent with first chunk text
+                    if let Some(first_chunk) = chunks.first() {
+                        let text_to_embed = safe_truncate(&first_chunk.text, 4000).to_string();
+                        group_items.push((obj.suid.clone(), text_to_embed));
+                    }
+                    continue;
+                }
+            }
+
+            // Regular object (no chunking)
+            let text_to_embed = safe_truncate(&text, 8000).to_string();
+            group_items.push((obj.suid.clone(), text_to_embed));
+            total_whole_files += 1;
+        }
+
+        // Embed this group's items in small batches
+        log::info!("Group {} has {} items to embed", group_idx + 1, group_items.len());
+
+        if group_items.is_empty() {
+            log::info!("Group {} is empty, skipping to next group", group_idx + 1);
+            continue;
+        }
+
+        for (batch_idx, batch) in group_items.chunks(EMBED_BATCH).enumerate() {
+            log::info!("  Embedding batch {}: {} items", batch_idx + 1, batch.len());
+            let texts: Vec<&str> = batch.iter().map(|(_, t)| t.as_str()).collect();
+
+            // Embed with timeout
+            let embed_result = tokio::time::timeout(
+                tokio::time::Duration::from_secs(TIMEOUT_SECS),
+                search.embeddings().embed_batch(&texts)
+            ).await;
+
+            match embed_result {
+                Ok(Ok(embeddings)) => {
+                    log::info!("  Batch {} embedded successfully, storing...", batch_idx + 1);
+                    // Store embeddings (use write lock for safety)
+                    let store = search.store.write().await;
+                    for ((suid, _), embedding) in batch.iter().zip(embeddings.iter()) {
+                        if store.store_embedding(suid, embedding, &model_name).is_ok() {
+                            total_embedded += 1;
+                        } else {
+                            total_errors += 1;
+                        }
+                    }
+                    drop(store); // Explicitly release lock
+                    log::info!("  Batch {} stored. Total embedded: {}", batch_idx + 1, total_embedded);
+                }
+                Ok(Err(e)) => {
+                    log::error!("  Batch {} embed FAILED: {}", batch_idx + 1, e);
+                    total_errors += batch.len();
+                }
+                Err(_) => {
+                    log::error!("  Batch {} TIMED OUT after {}s", batch_idx + 1, TIMEOUT_SECS);
+                    total_errors += batch.len();
+                }
+            }
+
+            // Small delay between batches
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        }
+
+        log::info!("=== GROUP {} COMPLETE: {} embedded so far, {} errors ===",
+            group_idx + 1, total_embedded, total_errors);
+
+        // Memory is released here as group_items goes out of scope
+        tokio::task::yield_now().await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+    }
+
+    // Invalidate PCA cache
+    if total_embedded > 0 || total_chunks > 0 {
+        pca_cache.invalidate();
+        log::info!("PCA cache invalidated after reindexing");
+    }
+
+    let _ = app.emit("reindex-progress", serde_json::json!({
+        "stage": "done",
+        "message": format!("Done! {} whole files, {} chunks, {} total", total_whole_files, total_chunks, total_embedded),
+        "current": total_parents,
+        "total": total_parents,
+        "chunks_created": total_chunks,
+        "whole_files": total_whole_files
+    }));
+
+    log::info!("=== REINDEX COMPLETE: {} whole files, {} chunks, {} total embedded, {} errors, {} skipped ===",
+        total_whole_files, total_chunks, total_embedded, total_errors, total_skipped);
+
+    Ok(format!("Embedded {} whole files, {} chunks, {} total ({} errors, {} skipped)",
+        total_whole_files, total_chunks, total_embedded, total_errors, total_skipped))
 }
 
 /// Find objects similar to a specific object
@@ -5390,4 +6102,1891 @@ pub fn get_supported_image_formats() -> Vec<String> {
 #[tauri::command]
 pub fn is_supported_image(path: String) -> bool {
     crate::images::is_supported(std::path::Path::new(&path))
+}
+
+// ============================================================================
+// Embedding Configuration Commands
+// ============================================================================
+
+use crate::embedding_store::{
+    EmbeddingStore, EmbeddingConfig, SearchConfig,
+    EmbeddingModelPreset, get_embedding_presets,
+    test_embedding_provider,
+};
+
+/// Get the current embedding configuration
+#[tauri::command]
+pub fn embedding_get_config(
+    store: State<'_, EmbeddingStore>,
+) -> Result<EmbeddingConfig, String> {
+    store.get_embedding_config()
+}
+
+/// Set the embedding configuration
+#[tauri::command]
+pub fn embedding_set_config(
+    config: EmbeddingConfig,
+    store: State<'_, EmbeddingStore>,
+) -> Result<(), String> {
+    store.set_embedding_config(config)
+}
+
+/// Test an embedding provider configuration
+#[tauri::command]
+pub async fn embedding_test_provider(
+    config: EmbeddingConfig,
+) -> Result<bool, String> {
+    test_embedding_provider(&config).await
+}
+
+/// Get available embedding model presets
+#[tauri::command]
+pub fn embedding_get_presets() -> Vec<EmbeddingModelPreset> {
+    get_embedding_presets()
+}
+
+/// Get the current search configuration
+#[tauri::command]
+pub fn search_get_config(
+    store: State<'_, EmbeddingStore>,
+) -> Result<SearchConfig, String> {
+    store.get_search_config()
+}
+
+/// Set the search configuration
+#[tauri::command]
+pub fn search_set_config(
+    config: SearchConfig,
+    store: State<'_, EmbeddingStore>,
+) -> Result<(), String> {
+    store.set_search_config(config)
+}
+
+/// Reset embedding and search configuration to defaults
+#[tauri::command]
+pub fn embedding_reset_to_defaults(
+    store: State<'_, EmbeddingStore>,
+) -> Result<(), String> {
+    store.reset_to_defaults()
+}
+
+// ============================================================================
+// Embedding Analysis Commands
+// ============================================================================
+
+use crate::embedding_analysis::{
+    EmbeddingSpaceAnalysis, ClusterAnalysis, QAPairStats, DiffVectorAnalysis,
+    PredictionResult, VectorTargetingResult, GeneratedCandidate, InterpolationResult,
+    InterpolationPoint, vector_diff, vector_add, average_vectors, find_nearest,
+    analyze_diff_consistency, compute_stats, vector_magnitude, interpolate_vectors,
+    normalize,
+};
+use crate::embeddings::cosine_similarity;
+
+/// Analyze the embedding space structure
+#[tauri::command]
+pub async fn analyze_embedding_space(
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+) -> Result<EmbeddingSpaceAnalysis, String> {
+    let store = search.store.read().await;
+
+    // Get all objects with embeddings
+    let objects_with_embeddings = store
+        .get_objects_with_embeddings(crate::memory::SecurityTier::Sealed)
+        .map_err(|e| format!("Failed to get objects: {}", e))?;
+
+    let total_objects = store.count().unwrap_or(0);
+    let objects_with_emb = objects_with_embeddings.len();
+    let dimensions = objects_with_embeddings
+        .first()
+        .map(|(_, emb)| emb.len())
+        .unwrap_or(0);
+
+    // Separate Q&A pairs (look for session chunks with user/assistant patterns)
+    let mut questions: Vec<(String, String, Vec<f32>)> = Vec::new();
+    let mut answers: Vec<(String, String, Vec<f32>)> = Vec::new();
+    let mut all_embeddings: Vec<(String, Vec<f32>)> = Vec::new();
+
+    for (obj, embedding) in &objects_with_embeddings {
+        let content = obj.content_as_str().unwrap_or_default();
+        let preview: String = content.chars().take(100).collect();
+
+        all_embeddings.push((obj.suid.to_string(), embedding.clone()));
+
+        // Heuristic: questions often start with interrogative words or end with ?
+        let is_question = content.contains('?')
+            || content.to_lowercase().starts_with("how ")
+            || content.to_lowercase().starts_with("what ")
+            || content.to_lowercase().starts_with("why ")
+            || content.to_lowercase().starts_with("can ")
+            || content.to_lowercase().starts_with("is ");
+
+        // Check for user/assistant tags
+        let has_user_tag = obj.tags.iter().any(|t| t.contains("user") || t.contains("human"));
+        let has_assistant_tag = obj.tags.iter().any(|t| t.contains("assistant") || t.contains("ai"));
+
+        if is_question || has_user_tag {
+            questions.push((obj.suid.to_string(), preview, embedding.clone()));
+        } else if has_assistant_tag || (!is_question && content.len() > 50) {
+            answers.push((obj.suid.to_string(), preview, embedding.clone()));
+        }
+    }
+
+    // Compute cluster analysis
+    let cluster_analysis = if !questions.is_empty() && !answers.is_empty() {
+        // Compute Q-A similarities (pair each Q with nearest A)
+        let mut qa_similarities: Vec<f32> = Vec::new();
+        let mut pair_stats: Vec<QAPairStats> = Vec::new();
+
+        for (q_id, q_preview, q_emb) in &questions {
+            if let Some((a_id, sim)) = find_nearest(q_emb, &answers.iter().map(|(id, _, emb)| (id.clone(), emb.clone())).collect::<Vec<_>>(), &[]) {
+                qa_similarities.push(sim);
+
+                let a_preview = answers.iter()
+                    .find(|(id, _, _)| id == a_id)
+                    .map(|(_, p, _)| p.clone())
+                    .unwrap_or_default();
+
+                let diff = vector_diff(q_emb, &answers.iter().find(|(id, _, _)| id == a_id).unwrap().2);
+
+                pair_stats.push(QAPairStats {
+                    question_id: q_id.clone(),
+                    answer_id: a_id.to_string(),
+                    question_preview: q_preview.clone(),
+                    answer_preview: a_preview,
+                    similarity: sim,
+                    distance: 1.0 - sim,
+                    diff_magnitude: vector_magnitude(&diff),
+                });
+            }
+        }
+
+        // Compute random pair similarities (baseline)
+        let mut random_similarities: Vec<f32> = Vec::new();
+        for i in 0..all_embeddings.len().min(100) {
+            for j in (i + 1)..all_embeddings.len().min(100) {
+                random_similarities.push(cosine_similarity(&all_embeddings[i].1, &all_embeddings[j].1));
+            }
+        }
+
+        let (avg_qa, std_qa) = compute_stats(&qa_similarities);
+        let (avg_random, _) = compute_stats(&random_similarities);
+
+        Some(ClusterAnalysis {
+            avg_qa_similarity: avg_qa,
+            std_qa_similarity: std_qa,
+            avg_random_similarity: avg_random,
+            qa_vs_random_ratio: if avg_random > 0.0 { avg_qa / avg_random } else { 1.0 },
+            pairs: pair_stats.into_iter().take(20).collect(), // Limit to 20 samples
+        })
+    } else {
+        None
+    };
+
+    // Analyze diff vectors
+    let diff_analysis = if let Some(ref cluster) = cluster_analysis {
+        if cluster.pairs.len() >= 3 {
+            // Compute diff vectors for each Q-A pair
+            let mut diff_vectors: Vec<Vec<f32>> = Vec::new();
+
+            for pair in &cluster.pairs {
+                let q_emb = questions.iter().find(|(id, _, _)| id == &pair.question_id).map(|(_, _, e)| e);
+                let a_emb = answers.iter().find(|(id, _, _)| id == &pair.answer_id).map(|(_, _, e)| e);
+
+                if let (Some(q), Some(a)) = (q_emb, a_emb) {
+                    diff_vectors.push(vector_diff(q, a));
+                }
+            }
+
+            let consistency = analyze_diff_consistency(&diff_vectors);
+            let avg_magnitude = diff_vectors.iter().map(|d| vector_magnitude(d)).sum::<f32>() / diff_vectors.len() as f32;
+
+            // Test prediction: Q + avg_diff ≈ A?
+            let avg_diff = average_vectors(&diff_vectors);
+            let mut predictions: Vec<PredictionResult> = Vec::new();
+            let mut prediction_scores: Vec<f32> = Vec::new();
+
+            if let Some(ref avg_d) = avg_diff {
+                for (i, (q_id, q_preview, q_emb)) in questions.iter().take(5).enumerate() {
+                    let predicted = vector_add(q_emb, avg_d);
+
+                    if let Some((nearest_id, sim)) = find_nearest(&predicted, &answers.iter().map(|(id, _, emb)| (id.clone(), emb.clone())).collect::<Vec<_>>(), &[]) {
+                        let nearest_preview = answers.iter()
+                            .find(|(id, _, _)| id == nearest_id)
+                            .map(|(_, p, _)| p.clone())
+                            .unwrap_or_default();
+
+                        // Check if prediction matches actual answer
+                        let actual_answer = cluster.pairs.iter()
+                            .find(|p| p.question_id == *q_id)
+                            .map(|p| p.answer_preview.clone())
+                            .unwrap_or_default();
+
+                        prediction_scores.push(sim);
+                        predictions.push(PredictionResult {
+                            question: q_preview.clone(),
+                            actual_answer,
+                            predicted_nearest: nearest_preview,
+                            similarity: sim,
+                        });
+                    }
+                }
+            }
+
+            let (avg_pred, _) = compute_stats(&prediction_scores);
+
+            Some(DiffVectorAnalysis {
+                diff_consistency: consistency,
+                avg_diff_magnitude: avg_magnitude,
+                prediction_accuracy: avg_pred,
+                sample_predictions: predictions,
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Generate recommendations
+    let mut recommendations: Vec<String> = Vec::new();
+
+    if let Some(ref cluster) = cluster_analysis {
+        if cluster.avg_qa_similarity < 0.5 {
+            recommendations.push("Low Q&A similarity suggests questions and answers aren't well-connected semantically".to_string());
+        }
+        if cluster.qa_vs_random_ratio < 1.5 {
+            recommendations.push("Q&A pairs aren't much more similar than random pairs - embeddings may not capture conversation context well".to_string());
+        }
+        if cluster.qa_vs_random_ratio > 2.0 {
+            recommendations.push("Good! Q&A pairs are significantly more similar than random pairs".to_string());
+        }
+    }
+
+    if let Some(ref diff) = diff_analysis {
+        if diff.diff_consistency > 0.7 {
+            recommendations.push(format!("Diff vectors are consistent ({:.0}%) - there's a learnable 'answer direction'", diff.diff_consistency * 100.0));
+        } else {
+            recommendations.push(format!("Diff vectors vary widely ({:.0}% consistency) - answers are topic-dependent", diff.diff_consistency * 100.0));
+        }
+
+        if diff.prediction_accuracy > 0.6 {
+            recommendations.push("Vector arithmetic works! Q + avg_diff predicts answers reasonably well".to_string());
+        }
+    }
+
+    if questions.is_empty() || answers.is_empty() {
+        recommendations.push("Not enough Q&A pairs found for analysis. Try indexing more sessions.".to_string());
+    }
+
+    Ok(EmbeddingSpaceAnalysis {
+        total_objects,
+        objects_with_embeddings: objects_with_emb,
+        embedding_dimensions: dimensions,
+        cluster_analysis,
+        diff_vector_analysis: diff_analysis,
+        recommendations,
+    })
+}
+
+/// Generate text that targets a specific vector region
+/// Uses iterative generation: generate candidates, embed them, keep best, refine
+#[tauri::command]
+pub async fn generate_toward_vector(
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    ai: tauri::State<'_, std::sync::Arc<crate::ai::AiManager>>,
+    target_concept: String,
+    iterations: Option<usize>,
+) -> Result<VectorTargetingResult, String> {
+    let max_iterations = iterations.unwrap_or(3);
+
+    // First, embed the target concept
+    let target_embedding = search.embeddings().embed(&target_concept).await
+        .map_err(|e| format!("Failed to embed target: {}", e))?;
+
+    let mut all_candidates: Vec<GeneratedCandidate> = Vec::new();
+    let mut best_so_far: Option<GeneratedCandidate> = None;
+    let mut current_prompt = target_concept.clone();
+
+    for iteration in 0..max_iterations {
+        // Generate variations using LLM
+        let prompt = if iteration == 0 {
+            format!(
+                "Generate 5 different short phrases (one per line) that express the same concept as: \"{}\"\n\
+                Be creative but stay semantically similar. Just output the phrases, nothing else.",
+                current_prompt
+            )
+        } else {
+            format!(
+                "The phrase \"{}\" is close but not quite right for expressing: \"{}\"\n\
+                Generate 5 alternative short phrases (one per line) that might be even closer semantically.\n\
+                Just output the phrases, nothing else.",
+                best_so_far.as_ref().map(|b| b.text.as_str()).unwrap_or(&current_prompt),
+                target_concept
+            )
+        };
+
+        let messages = vec![
+            crate::ai::Message {
+                role: crate::ai::Role::User,
+                content: prompt,
+            }
+        ];
+
+        let response = ai.chat(messages, None).await
+            .map_err(|e| format!("LLM generation failed: {}", e))?;
+
+        // Parse candidates from response
+        let candidates: Vec<String> = response.content
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && l.len() > 3 && l.len() < 200)
+            .map(|l| l.trim_start_matches(|c: char| c.is_numeric() || c == '.' || c == ')' || c == '-').trim().to_string())
+            .take(5)
+            .collect();
+
+        // Embed each candidate and compute similarity to target
+        for candidate_text in candidates {
+            if candidate_text.is_empty() {
+                continue;
+            }
+
+            match search.embeddings().embed(&candidate_text).await {
+                Ok(candidate_emb) => {
+                    let similarity = cosine_similarity(&target_embedding, &candidate_emb);
+
+                    let candidate = GeneratedCandidate {
+                        text: candidate_text,
+                        similarity_to_target: similarity,
+                        iteration,
+                    };
+
+                    // Update best if this is better
+                    if best_so_far.as_ref().map(|b| similarity > b.similarity_to_target).unwrap_or(true) {
+                        best_so_far = Some(candidate.clone());
+                    }
+
+                    all_candidates.push(candidate);
+                }
+                Err(e) => {
+                    log::warn!("Failed to embed candidate: {}", e);
+                }
+            }
+        }
+
+        // Check convergence (similarity > 0.9)
+        if best_so_far.as_ref().map(|b| b.similarity_to_target > 0.9).unwrap_or(false) {
+            break;
+        }
+    }
+
+    // Sort candidates by similarity
+    all_candidates.sort_by(|a, b| b.similarity_to_target.partial_cmp(&a.similarity_to_target).unwrap_or(std::cmp::Ordering::Equal));
+
+    let converged = best_so_far.as_ref().map(|b| b.similarity_to_target > 0.9).unwrap_or(false);
+
+    Ok(VectorTargetingResult {
+        target_description: target_concept,
+        candidates: all_candidates.into_iter().take(10).collect(),
+        best_match: best_so_far,
+        iterations: max_iterations,
+        converged,
+    })
+}
+
+/// Interpolate between two concepts and find what exists along the path
+#[tauri::command]
+pub async fn interpolate_concepts(
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    start_concept: String,
+    end_concept: String,
+    steps: Option<usize>,
+) -> Result<InterpolationResult, String> {
+    let num_steps = steps.unwrap_or(5);
+
+    // Embed both concepts
+    let start_emb = search.embeddings().embed(&start_concept).await
+        .map_err(|e| format!("Failed to embed start: {}", e))?;
+    let end_emb = search.embeddings().embed(&end_concept).await
+        .map_err(|e| format!("Failed to embed end: {}", e))?;
+
+    // Get all objects for finding nearest
+    let store = search.store.read().await;
+    let objects_with_embeddings = store
+        .get_objects_with_embeddings(crate::memory::SecurityTier::Sealed)
+        .map_err(|e| format!("Failed to get objects: {}", e))?;
+
+    let candidates: Vec<(String, Vec<f32>)> = objects_with_embeddings
+        .iter()
+        .map(|(obj, emb)| {
+            let preview: String = obj.content_as_str().unwrap_or_default().chars().take(150).collect();
+            (preview, emb.clone())
+        })
+        .collect();
+
+    drop(store);
+
+    // Interpolate and find nearest at each step
+    let mut path: Vec<InterpolationPoint> = Vec::new();
+
+    for i in 0..=num_steps {
+        let t = i as f32 / num_steps as f32;
+        let interpolated = interpolate_vectors(&start_emb, &end_emb, t);
+
+        // Find nearest existing content
+        if let Some((nearest, similarity)) = find_nearest(&interpolated, &candidates, &[]) {
+            path.push(InterpolationPoint {
+                t,
+                nearest_content: nearest.to_string(),
+                similarity,
+            });
+        }
+    }
+
+    Ok(InterpolationResult {
+        start_text: start_concept,
+        end_text: end_concept,
+        path,
+    })
+}
+
+/// Find the "semantic midpoint" between two concepts
+#[tauri::command]
+pub async fn find_semantic_midpoint(
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    concept_a: String,
+    concept_b: String,
+) -> Result<serde_json::Value, String> {
+    // Embed both
+    let emb_a = search.embeddings().embed(&concept_a).await
+        .map_err(|e| format!("Failed to embed A: {}", e))?;
+    let emb_b = search.embeddings().embed(&concept_b).await
+        .map_err(|e| format!("Failed to embed B: {}", e))?;
+
+    // Compute midpoint
+    let midpoint = interpolate_vectors(&emb_a, &emb_b, 0.5);
+
+    // Find nearest objects to midpoint
+    let store = search.store.read().await;
+    let objects_with_embeddings = store
+        .get_objects_with_embeddings(crate::memory::SecurityTier::Sealed)
+        .map_err(|e| format!("Failed to get objects: {}", e))?;
+
+    let mut scored: Vec<(String, f32)> = objects_with_embeddings
+        .iter()
+        .map(|(obj, emb)| {
+            let preview: String = obj.content_as_str().unwrap_or_default().chars().take(150).collect();
+            (preview, cosine_similarity(&midpoint, emb))
+        })
+        .collect();
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let top5: Vec<_> = scored.into_iter().take(5).collect();
+
+    // Also compute how similar A and B are to each other
+    let ab_similarity = cosine_similarity(&emb_a, &emb_b);
+
+    Ok(serde_json::json!({
+        "concept_a": concept_a,
+        "concept_b": concept_b,
+        "similarity_between_concepts": ab_similarity,
+        "semantic_midpoint_candidates": top5.iter().map(|(preview, score)| {
+            serde_json::json!({
+                "content": preview,
+                "similarity_to_midpoint": score
+            })
+        }).collect::<Vec<_>>(),
+        "interpretation": format!(
+            "The semantic midpoint between '{}' and '{}' (similarity: {:.2}) is closest to the content shown above.",
+            concept_a, concept_b, ab_similarity
+        )
+    }))
+}
+
+/// Analyze what dimensions differ most between two concepts
+#[tauri::command]
+pub async fn analyze_vector_difference(
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    concept_a: String,
+    concept_b: String,
+) -> Result<serde_json::Value, String> {
+    let emb_a = search.embeddings().embed(&concept_a).await
+        .map_err(|e| format!("Failed to embed A: {}", e))?;
+    let emb_b = search.embeddings().embed(&concept_b).await
+        .map_err(|e| format!("Failed to embed B: {}", e))?;
+
+    let diff = vector_diff(&emb_a, &emb_b);
+    let magnitude = vector_magnitude(&diff);
+    let similarity = cosine_similarity(&emb_a, &emb_b);
+
+    // Find dimensions with largest absolute differences
+    let mut dim_diffs: Vec<(usize, f32)> = diff.iter()
+        .enumerate()
+        .map(|(i, &d)| (i, d.abs()))
+        .collect();
+    dim_diffs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let top_dimensions: Vec<_> = dim_diffs.iter().take(10).collect();
+
+    // Compute some statistics about the difference
+    let (mean_diff, std_diff) = compute_stats(&diff.iter().map(|x| x.abs()).collect::<Vec<_>>());
+
+    // Count how many dimensions changed significantly (> 2 std devs)
+    let significant_threshold = mean_diff + 2.0 * std_diff;
+    let significant_dims = diff.iter().filter(|&&d| d.abs() > significant_threshold).count();
+
+    Ok(serde_json::json!({
+        "concept_a": concept_a,
+        "concept_b": concept_b,
+        "cosine_similarity": similarity,
+        "euclidean_distance": magnitude,
+        "total_dimensions": diff.len(),
+        "mean_absolute_difference": mean_diff,
+        "std_absolute_difference": std_diff,
+        "significant_dimensions": significant_dims,
+        "top_differing_dimensions": top_dimensions.iter().map(|(dim, val)| {
+            serde_json::json!({
+                "dimension": dim,
+                "absolute_difference": val,
+                "direction": if diff[*dim] > 0.0 { "B > A" } else { "A > B" }
+            })
+        }).collect::<Vec<_>>(),
+        "interpretation": format!(
+            "These concepts have {:.1}% similarity. {} out of {} dimensions show significant differences.",
+            similarity * 100.0,
+            significant_dims,
+            diff.len()
+        )
+    }))
+}
+
+/// Test vector arithmetic: A - B + C = ?
+#[tauri::command]
+pub async fn test_vector_arithmetic(
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    concept_a: String,
+    concept_b: String,
+    concept_c: String,
+) -> Result<serde_json::Value, String> {
+    // Embed all concepts
+    let emb_a = search.embeddings().embed(&concept_a).await
+        .map_err(|e| format!("Failed to embed A: {}", e))?;
+    let emb_b = search.embeddings().embed(&concept_b).await
+        .map_err(|e| format!("Failed to embed B: {}", e))?;
+    let emb_c = search.embeddings().embed(&concept_c).await
+        .map_err(|e| format!("Failed to embed C: {}", e))?;
+
+    // Compute A - B + C
+    let diff = vector_diff(&emb_b, &emb_a); // A - B
+    let result = vector_add(&emb_c, &diff);  // (A - B) + C
+
+    // Find nearest objects to the result
+    let store = search.store.read().await;
+    let objects_with_embeddings = store
+        .get_objects_with_embeddings(crate::memory::SecurityTier::Sealed)
+        .map_err(|e| format!("Failed to get objects: {}", e))?;
+
+    let candidates: Vec<(String, Vec<f32>)> = objects_with_embeddings
+        .iter()
+        .map(|(obj, emb)| {
+            let preview: String = obj.content_as_str().unwrap_or_default().chars().take(100).collect();
+            (preview, emb.clone())
+        })
+        .collect();
+
+    // Find top 5 nearest
+    let mut scored: Vec<(String, f32)> = candidates
+        .iter()
+        .map(|(preview, emb)| (preview.clone(), cosine_similarity(&result, emb)))
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let top5: Vec<_> = scored.into_iter().take(5).collect();
+
+    Ok(serde_json::json!({
+        "operation": format!("({} - {}) + {}", concept_a, concept_b, concept_c),
+        "interpretation": format!("'{}' transformed by the difference between '{}' and '{}'", concept_c, concept_a, concept_b),
+        "nearest_results": top5.iter().map(|(preview, score)| {
+            serde_json::json!({
+                "content": preview,
+                "similarity": score
+            })
+        }).collect::<Vec<_>>()
+    }))
+}
+
+// ============================================================================
+// 3D IDEA SPACE COMMANDS - Dimensionality Reduction for VR Visualization
+// ============================================================================
+
+use crate::embedding_analysis::{
+    IdeaSpacePoint, IdeaSpace3D, SemanticAxis,
+    simple_pca, project_to_3d, normalize_coordinates, gram_schmidt,
+    euclidean_distance,
+};
+
+/// Get all objects projected into 3D idea space
+/// projection_mode: "pca" (default), "folded", or "folded_mean"/"folded_max"/"folded_variance"
+#[tauri::command]
+pub async fn get_idea_space_3d(
+    app: tauri::AppHandle,
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    pca_cache: tauri::State<'_, crate::pca_cache::PCACacheManager>,
+    projection_mode: Option<String>,
+) -> Result<IdeaSpace3D, String> {
+    use tauri::Emitter;
+    use crate::embedding_analysis::{project_folded, project_folded_method, vector_magnitude};
+
+    let mode = projection_mode.unwrap_or_else(|| "pca".to_string());
+
+    // Emit progress: loading
+    let _ = app.emit("idea-space-progress", serde_json::json!({
+        "stage": "loading",
+        "message": format!("Loading vectors ({} mode)...", mode),
+        "percent": 5
+    }));
+
+    let store = search.store.read().await;
+    let objects_with_embeddings = store
+        .get_objects_with_embeddings(crate::memory::SecurityTier::Sealed)
+        .map_err(|e| format!("Failed to get objects: {}", e))?;
+
+    if objects_with_embeddings.len() < 3 {
+        return Err("Need at least 3 objects with embeddings for 3D projection".to_string());
+    }
+
+    let total_count = objects_with_embeddings.len();
+    let dimensions = objects_with_embeddings.first().map(|(_, e)| e.len()).unwrap_or(0);
+
+    // Check cache status with smart validation
+    use crate::pca_cache::CacheStatus;
+    let cache_status = pca_cache.check(total_count);
+
+    let pca = match cache_status {
+        CacheStatus::Valid(cached_pca) => {
+            // Exact match - use cached PCA directly
+            let _ = app.emit("idea-space-progress", serde_json::json!({
+                "stage": "cached",
+                "message": format!("Using cached PCA for {} vectors", total_count),
+                "percent": 70
+            }));
+            cached_pca
+        }
+        CacheStatus::UsableWithNewItems { pca, cached_count, new_count } => {
+            // Cache is still usable - just project new items with existing PCA
+            let _ = app.emit("idea-space-progress", serde_json::json!({
+                "stage": "cached",
+                "message": format!("Using cached PCA ({} vectors) + {} new items", cached_count, new_count),
+                "percent": 70
+            }));
+            // Update cache count for next time
+            pca_cache.update_count(total_count);
+            pca
+        }
+        CacheStatus::Stale { reason } => {
+            let _ = app.emit("idea-space-progress", serde_json::json!({
+                "stage": "recomputing",
+                "message": format!("Recomputing PCA: {}", reason),
+                "percent": 10
+            }));
+
+            // Emit progress: preparing
+            let _ = app.emit("idea-space-progress", serde_json::json!({
+                "stage": "preparing",
+                "message": format!("Preparing {} vectors for PCA...", total_count),
+                "percent": 15
+            }));
+
+            // Collect embeddings for PCA with progress
+            let mut embeddings: Vec<&[f32]> = Vec::with_capacity(objects_with_embeddings.len());
+            for (i, (_, emb)) in objects_with_embeddings.iter().enumerate() {
+                embeddings.push(emb.as_slice());
+                if i % 100 == 0 {
+                    let percent = 15 + (i * 10 / total_count);
+                    let _ = app.emit("idea-space-progress", serde_json::json!({
+                        "stage": "collecting",
+                        "message": format!("Collecting vectors: {}/{}", i, total_count),
+                        "percent": percent
+                    }));
+                }
+            }
+
+            // Emit progress: computing PCA (the slow part)
+            let _ = app.emit("idea-space-progress", serde_json::json!({
+                "stage": "pca",
+                "message": format!("Computing PCA on {} vectors ({} dimensions)...", total_count, dimensions),
+                "percent": 25
+            }));
+
+            // Perform PCA to get 3 principal components with progress reporting
+            let app_clone = app.clone();
+            let computed_pca = crate::embedding_analysis::simple_pca_with_progress(&embeddings, 3, move |current, total| {
+                if current % 100 == 0 {
+                    let percent = 25 + (current * 40 / total.max(1));
+                    let _ = app_clone.emit("idea-space-progress", serde_json::json!({
+                        "stage": "pca",
+                        "message": format!("Computing covariance matrix: {}/{}", current, total),
+                        "percent": percent
+                    }));
+                }
+            }).ok_or("PCA failed")?;
+
+            // Cache the result for next time
+            pca_cache.set(computed_pca.clone(), total_count, dimensions);
+
+            let _ = app.emit("idea-space-progress", serde_json::json!({
+                "stage": "cached",
+                "message": "PCA computed and cached for future use",
+                "percent": 70
+            }));
+
+            computed_pca
+        }
+        CacheStatus::None => {
+            // Emit progress: preparing
+            let _ = app.emit("idea-space-progress", serde_json::json!({
+                "stage": "preparing",
+                "message": format!("Preparing {} vectors for PCA...", total_count),
+                "percent": 15
+            }));
+
+            // Collect embeddings for PCA with progress
+            let mut embeddings: Vec<&[f32]> = Vec::with_capacity(objects_with_embeddings.len());
+            for (i, (_, emb)) in objects_with_embeddings.iter().enumerate() {
+                embeddings.push(emb.as_slice());
+                if i % 100 == 0 {
+                    let percent = 15 + (i * 10 / total_count);
+                    let _ = app.emit("idea-space-progress", serde_json::json!({
+                        "stage": "collecting",
+                        "message": format!("Collecting vectors: {}/{}", i, total_count),
+                        "percent": percent
+                    }));
+                }
+            }
+
+            // Emit progress: computing PCA (the slow part)
+            let _ = app.emit("idea-space-progress", serde_json::json!({
+                "stage": "pca",
+                "message": format!("Computing PCA on {} vectors ({} dimensions)...", total_count, dimensions),
+                "percent": 25
+            }));
+
+            // Perform PCA to get 3 principal components with progress reporting
+            let app_clone = app.clone();
+            let computed_pca = crate::embedding_analysis::simple_pca_with_progress(&embeddings, 3, move |current, total| {
+                if current % 100 == 0 {
+                    let percent = 25 + (current * 40 / total.max(1));
+                    let _ = app_clone.emit("idea-space-progress", serde_json::json!({
+                        "stage": "pca",
+                        "message": format!("Computing covariance matrix: {}/{}", current, total),
+                        "percent": percent
+                    }));
+                }
+            }).ok_or("PCA failed")?;
+
+            // Cache the result for next time
+            pca_cache.set(computed_pca.clone(), total_count, dimensions);
+
+            let _ = app.emit("idea-space-progress", serde_json::json!({
+                "stage": "cached",
+                "message": "PCA computed and cached for future use",
+                "percent": 70
+            }));
+
+            computed_pca
+        }
+    };
+
+    // Emit progress: projecting
+    let _ = app.emit("idea-space-progress", serde_json::json!({
+        "stage": "projecting",
+        "message": format!("Projecting {} vectors to 3D...", total_count),
+        "percent": 75
+    }));
+
+    // Calculate total variance for explained ratio
+    let total_variance: f32 = pca.explained_variance.iter().sum();
+    let variance_captured = if total_variance > 0.0 {
+        pca.explained_variance.iter().take(3).sum::<f32>() / total_variance
+    } else {
+        0.0
+    };
+
+    // Compute center (mean) magnitude for distance calculations
+    let center_magnitude = vector_magnitude(&pca.mean);
+
+    // Project each object to 3D with progress reporting
+    let mut points: Vec<IdeaSpacePoint> = Vec::with_capacity(objects_with_embeddings.len());
+    for (i, (obj, embedding)) in objects_with_embeddings.iter().enumerate() {
+        // Report progress every 100 vectors
+        if i % 100 == 0 {
+            let percent = 75 + (i * 20 / total_count);
+            let _ = app.emit("idea-space-progress", serde_json::json!({
+                "stage": "projecting",
+                "message": format!("Projecting to 3D ({}): {}/{}", mode, i, total_count),
+                "percent": percent
+            }));
+        }
+
+        // Choose projection method based on mode
+        let (x, y, z) = match mode.as_str() {
+            "folded" | "folded_sum" => project_folded(embedding),
+            "folded_mean" => project_folded_method(embedding, "mean"),
+            "folded_max" => project_folded_method(embedding, "max"),
+            "folded_variance" => project_folded_method(embedding, "variance"),
+            "folded_l2" => project_folded_method(embedding, "l2"),
+            _ => project_to_3d(embedding, &pca), // default to PCA
+        };
+
+        let distance = euclidean_distance(embedding, &pca.mean);
+        let mag = vector_magnitude(embedding);
+
+        // Convert ContentType to string
+        let object_type = match &obj.content_type {
+            crate::semantic_object::ContentType::Text => "text".to_string(),
+            crate::semantic_object::ContentType::Markdown => "markdown".to_string(),
+            crate::semantic_object::ContentType::Code { language } => format!("code:{}", language),
+            crate::semantic_object::ContentType::Json => "json".to_string(),
+            crate::semantic_object::ContentType::Binary { mime } => format!("binary:{}", mime),
+            crate::semantic_object::ContentType::Structured { schema } => format!("structured:{}", schema),
+            crate::semantic_object::ContentType::Unknown => "unknown".to_string(),
+        };
+
+        points.push(IdeaSpacePoint {
+            id: obj.suid.to_string(),
+            name: obj.name.clone().unwrap_or_else(|| "Untitled".to_string()),
+            object_type,
+            x,
+            y,
+            z,
+            distance_from_center: distance,
+            magnitude: mag,
+            tags: obj.tags.clone(),
+            preview: obj.summary.clone().unwrap_or_default().chars().take(100).collect(),
+        });
+    }
+
+    // Emit progress: normalizing
+    let _ = app.emit("idea-space-progress", serde_json::json!({
+        "stage": "normalizing",
+        "message": "Normalizing coordinates...",
+        "percent": 90
+    }));
+
+    // Normalize coordinates to [-1, 1]
+    let bounds = normalize_coordinates(&mut points);
+
+    // Emit progress: done
+    let _ = app.emit("idea-space-progress", serde_json::json!({
+        "stage": "done",
+        "message": format!("Ready! {} points in 3D space", points.len()),
+        "percent": 100
+    }));
+
+    // Create axis descriptions based on mode
+    let axes = if mode.starts_with("folded") {
+        let method = if mode.contains("mean") { "mean" }
+            else if mode.contains("max") { "max" }
+            else if mode.contains("variance") { "variance" }
+            else if mode.contains("l2") { "L2 norm" }
+            else { "sum" };
+        vec![
+            SemanticAxis {
+                name: "X (dims 0-340)".to_string(),
+                negative_label: format!("← Low {} (first third)", method),
+                positive_label: format!("High {} (first third) →", method),
+                direction: vec![], // No direction vector for folded
+            },
+            SemanticAxis {
+                name: "Y (dims 341-681)".to_string(),
+                negative_label: format!("← Low {} (middle third)", method),
+                positive_label: format!("High {} (middle third) →", method),
+                direction: vec![],
+            },
+            SemanticAxis {
+                name: "Z (dims 682-1023)".to_string(),
+                negative_label: format!("← Low {} (last third)", method),
+                positive_label: format!("High {} (last third) →", method),
+                direction: vec![],
+            },
+        ]
+    } else {
+        // PCA mode
+        vec![
+            SemanticAxis {
+                name: "PC1".to_string(),
+                negative_label: "← Primary Axis -".to_string(),
+                positive_label: "Primary Axis + →".to_string(),
+                direction: pca.components.get(0).cloned().unwrap_or_default(),
+            },
+            SemanticAxis {
+                name: "PC2".to_string(),
+                negative_label: "← Secondary Axis -".to_string(),
+                positive_label: "Secondary Axis + →".to_string(),
+                direction: pca.components.get(1).cloned().unwrap_or_default(),
+            },
+            SemanticAxis {
+                name: "PC3".to_string(),
+                negative_label: "← Tertiary Axis -".to_string(),
+                positive_label: "Tertiary Axis + →".to_string(),
+                direction: pca.components.get(2).cloned().unwrap_or_default(),
+            },
+        ]
+    };
+
+    Ok(IdeaSpace3D {
+        points,
+        axes,
+        variance_captured,
+        bounds,
+    })
+}
+
+/// Get 3D idea space with custom semantic axes
+/// Example: axes could be ["simple", "complex"], ["past", "future"], ["technical", "creative"]
+#[tauri::command]
+pub async fn get_idea_space_custom_axes(
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    axis_definitions: Vec<(String, String, String)>,  // (name, negative, positive)
+) -> Result<IdeaSpace3D, String> {
+    if axis_definitions.len() < 3 {
+        return Err("Need at least 3 axis definitions for 3D space".to_string());
+    }
+
+    let store = search.store.read().await;
+    let objects_with_embeddings = store
+        .get_objects_with_embeddings(crate::memory::SecurityTier::Sealed)
+        .map_err(|e| format!("Failed to get objects: {}", e))?;
+
+    if objects_with_embeddings.is_empty() {
+        return Err("No objects with embeddings found".to_string());
+    }
+
+    // Embed axis endpoints
+    let mut axes: Vec<SemanticAxis> = Vec::new();
+    for (name, neg, pos) in &axis_definitions {
+        let neg_emb = search.embeddings().embed(neg).await
+            .map_err(|e| format!("Failed to embed '{}': {}", neg, e))?;
+        let pos_emb = search.embeddings().embed(pos).await
+            .map_err(|e| format!("Failed to embed '{}': {}", pos, e))?;
+
+        let direction = normalize(&vector_diff(&neg_emb, &pos_emb));
+
+        axes.push(SemanticAxis {
+            name: name.clone(),
+            negative_label: neg.clone(),
+            positive_label: pos.clone(),
+            direction,
+        });
+    }
+
+    // Orthogonalize the axes using Gram-Schmidt
+    let directions: Vec<Vec<f32>> = axes.iter().map(|a| a.direction.clone()).collect();
+    let orthogonal = gram_schmidt(&directions);
+
+    // Update axes with orthogonalized directions
+    for (i, axis) in axes.iter_mut().enumerate() {
+        if i < orthogonal.len() {
+            axis.direction = orthogonal[i].clone();
+        }
+    }
+
+    // Project each object onto the custom axes
+    let mut points: Vec<IdeaSpacePoint> = objects_with_embeddings
+        .iter()
+        .map(|(obj, embedding)| {
+            // Project onto each axis
+            let x = if !axes.is_empty() {
+                embedding.iter().zip(axes[0].direction.iter()).map(|(a, b)| a * b).sum()
+            } else { 0.0 };
+            let y = if axes.len() > 1 {
+                embedding.iter().zip(axes[1].direction.iter()).map(|(a, b)| a * b).sum()
+            } else { 0.0 };
+            let z = if axes.len() > 2 {
+                embedding.iter().zip(axes[2].direction.iter()).map(|(a, b)| a * b).sum()
+            } else { 0.0 };
+
+            // Convert ContentType to string
+            let object_type = match &obj.content_type {
+                crate::semantic_object::ContentType::Text => "text".to_string(),
+                crate::semantic_object::ContentType::Markdown => "markdown".to_string(),
+                crate::semantic_object::ContentType::Code { language } => format!("code:{}", language),
+                crate::semantic_object::ContentType::Json => "json".to_string(),
+                crate::semantic_object::ContentType::Binary { mime } => format!("binary:{}", mime),
+                crate::semantic_object::ContentType::Structured { schema } => format!("structured:{}", schema),
+                crate::semantic_object::ContentType::Unknown => "unknown".to_string(),
+            };
+
+            let mag = vector_magnitude(embedding);
+            IdeaSpacePoint {
+                id: obj.suid.to_string(),
+                name: obj.name.clone().unwrap_or_else(|| "Untitled".to_string()),
+                object_type,
+                x,
+                y,
+                z,
+                distance_from_center: mag,
+                magnitude: mag,
+                tags: obj.tags.clone(),
+                preview: obj.summary.clone().unwrap_or_default().chars().take(100).collect(),
+            }
+        })
+        .collect();
+
+    // Normalize coordinates to [-1, 1]
+    let bounds = normalize_coordinates(&mut points);
+
+    Ok(IdeaSpace3D {
+        points,
+        axes: axes.into_iter().take(3).collect(),
+        variance_captured: 1.0, // Custom axes capture what we defined
+        bounds,
+    })
+}
+
+/// Find objects near a specific point in 3D idea space
+#[tauri::command]
+pub async fn find_near_point_3d(
+    app: tauri::AppHandle,
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    pca_cache: tauri::State<'_, crate::pca_cache::PCACacheManager>,
+    x: f32,
+    y: f32,
+    z: f32,
+    limit: Option<usize>,
+) -> Result<Vec<IdeaSpacePoint>, String> {
+    // First get the full 3D space
+    let space = get_idea_space_3d(app, search, pca_cache, None).await?;
+
+    let limit = limit.unwrap_or(10);
+
+    // Find objects closest to the target point
+    let mut points_with_distance: Vec<(IdeaSpacePoint, f32)> = space.points
+        .into_iter()
+        .map(|p| {
+            let dist = ((p.x - x).powi(2) + (p.y - y).powi(2) + (p.z - z).powi(2)).sqrt();
+            (p, dist)
+        })
+        .collect();
+
+    points_with_distance.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    Ok(points_with_distance.into_iter().take(limit).map(|(p, _)| p).collect())
+}
+
+/// Get cluster centers in 3D space (finds natural groupings)
+#[tauri::command]
+pub async fn get_idea_clusters(
+    app: tauri::AppHandle,
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    pca_cache: tauri::State<'_, crate::pca_cache::PCACacheManager>,
+    num_clusters: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    let space = get_idea_space_3d(app, search, pca_cache, None).await?;
+
+    let num_clusters = num_clusters.unwrap_or(5).min(space.points.len());
+    if num_clusters == 0 {
+        return Ok(serde_json::json!({ "clusters": [] }));
+    }
+
+    // Simple k-means clustering in 3D space
+    let mut centroids: Vec<(f32, f32, f32)> = space.points.iter()
+        .take(num_clusters)
+        .map(|p| (p.x, p.y, p.z))
+        .collect();
+
+    // Run k-means iterations
+    for _ in 0..20 {
+        // Assign points to nearest centroid
+        let mut assignments: Vec<Vec<&IdeaSpacePoint>> = vec![Vec::new(); num_clusters];
+
+        for point in &space.points {
+            let mut best_cluster = 0;
+            let mut best_dist = f32::MAX;
+
+            for (i, centroid) in centroids.iter().enumerate() {
+                let dist = ((point.x - centroid.0).powi(2) +
+                           (point.y - centroid.1).powi(2) +
+                           (point.z - centroid.2).powi(2)).sqrt();
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_cluster = i;
+                }
+            }
+
+            assignments[best_cluster].push(point);
+        }
+
+        // Update centroids
+        for (i, cluster) in assignments.iter().enumerate() {
+            if !cluster.is_empty() {
+                let n = cluster.len() as f32;
+                centroids[i] = (
+                    cluster.iter().map(|p| p.x).sum::<f32>() / n,
+                    cluster.iter().map(|p| p.y).sum::<f32>() / n,
+                    cluster.iter().map(|p| p.z).sum::<f32>() / n,
+                );
+            }
+        }
+    }
+
+    // Final assignment and cluster info
+    let mut clusters: Vec<serde_json::Value> = Vec::new();
+
+    for (i, centroid) in centroids.iter().enumerate() {
+        let members: Vec<&IdeaSpacePoint> = space.points.iter()
+            .filter(|p| {
+                let mut best_cluster = 0;
+                let mut best_dist = f32::MAX;
+                for (j, c) in centroids.iter().enumerate() {
+                    let dist = ((p.x - c.0).powi(2) + (p.y - c.1).powi(2) + (p.z - c.2).powi(2)).sqrt();
+                    if dist < best_dist {
+                        best_dist = dist;
+                        best_cluster = j;
+                    }
+                }
+                best_cluster == i
+            })
+            .collect();
+
+        if !members.is_empty() {
+            // Find common tags in cluster
+            let mut tag_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            for m in &members {
+                for tag in &m.tags {
+                    *tag_counts.entry(tag.clone()).or_insert(0) += 1;
+                }
+            }
+            let mut common_tags: Vec<_> = tag_counts.into_iter().collect();
+            common_tags.sort_by(|a, b| b.1.cmp(&a.1));
+
+            clusters.push(serde_json::json!({
+                "id": i,
+                "centroid": { "x": centroid.0, "y": centroid.1, "z": centroid.2 },
+                "member_count": members.len(),
+                "common_tags": common_tags.iter().take(5).map(|(t, c)| {
+                    serde_json::json!({ "tag": t, "count": c })
+                }).collect::<Vec<_>>(),
+                "sample_members": members.iter().take(5).map(|m| {
+                    serde_json::json!({
+                        "id": m.id,
+                        "name": m.name,
+                        "type": m.object_type
+                    })
+                }).collect::<Vec<_>>()
+            }));
+        }
+    }
+
+    Ok(serde_json::json!({
+        "num_clusters": clusters.len(),
+        "total_points": space.points.len(),
+        "variance_captured": space.variance_captured,
+        "clusters": clusters
+    }))
+}
+
+/// Analyze vectors relative to the mean (center of knowledge)
+#[derive(Debug, Clone, Serialize)]
+pub struct MeanAnalysis {
+    /// Objects closest to the mean (most typical)
+    pub closest_to_mean: Vec<MeanDistanceResult>,
+    /// Objects farthest from the mean (most unique)
+    pub farthest_from_mean: Vec<MeanDistanceResult>,
+    /// Summary of what the mean represents
+    pub mean_summary: String,
+    /// Total objects analyzed
+    pub total_objects: usize,
+    /// Average distance from mean
+    pub avg_distance: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MeanDistanceResult {
+    pub id: String,
+    pub name: String,
+    pub object_type: String,
+    pub distance: f32,
+    pub preview: String,
+    pub tags: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn analyze_knowledge_center(
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    limit: Option<usize>,
+) -> Result<MeanAnalysis, String> {
+    use crate::embedding_analysis::{compute_mean, euclidean_distance};
+
+    let limit = limit.unwrap_or(10);
+
+    let store = search.store.read().await;
+    let objects_with_embeddings = store
+        .get_objects_with_embeddings(crate::memory::SecurityTier::Sealed)
+        .map_err(|e| format!("Failed to get objects: {}", e))?;
+
+    if objects_with_embeddings.len() < 3 {
+        return Err("Need at least 3 objects for analysis".to_string());
+    }
+
+    // Compute mean
+    let embeddings: Vec<&[f32]> = objects_with_embeddings
+        .iter()
+        .map(|(_, emb)| emb.as_slice())
+        .collect();
+
+    let mean = compute_mean(&embeddings);
+
+    // Calculate distances from mean
+    let mut distances: Vec<(usize, f32)> = objects_with_embeddings
+        .iter()
+        .enumerate()
+        .map(|(i, (_, emb))| {
+            let dist = euclidean_distance(emb, &mean);
+            (i, dist)
+        })
+        .collect();
+
+    // Sort by distance
+    distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let avg_distance = distances.iter().map(|(_, d)| d).sum::<f32>() / distances.len() as f32;
+
+    // Helper to convert object to result
+    let to_result = |idx: usize, dist: f32| -> MeanDistanceResult {
+        let (obj, _) = &objects_with_embeddings[idx];
+        let object_type = match &obj.content_type {
+            crate::semantic_object::ContentType::Text => "text".to_string(),
+            crate::semantic_object::ContentType::Markdown => "markdown".to_string(),
+            crate::semantic_object::ContentType::Code { language } => format!("code:{}", language),
+            crate::semantic_object::ContentType::Json => "json".to_string(),
+            crate::semantic_object::ContentType::Binary { mime } => format!("binary:{}", mime),
+            crate::semantic_object::ContentType::Structured { schema } => format!("structured:{}", schema),
+            crate::semantic_object::ContentType::Unknown => "unknown".to_string(),
+        };
+
+        MeanDistanceResult {
+            id: obj.suid.to_string(),
+            name: obj.name.clone().unwrap_or_else(|| "Untitled".to_string()),
+            object_type,
+            distance: dist,
+            preview: obj.summary.clone().unwrap_or_default().chars().take(150).collect(),
+            tags: obj.tags.clone(),
+        }
+    };
+
+    // Get closest to mean
+    let closest_to_mean: Vec<MeanDistanceResult> = distances
+        .iter()
+        .take(limit)
+        .map(|(idx, dist)| to_result(*idx, *dist))
+        .collect();
+
+    // Get farthest from mean
+    let farthest_from_mean: Vec<MeanDistanceResult> = distances
+        .iter()
+        .rev()
+        .take(limit)
+        .map(|(idx, dist)| to_result(*idx, *dist))
+        .collect();
+
+    // Generate summary of what the mean represents
+    let mean_summary = if !closest_to_mean.is_empty() {
+        let types: Vec<&str> = closest_to_mean.iter()
+            .map(|r| r.object_type.as_str())
+            .collect();
+        let common_type = types.iter()
+            .fold(std::collections::HashMap::new(), |mut acc, t| {
+                *acc.entry(*t).or_insert(0) += 1;
+                acc
+            })
+            .into_iter()
+            .max_by_key(|(_, count)| *count)
+            .map(|(t, _)| t)
+            .unwrap_or("mixed");
+
+        format!(
+            "Your knowledge center is dominated by {} content. Objects near the center represent your most common/typical work patterns.",
+            common_type
+        )
+    } else {
+        "Unable to determine center characteristics.".to_string()
+    };
+
+    Ok(MeanAnalysis {
+        closest_to_mean,
+        farthest_from_mean,
+        mean_summary,
+        total_objects: objects_with_embeddings.len(),
+        avg_distance,
+    })
+}
+
+/// Export idea space for VR visualization (optimized format)
+#[tauri::command]
+pub async fn export_idea_space_vr(
+    app: tauri::AppHandle,
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    pca_cache: tauri::State<'_, crate::pca_cache::PCACacheManager>,
+    format: Option<String>,  // "json" or "gltf_positions"
+) -> Result<serde_json::Value, String> {
+    let space = get_idea_space_3d(app, search, pca_cache, None).await?;
+    let format = format.unwrap_or_else(|| "json".to_string());
+
+    match format.as_str() {
+        "gltf_positions" => {
+            // Export just positions for easy 3D rendering
+            let positions: Vec<f32> = space.points.iter()
+                .flat_map(|p| vec![p.x, p.y, p.z])
+                .collect();
+
+            let colors: Vec<f32> = space.points.iter()
+                .flat_map(|p| {
+                    // Color by type
+                    match p.object_type.as_str() {
+                        "conversation" => vec![0.2, 0.6, 1.0],  // Blue
+                        "note" => vec![0.2, 1.0, 0.4],          // Green
+                        "research" => vec![1.0, 0.8, 0.2],      // Yellow
+                        "code" => vec![1.0, 0.4, 0.8],          // Pink
+                        _ => vec![0.7, 0.7, 0.7],               // Gray
+                    }
+                })
+                .collect();
+
+            Ok(serde_json::json!({
+                "format": "gltf_positions",
+                "point_count": space.points.len(),
+                "positions": positions,
+                "colors": colors,
+                "metadata": space.points.iter().map(|p| {
+                    serde_json::json!({
+                        "id": p.id,
+                        "name": p.name,
+                        "type": p.object_type
+                    })
+                }).collect::<Vec<_>>()
+            }))
+        }
+        _ => {
+            // Full JSON export
+            Ok(serde_json::json!({
+                "format": "json",
+                "space": space
+            }))
+        }
+    }
+}
+
+// ============================================================================
+// Repository Tracker Commands
+// ============================================================================
+
+use crate::repo_tracker::{RepoTracker, TrackedRepo, RepoStatus, AutoSyncMode};
+
+/// Add a repository to be tracked
+#[tauri::command]
+pub fn repo_add(
+    tracker: tauri::State<'_, RepoTracker>,
+    path: String,
+    name: Option<String>,
+) -> Result<TrackedRepo, String> {
+    tracker.add_repo(&path, name)
+}
+
+/// Remove a repository from tracking
+#[tauri::command]
+pub fn repo_remove(
+    tracker: tauri::State<'_, RepoTracker>,
+    id: String,
+) -> Result<(), String> {
+    tracker.remove_repo(&id)
+}
+
+/// List all tracked repositories
+#[tauri::command]
+pub fn repo_list(
+    tracker: tauri::State<'_, RepoTracker>,
+) -> Vec<TrackedRepo> {
+    tracker.list_repos()
+}
+
+/// Get status of a specific repository (check for changes)
+#[tauri::command]
+pub fn repo_get_status(
+    tracker: tauri::State<'_, RepoTracker>,
+    id: String,
+) -> Result<RepoStatus, String> {
+    tracker.get_repo_status(&id)
+}
+
+/// Check if a path is already tracked
+#[tauri::command]
+pub fn repo_check_path(
+    tracker: tauri::State<'_, RepoTracker>,
+    path: String,
+) -> Option<TrackedRepo> {
+    tracker.is_tracked(&path)
+}
+
+/// Set auto-sync mode for a repository
+#[tauri::command]
+pub fn repo_set_auto_sync(
+    tracker: tauri::State<'_, RepoTracker>,
+    id: String,
+    mode: String,
+    interval_hours: Option<u32>,
+) -> Result<(), String> {
+    let auto_sync = match mode.as_str() {
+        "manual" => AutoSyncMode::Manual,
+        "on_startup" => AutoSyncMode::OnStartup,
+        "on_change" => AutoSyncMode::OnChange,
+        "scheduled" => AutoSyncMode::Scheduled {
+            interval_hours: interval_hours.unwrap_or(24),
+        },
+        _ => return Err(format!("Unknown auto-sync mode: {}", mode)),
+    };
+
+    tracker.set_auto_sync(&id, auto_sync)
+}
+
+/// Sync a repository (re-import all files)
+#[tauri::command]
+pub async fn repo_sync(
+    app: tauri::AppHandle,
+    tracker: tauri::State<'_, RepoTracker>,
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    pca_cache: tauri::State<'_, crate::pca_cache::PCACacheManager>,
+    id: String,
+) -> Result<String, String> {
+    let repo = tracker.get_repo(&id)
+        .ok_or_else(|| format!("Repository not found: {}", id))?;
+
+    // Use the existing import_repository logic
+    let result = import_repository(
+        app.clone(),
+        repo.path.clone(),
+        search.clone(),
+        pca_cache.clone(),
+    ).await?;
+
+    // Parse the result to extract counts
+    // Result format: "Imported X files, created Y objects"
+    let (file_count, object_count) = parse_import_result(&result);
+
+    // Update tracker
+    tracker.update_after_sync(&id, file_count, object_count)?;
+
+    Ok(result)
+}
+
+fn parse_import_result(result: &str) -> (usize, usize) {
+    // Parse "Imported X files, created Y objects"
+    let mut file_count = 0;
+    let mut object_count = 0;
+
+    if let Some(files_start) = result.find("Imported ") {
+        let rest = &result[files_start + 9..];
+        if let Some(files_end) = rest.find(" files") {
+            if let Ok(n) = rest[..files_end].parse::<usize>() {
+                file_count = n;
+            }
+        }
+    }
+
+    if let Some(objects_start) = result.find("created ") {
+        let rest = &result[objects_start + 8..];
+        if let Some(objects_end) = rest.find(" objects") {
+            if let Ok(n) = rest[..objects_end].parse::<usize>() {
+                object_count = n;
+            }
+        }
+    }
+
+    (file_count, object_count)
+}
+
+// ============================================================================
+// SEMANTIC CALCULATOR - Vector Algebra Operations
+// ============================================================================
+
+/// Result of a vector operation
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct VectorOperationResult {
+    pub operation: String,
+    pub result_vector: Vec<f32>,
+    pub result_3d: (f32, f32, f32),
+    pub nearest_neighbors: Vec<VectorNeighbor>,
+    pub stats: VectorStats,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct VectorNeighbor {
+    pub suid: String,
+    pub name: String,
+    pub similarity: f32,
+    pub distance_3d: f32,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct VectorStats {
+    pub magnitude: f32,
+    pub dimensions: usize,
+    pub sparsity: f32,  // Percentage of near-zero values
+    pub binary_hash: String,  // First 32 bits as hex
+}
+
+/// Perform vector algebra operations
+#[tauri::command]
+pub async fn vector_calculate(
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    pca_cache: tauri::State<'_, crate::pca_cache::PCACacheManager>,
+    operation: String,
+    vector_suids: Vec<String>,
+    interpolation_t: Option<f32>,  // For lerp operation
+) -> Result<VectorOperationResult, String> {
+    use crate::pca_cache::CacheStatus;
+
+    // Get embeddings for the specified SUIds
+    let store = search.store.read().await;
+    let mut vectors: Vec<(String, String, Vec<f32>)> = Vec::new();
+
+    for suid_str in &vector_suids {
+        let suid = crate::semantic_object::Suid::parse(suid_str)
+            .map_err(|e| format!("Invalid SUID {}: {}", suid_str, e))?;
+
+        if let Ok(Some(obj)) = store.get(&suid) {
+            if let Ok(Some(emb)) = store.get_embedding(&suid) {
+                let name = obj.name.clone().unwrap_or_else(|| "Untitled".to_string());
+                vectors.push((suid_str.clone(), name, emb));
+            } else {
+                return Err(format!("No embedding for: {}", suid_str));
+            }
+        } else {
+            return Err(format!("Object not found: {}", suid_str));
+        }
+    }
+
+    if vectors.is_empty() {
+        return Err("No vectors provided".to_string());
+    }
+
+    let dim = vectors[0].2.len();
+
+    // Perform the operation
+    let (result, op_desc) = match operation.as_str() {
+        "add" => {
+            if vectors.len() < 2 {
+                return Err("Add requires at least 2 vectors".to_string());
+            }
+            let mut sum = vec![0.0f32; dim];
+            for (_, _, v) in &vectors {
+                for (i, val) in v.iter().enumerate() {
+                    sum[i] += val;
+                }
+            }
+            (sum, format!("add({} vectors)", vectors.len()))
+        }
+        "subtract" => {
+            if vectors.len() != 2 {
+                return Err("Subtract requires exactly 2 vectors".to_string());
+            }
+            let result: Vec<f32> = vectors[0].2.iter()
+                .zip(vectors[1].2.iter())
+                .map(|(a, b)| a - b)
+                .collect();
+            (result, format!("{} - {}", vectors[0].1, vectors[1].1))
+        }
+        "average" => {
+            let mut sum = vec![0.0f32; dim];
+            for (_, _, v) in &vectors {
+                for (i, val) in v.iter().enumerate() {
+                    sum[i] += val;
+                }
+            }
+            let n = vectors.len() as f32;
+            let avg: Vec<f32> = sum.iter().map(|v| v / n).collect();
+            (avg, format!("average({} vectors)", vectors.len()))
+        }
+        "hadamard" => {
+            if vectors.len() != 2 {
+                return Err("Hadamard requires exactly 2 vectors".to_string());
+            }
+            let result: Vec<f32> = vectors[0].2.iter()
+                .zip(vectors[1].2.iter())
+                .map(|(a, b)| a * b)
+                .collect();
+            (result, format!("{} ⊙ {}", vectors[0].1, vectors[1].1))
+        }
+        "interpolate" | "lerp" => {
+            if vectors.len() != 2 {
+                return Err("Interpolate requires exactly 2 vectors".to_string());
+            }
+            let t = interpolation_t.unwrap_or(0.5);
+            let result: Vec<f32> = vectors[0].2.iter()
+                .zip(vectors[1].2.iter())
+                .map(|(a, b)| a + t * (b - a))
+                .collect();
+            (result, format!("lerp({}, {}, t={})", vectors[0].1, vectors[1].1, t))
+        }
+        "difference_apply" => {
+            // A - B + C: apply the transformation from B to A onto C
+            if vectors.len() != 3 {
+                return Err("difference_apply requires exactly 3 vectors (A, B, C) → A - B + C".to_string());
+            }
+            let result: Vec<f32> = vectors[0].2.iter()
+                .zip(vectors[1].2.iter())
+                .zip(vectors[2].2.iter())
+                .map(|((a, b), c)| a - b + c)
+                .collect();
+            (result, format!("({} - {}) + {}", vectors[0].1, vectors[1].1, vectors[2].1))
+        }
+        "negate" => {
+            if vectors.len() != 1 {
+                return Err("Negate requires exactly 1 vector".to_string());
+            }
+            let result: Vec<f32> = vectors[0].2.iter().map(|v| -v).collect();
+            (result, format!("-{}", vectors[0].1))
+        }
+        "normalize" => {
+            if vectors.len() != 1 {
+                return Err("Normalize requires exactly 1 vector".to_string());
+            }
+            let mag: f32 = vectors[0].2.iter().map(|v| v * v).sum::<f32>().sqrt();
+            let result: Vec<f32> = if mag > 0.0 {
+                vectors[0].2.iter().map(|v| v / mag).collect()
+            } else {
+                vectors[0].2.clone()
+            };
+            (result, format!("normalize({})", vectors[0].1))
+        }
+        _ => return Err(format!("Unknown operation: {}", operation)),
+    };
+
+    // Compute stats
+    let magnitude: f32 = result.iter().map(|v| v * v).sum::<f32>().sqrt();
+    let near_zero_count = result.iter().filter(|v| v.abs() < 0.01).count();
+    let sparsity = near_zero_count as f32 / dim as f32;
+
+    // Create binary hash (first 32 dims as bits based on sign)
+    let binary_hash: String = {
+        let bits: u32 = result.iter()
+            .take(32)
+            .enumerate()
+            .fold(0u32, |acc, (i, v)| {
+                if *v > 0.0 { acc | (1 << i) } else { acc }
+            });
+        format!("{:08x}", bits)
+    };
+
+    let stats = VectorStats {
+        magnitude,
+        dimensions: dim,
+        sparsity,
+        binary_hash,
+    };
+
+    // Project to 3D using cached PCA
+    let objects_with_embeddings = store
+        .get_objects_with_embeddings(crate::memory::SecurityTier::Sealed)
+        .map_err(|e| format!("Failed to get objects: {}", e))?;
+
+    let total_count = objects_with_embeddings.len();
+    let cache_status = pca_cache.check(total_count);
+
+    let pca = match cache_status {
+        CacheStatus::Valid(p) => Some(p),
+        CacheStatus::UsableWithNewItems { pca, .. } => Some(pca),
+        CacheStatus::Stale { .. } | CacheStatus::None => {
+            // Need to compute PCA - collect embeddings
+            let embeddings: Vec<&[f32]> = objects_with_embeddings.iter()
+                .map(|(_, e)| e.as_slice())
+                .collect();
+            let new_pca = simple_pca(&embeddings, 3);
+            if let Some(ref pca) = new_pca {
+                pca_cache.set(pca.clone(), total_count, dim);
+            }
+            new_pca
+        }
+    };
+
+    let pca = match pca {
+        Some(p) => p,
+        None => return Err("No objects to compute PCA".to_string()),
+    };
+
+    let result_3d = project_to_3d(&result, &pca);
+
+    // Find nearest neighbors
+    let mut neighbors: Vec<(String, String, f32, f32, f32, f32)> = Vec::new();
+
+    for (obj, emb) in &objects_with_embeddings {
+        let sim = cosine_similarity(&result, emb);
+        let (ox, oy, oz) = project_to_3d(emb, &pca);
+        let dist_3d = ((result_3d.0 - ox).powi(2) +
+                       (result_3d.1 - oy).powi(2) +
+                       (result_3d.2 - oz).powi(2)).sqrt();
+        let name = obj.name.clone().unwrap_or_else(|| "Untitled".to_string());
+        neighbors.push((obj.suid.to_string(), name, sim, dist_3d, ox, oy));
+    }
+
+    // Sort by similarity (descending)
+    neighbors.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+
+    let nearest_neighbors: Vec<VectorNeighbor> = neighbors.into_iter()
+        .take(10)
+        .map(|(suid, name, sim, dist, _, _)| VectorNeighbor {
+            suid,
+            name,
+            similarity: sim,
+            distance_3d: dist,
+        })
+        .collect();
+
+    Ok(VectorOperationResult {
+        operation: op_desc,
+        result_vector: result,
+        result_3d,
+        nearest_neighbors,
+        stats,
+    })
+}
+
+/// Get vector info for a single object (for display in UI)
+#[tauri::command]
+pub async fn vector_info(
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+    suid: String,
+) -> Result<VectorStats, String> {
+    let store = search.store.read().await;
+    let parsed_suid = crate::semantic_object::Suid::parse(&suid)
+        .map_err(|e| format!("Invalid SUID: {}", e))?;
+
+    let emb = store.get_embedding(&parsed_suid)
+        .map_err(|e| format!("Failed to get embedding: {}", e))?
+        .ok_or_else(|| "No embedding for this object".to_string())?;
+
+    let dim = emb.len();
+    let magnitude: f32 = emb.iter().map(|v| v * v).sum::<f32>().sqrt();
+    let near_zero_count = emb.iter().filter(|v| v.abs() < 0.01).count();
+    let sparsity = near_zero_count as f32 / dim as f32;
+
+    let binary_hash: String = {
+        let bits: u32 = emb.iter()
+            .take(32)
+            .enumerate()
+            .fold(0u32, |acc, (i, v)| {
+                if *v > 0.0 { acc | (1 << i) } else { acc }
+            });
+        format!("{:08x}", bits)
+    };
+
+    Ok(VectorStats {
+        magnitude,
+        dimensions: dim,
+        sparsity,
+        binary_hash,
+    })
+}
+
+// ============================================================================
+// File operation commands for chat slash commands
+// ============================================================================
+
+/// Read file content
+#[tauri::command]
+pub async fn read_file_content(path: String) -> Result<String, String> {
+    let path = std::path::Path::new(&path);
+
+    // Security: Only allow reading from user-accessible locations
+    if !path.exists() {
+        return Err(format!("File not found: {}", path.display()));
+    }
+
+    // Read the file
+    std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read file: {}", e))
+}
+
+/// List directory contents
+#[tauri::command]
+pub async fn list_directory(path: String) -> Result<Vec<String>, String> {
+    let path = if path == "." || path.is_empty() {
+        std::env::current_dir().map_err(|e| format!("Failed to get current dir: {}", e))?
+    } else {
+        std::path::PathBuf::from(&path)
+    };
+
+    if !path.exists() {
+        return Err(format!("Directory not found: {}", path.display()));
+    }
+
+    if !path.is_dir() {
+        return Err(format!("Not a directory: {}", path.display()));
+    }
+
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(&path).map_err(|e| format!("Failed to read directory: {}", e))? {
+        if let Ok(entry) = entry {
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            let file_type = if entry.path().is_dir() { "/" } else { "" };
+            entries.push(format!("{}{}", file_name, file_type));
+        }
+    }
+
+    entries.sort();
+    Ok(entries)
+}
+
+/// Get the embedding vector for an object
+#[tauri::command]
+pub async fn get_object_embedding(
+    suid: String,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<Option<Vec<f32>>, String> {
+    let parsed_suid = Suid::parse(&suid).map_err(|e| format!("Invalid SUID: {}", e))?;
+
+    let store = search.store.read().await;
+    let embedding = store.get_embedding(&parsed_suid)
+        .map_err(|e| format!("Failed to get embedding: {}", e))?;
+
+    Ok(embedding)
+}
+
+/// Ingest file to semantic memory
+#[tauri::command]
+pub async fn ingest_file_to_memory(
+    path: String,
+    search: tauri::State<'_, std::sync::Arc<crate::semantic_search::SemanticSearch>>,
+) -> Result<(), String> {
+    let path_buf = std::path::PathBuf::from(&path);
+
+    if !path_buf.exists() {
+        return Err(format!("File not found: {}", path));
+    }
+
+    // Read file content
+    let content = std::fs::read_to_string(&path_buf)
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+
+    let file_name = path_buf.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    // Determine content type from extension
+    let content_type = ContentType::from_extension(
+        path_buf.extension().and_then(|e| e.to_str()).unwrap_or("")
+    );
+
+    // Create semantic object from file
+    let mut obj = SemanticObject::new(content.as_bytes().to_vec(), content_type);
+    obj.name = Some(file_name.clone());
+    obj.path = Some(path.clone());
+    obj.summary = Some(content.chars().take(500).collect::<String>());
+
+    // Store in search index
+    search.store(&obj).await
+        .map_err(|e| format!("Failed to index file: {}", e))?;
+
+    log::info!("Ingested file to memory: {}", file_name);
+    Ok(())
 }

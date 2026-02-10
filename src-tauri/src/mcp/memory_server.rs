@@ -506,6 +506,147 @@ pub fn create_memory_tools() -> Vec<Tool> {
                 required: vec![],
             },
         },
+
+        // === Learning Tools ===
+        // These tools implement the predict-test-compare-integrate learning algorithm
+
+        // learning_start tool
+        Tool {
+            name: "learning_start".to_string(),
+            description: "Start a learning session. Use this to guide a user through the scientific method of learning: predict, test, compare, integrate. First, get them to make a prediction before revealing the answer.".to_string(),
+            parameters: ToolParameters {
+                param_type: "object".to_string(),
+                properties: HashMap::from([
+                    ("topic".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "The topic or question to learn about".to_string(),
+                        enum_values: None,
+                    }),
+                    ("user_prediction".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "The user's prediction/guess about the answer (required before revealing truth)".to_string(),
+                        enum_values: None,
+                    }),
+                    ("confidence".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "User's confidence level in their prediction".to_string(),
+                        enum_values: Some(vec!["confident".to_string(), "partial".to_string(), "guess".to_string(), "no_idea".to_string()]),
+                    }),
+                    ("use_web_search".to_string(), ParameterProperty {
+                        prop_type: "boolean".to_string(),
+                        description: "Whether to search the web for current information (default: false)".to_string(),
+                        enum_values: None,
+                    }),
+                    ("use_academic_search".to_string(), ParameterProperty {
+                        prop_type: "boolean".to_string(),
+                        description: "Whether to search academic papers (default: false)".to_string(),
+                        enum_values: None,
+                    }),
+                ]),
+                required: vec!["topic".to_string()],
+            },
+        },
+
+        // learning_compare tool
+        Tool {
+            name: "learning_compare".to_string(),
+            description: "After revealing the answer, use this to compare the user's prediction against the truth. This analysis helps identify gaps in their mental model.".to_string(),
+            parameters: ToolParameters {
+                param_type: "object".to_string(),
+                properties: HashMap::from([
+                    ("topic".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "The topic that was being learned".to_string(),
+                        enum_values: None,
+                    }),
+                    ("prediction".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "What the user predicted".to_string(),
+                        enum_values: None,
+                    }),
+                    ("actual_answer".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "The actual correct answer".to_string(),
+                        enum_values: None,
+                    }),
+                ]),
+                required: vec!["topic".to_string(), "prediction".to_string(), "actual_answer".to_string()],
+            },
+        },
+
+        // learning_save tool
+        Tool {
+            name: "learning_save".to_string(),
+            description: "Save a completed learning cycle to memory. This records what was learned for future reference.".to_string(),
+            parameters: ToolParameters {
+                param_type: "object".to_string(),
+                properties: HashMap::from([
+                    ("topic".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "The topic that was learned".to_string(),
+                        enum_values: None,
+                    }),
+                    ("prediction".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "What the user predicted".to_string(),
+                        enum_values: None,
+                    }),
+                    ("actual_answer".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "The correct answer".to_string(),
+                        enum_values: None,
+                    }),
+                    ("comparison".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "Analysis of prediction vs reality".to_string(),
+                        enum_values: None,
+                    }),
+                    ("user_integration".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "What the user said they learned in their own words".to_string(),
+                        enum_values: None,
+                    }),
+                    ("followup_questions".to_string(), ParameterProperty {
+                        prop_type: "array".to_string(),
+                        description: "Follow-up questions for continued learning".to_string(),
+                        enum_values: None,
+                    }),
+                    ("tags".to_string(), ParameterProperty {
+                        prop_type: "array".to_string(),
+                        description: "Tags to categorize this learning".to_string(),
+                        enum_values: None,
+                    }),
+                ]),
+                required: vec!["topic".to_string(), "actual_answer".to_string()],
+            },
+        },
+
+        // learning_history tool
+        Tool {
+            name: "learning_history".to_string(),
+            description: "Get the user's learning history. Use this to see what topics they've studied and how their understanding has evolved.".to_string(),
+            parameters: ToolParameters {
+                param_type: "object".to_string(),
+                properties: HashMap::from([
+                    ("topic".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "Filter by topic (semantic search)".to_string(),
+                        enum_values: None,
+                    }),
+                    ("days_back".to_string(), ParameterProperty {
+                        prop_type: "integer".to_string(),
+                        description: "Only return learning from the last N days".to_string(),
+                        enum_values: None,
+                    }),
+                    ("limit".to_string(), ParameterProperty {
+                        prop_type: "integer".to_string(),
+                        description: "Maximum number of results (default: 10)".to_string(),
+                        enum_values: None,
+                    }),
+                ]),
+                required: vec![],
+            },
+        },
     ]
 }
 
@@ -544,6 +685,11 @@ impl MemoryToolExecutor {
             "save_draft" => self.execute_save_draft(call.arguments).await,
             "read_file" => self.execute_read_file(call.arguments).await,
             "list_sources" => self.execute_list_sources(call.arguments).await,
+            // Learning tools
+            "learning_start" => self.execute_learning_start(call.arguments).await,
+            "learning_compare" => self.execute_learning_compare(call.arguments).await,
+            "learning_save" => self.execute_learning_save(call.arguments).await,
+            "learning_history" => self.execute_learning_history(call.arguments).await,
             _ => ToolResult::error(format!("Unknown memory tool: {}", call.name)),
         }
     }
@@ -572,6 +718,7 @@ impl MemoryToolExecutor {
             max_tier: SecurityTier::Guarded, // Include Guarded tier (sessions, chunks)
             include_keyword: true,
             keyword_boost: 0.2,
+            ..Default::default()
         };
 
         // Execute search
@@ -649,6 +796,7 @@ impl MemoryToolExecutor {
             max_tier: SecurityTier::Open,
             include_keyword: true,
             keyword_boost: 0.2,
+            ..Default::default()
         };
 
         let sessions = match self.search.search(&query, options).await {
@@ -680,6 +828,7 @@ impl MemoryToolExecutor {
                 max_tier: SecurityTier::Open,
                 include_keyword: true,
                 keyword_boost: 0.3,
+                ..Default::default()
             };
 
             match self.search.search(&decision_query, options).await {
@@ -803,6 +952,7 @@ impl MemoryToolExecutor {
             max_tier: SecurityTier::Open,
             include_keyword: true,
             keyword_boost: 0.3,
+            ..Default::default()
         };
 
         match self.search.search(&query, options).await {
@@ -878,6 +1028,7 @@ impl MemoryToolExecutor {
             max_tier: SecurityTier::Open,
             include_keyword: true,
             keyword_boost: 0.1,
+            ..Default::default()
         };
 
         match self.search.search(&query, options).await {
@@ -919,6 +1070,7 @@ impl MemoryToolExecutor {
             max_tier: SecurityTier::Open,
             include_keyword: false,
             keyword_boost: 0.0,
+            ..Default::default()
         };
 
         // This is a rough approximation - in production we'd have dedicated count methods
@@ -958,6 +1110,7 @@ impl MemoryToolExecutor {
             max_tier: SecurityTier::Guarded, // Include Guarded tier like search_memory
             include_keyword: true,
             keyword_boost: 0.3,
+            ..Default::default()
         };
 
         match self.search.search(query, options).await {
@@ -1034,6 +1187,7 @@ impl MemoryToolExecutor {
             max_tier: SecurityTier::Open,
             include_keyword: true,
             keyword_boost: 0.3,
+            ..Default::default()
         };
 
         match self.search.search(&search_query, options).await {
@@ -1107,6 +1261,7 @@ impl MemoryToolExecutor {
                 max_tier: SecurityTier::Open,
                 include_keyword: true,
                 keyword_boost: 0.5,
+                ..Default::default()
             };
             self.search.search(title_query, options).await
                 .ok()
@@ -1166,6 +1321,7 @@ impl MemoryToolExecutor {
                 max_tier: SecurityTier::Open,
                 include_keyword: true,
                 keyword_boost: 0.5,
+                ..Default::default()
             };
             self.search.search(search_query, options).await
                 .ok()
@@ -1512,6 +1668,246 @@ impl MemoryToolExecutor {
             "previous_work": continuity,
             "detected_patterns": patterns,
         })).unwrap())
+    }
+
+    // ========================================================================
+    // Learning Tools - Implement predict-test-compare-integrate algorithm
+    // ========================================================================
+
+    async fn execute_learning_start(&self, args: HashMap<String, serde_json::Value>) -> ToolResult {
+        let topic = match args.get("topic").and_then(|v| v.as_str()) {
+            Some(t) => t,
+            None => return ToolResult::error("Missing required parameter: topic".to_string()),
+        };
+
+        let user_prediction = args.get("user_prediction").and_then(|v| v.as_str());
+        let confidence = args.get("confidence").and_then(|v| v.as_str()).unwrap_or("guess");
+        let use_web_search = args.get("use_web_search").and_then(|v| v.as_bool()).unwrap_or(false);
+        let use_academic = args.get("use_academic_search").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        // Build response with guidance for the learning process
+        let mut response = serde_json::json!({
+            "topic": topic,
+            "step": if user_prediction.is_some() { "ready_for_answer" } else { "needs_prediction" },
+            "confidence": confidence,
+        });
+
+        // If no prediction yet, prompt for one
+        if user_prediction.is_none() && confidence != "no_idea" {
+            response["message"] = serde_json::json!(
+                "Before revealing the answer, ask the user to make a prediction. \
+                This is the key to learning - predictions create stakes and reveal mental models. \
+                Ask: 'What do you think the answer is? Even a guess is valuable.'"
+            );
+            response["prompts"] = serde_json::json!([
+                "What do you think?",
+                "Take a guess - it's okay to be wrong",
+                "What's your intuition telling you?"
+            ]);
+        } else {
+            // User has made a prediction or says they don't know
+            response["prediction"] = serde_json::json!(user_prediction.unwrap_or("I don't know"));
+            response["message"] = serde_json::json!(
+                "Good! Now provide the accurate answer. Be thorough but accessible. \
+                Include concrete examples. If the user said 'no_idea', build them a minimal mental model first."
+            );
+
+            // Add search context if requested
+            if use_web_search || use_academic {
+                response["search_enabled"] = serde_json::json!(true);
+                response["search_instructions"] = serde_json::json!(
+                    "Use web_search and/or search academic papers to get current information on this topic."
+                );
+            }
+
+            // Special handling for "no idea" case
+            if confidence == "no_idea" {
+                response["approach"] = serde_json::json!("build_mental_model");
+                response["guidance"] = serde_json::json!(
+                    "The user doesn't have a mental model yet. Your job is to: \
+                    1. Normalize not knowing - it's the honest starting point. \
+                    2. Build a MINIMAL mental model - just enough to make predictions next time. \
+                    3. Use analogies to connect to things they might already know. \
+                    4. End with a simple question they could now predict on."
+                );
+            }
+        }
+
+        ToolResult::success(serde_json::to_string_pretty(&response).unwrap())
+    }
+
+    async fn execute_learning_compare(&self, args: HashMap<String, serde_json::Value>) -> ToolResult {
+        let topic = match args.get("topic").and_then(|v| v.as_str()) {
+            Some(t) => t,
+            None => return ToolResult::error("Missing required parameter: topic".to_string()),
+        };
+
+        let prediction = match args.get("prediction").and_then(|v| v.as_str()) {
+            Some(p) => p,
+            None => return ToolResult::error("Missing required parameter: prediction".to_string()),
+        };
+
+        let actual = match args.get("actual_answer").and_then(|v| v.as_str()) {
+            Some(a) => a,
+            None => return ToolResult::error("Missing required parameter: actual_answer".to_string()),
+        };
+
+        let response = serde_json::json!({
+            "topic": topic,
+            "step": "compare",
+            "prediction": prediction,
+            "actual_answer": actual,
+            "analysis_instructions": {
+                "goal": "Analyze the gap between prediction and reality",
+                "steps": [
+                    "1. Acknowledge what they got RIGHT (even if partial)",
+                    "2. Identify specific gaps or misconceptions",
+                    "3. Explain WHY the gap exists (what assumption led them astray?)",
+                    "4. Frame wrongness as valuable data, not failure"
+                ],
+                "tone": "Be encouraging but honest. Wrong predictions are the best teachers.",
+                "example_phrases": [
+                    "You were right that...",
+                    "The gap in your model was...",
+                    "This reveals an interesting assumption...",
+                    "This is exactly why predictions are so valuable for learning"
+                ]
+            },
+            "next_step": "After analysis, ask the user to summarize what they learned in their own words. This integration step is crucial for retention."
+        });
+
+        ToolResult::success(serde_json::to_string_pretty(&response).unwrap())
+    }
+
+    async fn execute_learning_save(&self, args: HashMap<String, serde_json::Value>) -> ToolResult {
+        let topic = match args.get("topic").and_then(|v| v.as_str()) {
+            Some(t) => t,
+            None => return ToolResult::error("Missing required parameter: topic".to_string()),
+        };
+
+        let actual = match args.get("actual_answer").and_then(|v| v.as_str()) {
+            Some(a) => a,
+            None => return ToolResult::error("Missing required parameter: actual_answer".to_string()),
+        };
+
+        let prediction = args.get("prediction").and_then(|v| v.as_str()).unwrap_or("");
+        let comparison = args.get("comparison").and_then(|v| v.as_str()).unwrap_or("");
+        let integration = args.get("user_integration").and_then(|v| v.as_str()).unwrap_or("");
+
+        let followups: Vec<String> = args.get("followup_questions")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+
+        let tags: Vec<String> = args.get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+
+        // Create a learning cycle object to store
+        let learning_cycle = serde_json::json!({
+            "type": "learning_cycle",
+            "topic": topic,
+            "prediction": prediction,
+            "actual_answer": actual,
+            "comparison": comparison,
+            "user_integration": integration,
+            "followup_questions": followups,
+            "timestamp": Utc::now().to_rfc3339(),
+        });
+
+        // Create a semantic object for this learning cycle
+        let content = serde_json::to_string_pretty(&learning_cycle).unwrap();
+
+        // Use the same pattern as log_decision
+        let mut obj = SemanticObject::from_text(&content)
+            .with_name(&format!("Learning: {}", topic))
+            .with_tag("learning")
+            .with_tag("learning_cycle")
+            .with_tier(SecurityTier::Open);
+
+        // Add custom tags
+        for tag in &tags {
+            obj = obj.with_tag(tag);
+        }
+
+        match self.search.store(&obj).await {
+            Ok(_) => {
+                ToolResult::success(serde_json::to_string_pretty(&serde_json::json!({
+                    "success": true,
+                    "id": obj.suid.to_string(),
+                    "topic": topic,
+                    "message": "Learning cycle saved to memory. Use learning_history to review past learning.",
+                    "followup_questions": followups,
+                })).unwrap())
+            }
+            Err(e) => ToolResult::error(format!("Failed to save learning cycle: {}", e)),
+        }
+    }
+
+    async fn execute_learning_history(&self, args: HashMap<String, serde_json::Value>) -> ToolResult {
+        let topic = args.get("topic").and_then(|v| v.as_str());
+        let days_back = args.get("days_back").and_then(|v| v.as_i64());
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+
+        // Build search query
+        let query = match topic {
+            Some(t) => format!("learning {} learning_cycle", t),
+            None => "learning learning_cycle".to_string(),
+        };
+
+        let options = SearchOptions {
+            limit: limit.min(50),
+            min_score: 0.2,
+            max_tier: SecurityTier::Open,
+            include_keyword: true,
+            keyword_boost: 0.3,
+            ..Default::default()
+        };
+
+        match self.search.search(&query, options).await {
+            Ok(hits) => {
+                let cutoff = days_back.map(|d| Utc::now() - chrono::Duration::days(d));
+
+                let cycles: Vec<serde_json::Value> = hits.into_iter()
+                    .filter(|h| {
+                        // Filter to learning cycles
+                        if !h.object.tags.contains(&"learning_cycle".to_string()) {
+                            return false;
+                        }
+                        // Filter by date if specified
+                        if let Some(cutoff) = cutoff {
+                            if h.object.created_at < cutoff {
+                                return false;
+                            }
+                        }
+                        true
+                    })
+                    .filter_map(|h| {
+                        // Try to parse the learning cycle content
+                        h.object.content_as_str()
+                            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                            .map(|mut v| {
+                                v["id"] = serde_json::json!(h.object.suid.to_string());
+                                v["score"] = serde_json::json!(h.score);
+                                v
+                            })
+                    })
+                    .collect();
+
+                ToolResult::success(serde_json::to_string_pretty(&serde_json::json!({
+                    "query": topic.unwrap_or("all"),
+                    "count": cycles.len(),
+                    "learning_cycles": cycles,
+                    "message": if cycles.is_empty() {
+                        "No learning history found. Start learning with learning_start!"
+                    } else {
+                        "Here are past learning cycles. You can revisit topics or build on previous understanding."
+                    }
+                })).unwrap())
+            }
+            Err(e) => ToolResult::error(format!("Failed to search learning history: {}", e)),
+        }
     }
 }
 

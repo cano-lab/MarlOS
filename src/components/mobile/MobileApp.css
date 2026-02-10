@@ -1,0 +1,293 @@
+.mobile-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg-primary, #11111b);
+  position: relative;
+  overflow: hidden;
+}
+
+/* Main Content */
+.mobile-content {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Bottom Navigation */
+.bottom-nav {
+  display: flex;
+  justify-content: space-around;
+  align-items: flex-start;
+  padding: 8px 0 0;
+  background: var(--bg-secondary, #1e1e2e);
+  border-top: 1px solid var(--border-color, #313244);
+  position: relative;
+  z-index: 10;
+}
+
+.nav-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 16px;
+  background: none;
+  border: none;
+  color: var(--text-secondary, #a6adc8);
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 0.15s ease;
+  min-width: 64px;
+}
+
+.nav-btn:hover {
+  color: var(--text-primary, #cdd6f4);
+}
+
+.nav-btn.active {
+  color: var(--accent-color, #89b4fa);
+}
+
+.nav-btn svg {
+  transition: transform 0.15s ease;
+}
+
+.nav-btn.active svg {
+  transform: scale(1.1);
+}
+
+/* Capture Button (Center, Elevated) */
+.capture-btn {
+  position: relative;
+}
+
+.capture-icon {
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-color, #89b4fa);
+  border-radius: 50%;
+  margin-top: -24px;
+  color: var(--bg-primary, #11111b);
+  box-shadow: 0 4px 12px rgba(137, 180, 250, 0.4);
+  transition: all 0.15s ease;
+}
+
+.capture-btn:hover .capture-icon {
+  transform: scale(1.05);
+  box-shadow: 0 6px 16px rgba(137, 180, 250, 0.5);
+}
+
+.capture-btn.active .capture-icon {
+  background: var(--accent-hover, #74a8f7);
+}
+
+.capture-btn span {
+  margin-top: 4px;
+}
+
+/* Quick Capture FAB */
+.capture-fab {
+  position: fixed;
+  bottom: 90px;
+  right: 20px;
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-color, #89b4fa);
+  border: none;
+  border-radius: 50%;
+  color: var(--bg-primary, #11111b);
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(137, 180, 250, 0.4);
+  z-index: 50;
+  transition: all 0.2s ease;
+}
+
+.capture-fab:hover {
+  transform: scale(1.1);
+  box-shadow: 0 6px 24px rgba(137, 180, 250, 0.5);
+}
+
+.capture-fab:active {
+  transform: scale(0.95);
+}
+
+/* Capture Modal Overlay */
+.capture-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: flex-end;
+  z-index: 100;
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.capture-modal {
+  width: 100%;
+  height: 90%;
+  background: var(--bg-primary, #11111b);
+  border-radius: 24px 24px 0 0;
+  overflow: hidden;
+  animation: slideUp 0.3s ease;
+}
+
+@keyframes slideUp {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+/* Settings Styles */
+.mobile-settings {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.settings-header {
+  padding: 16px;
+  border-bottom: 1px solid var(--border-color, #313244);
+}
+
+.settings-header h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary, #cdd6f4);
+}
+
+.settings-content {
+  padding: 16px;
+}
+
+.settings-section {
+  margin-bottom: 24px;
+}
+
+.settings-section h3 {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary, #a6adc8);
+}
+
+.setting-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  background: var(--bg-secondary, #1e1e2e);
+  border-radius: 10px;
+  margin-bottom: 8px;
+}
+
+.setting-label {
+  font-size: 15px;
+  color: var(--text-primary, #cdd6f4);
+}
+
+.setting-value {
+  font-size: 14px;
+  color: var(--text-secondary, #a6adc8);
+}
+
+.setting-value.connected {
+  color: var(--success-color, #a6e3a1);
+}
+
+.setting-btn {
+  width: 100%;
+  padding: 14px 16px;
+  background: var(--bg-secondary, #1e1e2e);
+  border: none;
+  border-radius: 10px;
+  color: var(--text-primary, #cdd6f4);
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+  margin-bottom: 8px;
+  transition: background 0.15s ease;
+}
+
+.setting-btn:hover {
+  background: var(--bg-hover, #262637);
+}
+
+.setting-btn.danger {
+  color: var(--error-color, #f38ba8);
+}
+
+/* Safe Areas for iOS */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .bottom-nav {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .capture-fab {
+    bottom: calc(90px + env(safe-area-inset-bottom));
+  }
+
+  .settings-header {
+    padding-top: calc(16px + env(safe-area-inset-top));
+  }
+}
+
+/* Landscape adjustments */
+@media (orientation: landscape) and (max-height: 500px) {
+  .bottom-nav {
+    padding: 4px 0;
+  }
+
+  .nav-btn {
+    padding: 4px 12px;
+  }
+
+  .nav-btn span {
+    display: none;
+  }
+
+  .capture-icon {
+    width: 40px;
+    height: 40px;
+    margin-top: -16px;
+  }
+
+  .capture-fab {
+    bottom: 70px;
+    width: 48px;
+    height: 48px;
+  }
+}
+
+/* Tablet adjustments */
+@media (min-width: 768px) {
+  .bottom-nav {
+    max-width: 600px;
+    margin: 0 auto;
+  }
+
+  .mobile-content {
+    max-width: 800px;
+    margin: 0 auto;
+    width: 100%;
+  }
+}

@@ -5,6 +5,18 @@ import katex from "katex";
 import "katex/dist/katex.min.css";
 import "./Preview.css";
 
+// SECURITY: Escape HTML to prevent XSS in error messages
+const escapeHtml = (text: string): string => {
+  const htmlEscapes: Record<string, string> = {
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  };
+  return text.replace(/[&<>"']/g, (char) => htmlEscapes[char]);
+};
+
 interface PreviewProps {
   content: string;
 }
@@ -36,7 +48,7 @@ const renderer = {
       try {
         return `<div class="math-block">${katex.renderToString(code, { displayMode: true })}</div>`;
       } catch (e) {
-        return `<div class="math-error">Math Error: ${(e as Error).message}</div>`;
+        return `<div class="math-error">Math Error: ${escapeHtml((e as Error).message)}</div>`;
       }
     }
     // Default code block
@@ -63,7 +75,7 @@ const processMath = (html: string): string => {
     try {
       return katex.renderToString(math.trim(), { displayMode: false });
     } catch (e) {
-      return `<span class="math-error">${(e as Error).message}</span>`;
+      return `<span class="math-error">${escapeHtml((e as Error).message)}</span>`;
     }
   });
 
@@ -88,7 +100,7 @@ const Preview: Component<PreviewProps> = (props) => {
           container.innerHTML = svg;
           container.classList.add("rendered");
         } catch (e) {
-          container.innerHTML = `<div class="mermaid-error">Diagram Error: ${(e as Error).message}</div>`;
+          container.innerHTML = `<div class="mermaid-error">Diagram Error: ${escapeHtml((e as Error).message)}</div>`;
           container.classList.add("error");
         }
       }
@@ -116,7 +128,7 @@ const Preview: Component<PreviewProps> = (props) => {
           });
           el.classList.add("rendered");
         } catch (e) {
-          el.innerHTML = `<div class="chart-error">Chart Error: ${(e as Error).message}</div>`;
+          el.innerHTML = `<div class="chart-error">Chart Error: ${escapeHtml((e as Error).message)}</div>`;
           el.classList.add("error");
         }
       }

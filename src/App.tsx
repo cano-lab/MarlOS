@@ -1,4 +1,4 @@
-import { createSignal, onMount, Show, createEffect } from "solid-js";
+import { createSignal, createEffect, onMount, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
@@ -9,8 +9,15 @@ import EpubViewer from "./components/EpubViewer";
 import PrintPreview from "./components/PrintPreview";
 import ChatPanel from "./components/ChatPanel";
 import ResearchHub from "./components/ResearchHub";
+import Sessions from "./components/Sessions";
+import VectorQuery from "./components/VectorQuery";
 import Sidebar from "./components/Sidebar";
 import Titlebar from "./components/Titlebar";
+import HomePage, { RecentFile } from "./components/HomePage";
+import LearningPanel from "./components/LearningPanel";
+import ProviderSettings from "./components/ProviderSettings";
+import { ToastProvider, useToast } from "./components/Toast";
+import { useDocumentTimer } from "./hooks/useDocumentTimer";
 import "./App.css";
 
 interface VersionInfo {
@@ -29,20 +36,38 @@ interface Document {
 }
 
 type ViewMode = "editor" | "preview" | "split";
-type AppMode = "markdown" | "pdf" | "epub";
+type AppMode = "home" | "markdown" | "pdf" | "epub" | "learn" | "unstuck";
 
-function App() {
+function AppContent() {
+  const { showToast } = useToast();
+
   const [version, setVersion] = createSignal<VersionInfo | null>(null);
   const [document, setDocument] = createSignal<Document | null>(null);
   const [sidebarOpen, setSidebarOpen] = createSignal(true);
   const [viewMode, setViewMode] = createSignal<ViewMode>("split");
-  const [appMode, setAppMode] = createSignal<AppMode>("markdown");
+  const [appMode, setAppMode] = createSignal<AppMode>("home");
   const [pdfPath, setPdfPath] = createSignal<string | null>(null);
   const [epubPath, setEpubPath] = createSignal<string | null>(null);
   const [showPrintPreview, setShowPrintPreview] = createSignal(false);
-  const [showChat, setShowChat] = createSignal(false);
+  const [showChat, setShowChat] = createSignal(false);  // Side panel chat (toggle with Ctrl+/)
   const [showResearchHub, setShowResearchHub] = createSignal(false);
+  const [showSessions, setShowSessions] = createSignal(false);
+  const [showVectorQuery, setShowVectorQuery] = createSignal(false);
   const [selectedText, setSelectedText] = createSignal<string>("");
+  const [recentFiles, setRecentFiles] = createSignal<RecentFile[]>([]);
+  const [showProviderSettings, setShowProviderSettings] = createSignal(false);
+
+  // Document timer for tracking time spent
+  const documentTimer = useDocumentTimer();
+
+  const loadRecentFiles = async () => {
+    try {
+      const files = await invoke<RecentFile[]>("get_recent_files", { limit: 10 });
+      setRecentFiles(files);
+    } catch (e) {
+      console.debug("Failed to load recent files:", e);
+    }
+  };
 
   onMount(async () => {
     try {
@@ -51,7 +76,35 @@ function App() {
     } catch (e) {
       console.error("Failed to get version:", e);
     }
+
+    // Load recent files on mount
+    await loadRecentFiles();
   });
+
+  const goHome = async () => {
+    // Stop document timer and record duration
+    await documentTimer.stopTimer();
+
+    setAppMode("home");
+    setDocument(null);
+    setPdfPath(null);
+    setEpubPath(null);
+    loadRecentFiles(); // Refresh recent files when going home
+  };
+
+  const openLearn = () => {
+    setAppMode("learn");
+    setDocument(null);
+    setPdfPath(null);
+    setEpubPath(null);
+  };
+
+  const openUnstuck = () => {
+    setAppMode("unstuck");
+    setDocument(null);
+    setPdfPath(null);
+    setEpubPath(null);
+  };
 
   const createNewDocument = async () => {
     setAppMode("markdown");
@@ -62,6 +115,7 @@ function App() {
       setDocument(doc);
     } catch (e) {
       console.error("Failed to create document:", e);
+      showToast("Failed to create document", "error");
     }
   };
 
@@ -120,15 +174,21 @@ function App() {
 
       setDocument(doc);
 
+      // Start document timer
+      documentTimer.startTimer(path);
+
       // Also register with kernel
       try {
         await invoke("open_document", { path });
       } catch (e) {
         console.log("Kernel registration skipped:", e);
       }
+
+      // Refresh recent files after opening
+      loadRecentFiles();
     } catch (e) {
       console.error("Failed to open document:", e);
-      alert(`Failed to open file: ${e}`);
+      showToast(`Failed to open file: ${e}`, "error");
     }
   };
 
@@ -154,15 +214,35 @@ function App() {
       setEpubPath(null);
       setAppMode("pdf");
       setPdfPath(path);
+
+      // Start document timer
+      documentTimer.startTimer(path);
+
+      // Record document viewing activity in session
+      try {
+        const filename = path.split(/[/\\]/).pop() || path;
+        await invoke("record_session_activity", {
+          activityType: "document_view",
+          details: {
+            title: filename,
+            path: path,
+            durationSecs: 0, // Will be updated when closed
+          }
+        });
+      } catch (e) {
+        console.debug("Failed to record activity:", e);
+      }
+
+      // Refresh recent files after opening
+      loadRecentFiles();
     } catch (e) {
       console.error("Failed to open PDF:", e);
-      alert(`Failed to open PDF: ${e}`);
+      showToast(`Failed to open PDF: ${e}`, "error");
     }
   };
 
   const closePdf = () => {
-    setAppMode("markdown");
-    setPdfPath(null);
+    goHome();
   };
 
   const openEpub = async (pathArg?: string) => {
@@ -187,15 +267,35 @@ function App() {
       setPdfPath(null);
       setAppMode("epub");
       setEpubPath(path);
+
+      // Start document timer
+      documentTimer.startTimer(path);
+
+      // Record document viewing activity in session
+      try {
+        const filename = path.split(/[/\\]/).pop() || path;
+        await invoke("record_session_activity", {
+          activityType: "document_view",
+          details: {
+            title: filename,
+            path: path,
+            durationSecs: 0,
+          }
+        });
+      } catch (e) {
+        console.debug("Failed to record activity:", e);
+      }
+
+      // Refresh recent files after opening
+      loadRecentFiles();
     } catch (e) {
       console.error("Failed to open EPUB:", e);
-      alert(`Failed to open EPUB: ${e}`);
+      showToast(`Failed to open EPUB: ${e}`, "error");
     }
   };
 
   const closeEpub = () => {
-    setAppMode("markdown");
-    setEpubPath(null);
+    goHome();
   };
 
   const saveDocument = async () => {
@@ -227,9 +327,24 @@ function App() {
         title: extractTitle(doc.content) || path.split(/[/\\]/).pop()?.replace(/\.[^.]+$/, "") || doc.title,
       });
 
+      showToast("Document saved", "success");
+
+      // Record writing activity in session
+      try {
+        await invoke("record_session_activity", {
+          activityType: "writing",
+          details: {
+            wordCount: doc.word_count,
+            section: doc.title,
+          }
+        });
+      } catch (e) {
+        console.debug("Failed to record activity:", e);
+      }
+
     } catch (e) {
       console.error("Failed to save document:", e);
-      alert(`Failed to save file: ${e}`);
+      showToast(`Failed to save file: ${e}`, "error");
     }
   };
 
@@ -293,6 +408,14 @@ function App() {
       e.preventDefault();
       setShowResearchHub(!showResearchHub());
     }
+    if ((e.ctrlKey || e.metaKey) && e.key === "s" && e.shiftKey) {
+      e.preventDefault();
+      setShowSessions(!showSessions());
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+      e.preventDefault();
+      setShowVectorQuery(!showVectorQuery());
+    }
     // View mode shortcuts (only in markdown mode)
     if (appMode() === "markdown") {
       if ((e.ctrlKey || e.metaKey) && e.key === "1") {
@@ -308,12 +431,16 @@ function App() {
         setViewMode("preview");
       }
     }
-    // Escape to close print preview, PDF, EPUB, or Research Hub
+    // Escape to close print preview, PDF, EPUB, Research Hub, Sessions, or Vector Query
     if (e.key === "Escape") {
       if (showPrintPreview()) {
         setShowPrintPreview(false);
       } else if (showResearchHub()) {
         setShowResearchHub(false);
+      } else if (showSessions()) {
+        setShowSessions(false);
+      } else if (showVectorQuery()) {
+        setShowVectorQuery(false);
       } else if (appMode() === "pdf") {
         closePdf();
       } else if (appMode() === "epub") {
@@ -328,6 +455,9 @@ function App() {
   });
 
   const getTitle = () => {
+    if (appMode() === "home") {
+      return "MarlOS";
+    }
     if (appMode() === "pdf" && pdfPath()) {
       return pdfPath()!.split(/[/\\]/).pop() || "PDF";
     }
@@ -335,6 +465,10 @@ function App() {
       return epubPath()!.split(/[/\\]/).pop() || "EPUB";
     }
     return document()?.title || "MarlOS";
+  };
+
+  const handleSessionError = (error: string) => {
+    showToast(`Session Error: ${error}`, "error");
   };
 
   return (
@@ -362,10 +496,34 @@ function App() {
             chatOpen={showChat()}
             onToggleResearchHub={() => setShowResearchHub(!showResearchHub())}
             researchHubOpen={showResearchHub()}
+            onToggleSessions={() => setShowSessions(!showSessions())}
+            sessionsOpen={showSessions()}
+            onToggleVectorQuery={() => setShowVectorQuery(!showVectorQuery())}
+            vectorQueryOpen={showVectorQuery()}
+            currentFile={document()?.path || pdfPath() || epubPath() || undefined}
+            currentProject={document()?.path ? document()!.path!.split(/[/\\]/).slice(0, -1).join('/') : undefined}
+            onGoHome={goHome}
+            recentFiles={recentFiles()}
+            onOpenRecent={openDocument}
+            onOpenProviderSettings={() => setShowProviderSettings(true)}
           />
         </Show>
 
         <main class="main-content">
+          {/* Home Mode */}
+          <Show when={appMode() === "home"}>
+            <HomePage
+              onNewMarkdown={createNewDocument}
+              onOpenFile={() => openDocument()}
+              onOpenRecent={openDocument}
+              onToggleSessions={() => setShowSessions(!showSessions())}
+              onToggleResearchHub={() => setShowResearchHub(!showResearchHub())}
+              onToggleVectorSearch={() => setShowVectorQuery(!showVectorQuery())}
+              onOpenLearn={openLearn}
+              onOpenUnstuck={openUnstuck}
+            />
+          </Show>
+
           {/* PDF Mode */}
           <Show when={appMode() === "pdf" && pdfPath()}>
             <PdfViewer path={pdfPath()!} onClose={closePdf} />
@@ -381,49 +539,16 @@ function App() {
             <Show
               when={document()}
               fallback={
-                <div class="welcome">
-                  <h1>Welcome to MarlOS</h1>
-                  <p>A semantic document editor for papers, PDFs, and research</p>
-                  <div class="welcome-actions">
-                    <button class="btn-primary" onClick={createNewDocument}>
-                      New Markdown
-                    </button>
-                    <button class="btn-secondary" onClick={() => openDocument()}>
-                      Open File
-                    </button>
-                    <button class="btn-secondary" onClick={() => openPdf()}>
-                      Open PDF
-                    </button>
-                    <button class="btn-secondary" onClick={() => openEpub()}>
-                      Open EPUB
-                    </button>
-                  </div>
-                  <div class="welcome-shortcuts">
-                    <h3>Keyboard Shortcuts</h3>
-                    <div class="shortcut-grid">
-                      <span class="shortcut-key">Ctrl+N</span><span>New Document</span>
-                      <span class="shortcut-key">Ctrl+O</span><span>Open File</span>
-                      <span class="shortcut-key">Ctrl+S</span><span>Save</span>
-                      <span class="shortcut-key">Ctrl+P</span><span>Print</span>
-                      <span class="shortcut-key">Ctrl+\</span><span>Toggle Sidebar</span>
-                      <span class="shortcut-key">Ctrl+1</span><span>Editor Only</span>
-                      <span class="shortcut-key">Ctrl+2</span><span>Split View</span>
-                      <span class="shortcut-key">Ctrl+3</span><span>Preview Only</span>
-                      <span class="shortcut-key">Ctrl+/</span><span>Toggle Chat</span>
-                      <span class="shortcut-key">Ctrl+R</span><span>Research Hub</span>
-                    </div>
-                  </div>
-                  <div class="welcome-features">
-                    <h3>Features</h3>
-                    <ul>
-                      <li><strong>Markdown Editor</strong> - Mermaid diagrams, LaTeX math, charts</li>
-                      <li><strong>PDF Viewer</strong> - Accurate rendering with measurement tools</li>
-                      <li><strong>EPUB Reader</strong> - Read e-books with TOC navigation and search</li>
-                      <li><strong>Unstuck AI</strong> - LLM chat for thinking, brainstorming, and analysis</li>
-                      <li><strong>Research Hub</strong> - Source collection, citations, fact-checking</li>
-                    </ul>
-                  </div>
-                </div>
+                <HomePage
+                  onNewMarkdown={createNewDocument}
+                  onOpenFile={() => openDocument()}
+                  onOpenRecent={openDocument}
+                  onToggleSessions={() => setShowSessions(!showSessions())}
+                  onToggleResearchHub={() => setShowResearchHub(!showResearchHub())}
+                  onToggleVectorSearch={() => setShowVectorQuery(!showVectorQuery())}
+                  onOpenLearn={openLearn}
+                  onOpenUnstuck={openUnstuck}
+                />
               }
             >
               <div class={`editor-area view-${viewMode()}`}>
@@ -447,10 +572,28 @@ function App() {
               </div>
             </Show>
           </Show>
+
+          {/* Learn Mode */}
+          <Show when={appMode() === "learn"}>
+            <div class="learn-view">
+              <LearningPanel />
+            </div>
+          </Show>
+
+          {/* Unstuck Mode - Full view chat */}
+          <Show when={appMode() === "unstuck"}>
+            <div class="unstuck-view">
+              <ChatPanel
+                contextContent={selectedText()}
+                onClose={goHome}
+                fullView={true}
+              />
+            </div>
+          </Show>
         </main>
 
-        {/* Chat Panel */}
-        <Show when={showChat()}>
+        {/* Chat Panel - Side panel (only when not in unstuck mode) */}
+        <Show when={showChat() && appMode() !== "unstuck"}>
           <div class="chat-panel-container">
             <ChatPanel
               contextContent={selectedText()}
@@ -460,16 +603,21 @@ function App() {
         </Show>
       </div>
 
-      <Show when={appMode() === "markdown"}>
+      <Show when={appMode() !== "home"}>
         <footer class="status-bar">
-          <span>
-            {document()
-              ? `${document()!.word_count} words`
-              : "No document open"}
-          </span>
-          <Show when={document()?.path}>
-            <span class="status-path" title={document()!.path || ""}>
-              {document()!.path?.split(/[/\\]/).slice(-2).join("/")}
+          <Show when={appMode() === "markdown" && document()}>
+            <span>
+              {document()!.word_count} words
+            </span>
+          </Show>
+          <Show when={document()?.path || pdfPath() || epubPath()}>
+            <span class="status-path" title={document()?.path || pdfPath() || epubPath() || ""}>
+              {(document()?.path || pdfPath() || epubPath())?.split(/[/\\]/).slice(-2).join("/")}
+            </span>
+          </Show>
+          <Show when={documentTimer.documentPath()}>
+            <span class="status-timer" title="Time spent on this document">
+              {documentTimer.formattedTime()}
             </span>
           </Show>
           <span class="status-spacer" />
@@ -482,9 +630,9 @@ function App() {
       </Show>
 
       {/* Print Preview Dialog */}
-      <Show when={showPrintPreview()}>
+      <Show when={showPrintPreview() && (appMode() === "markdown" || appMode() === "pdf")}>
         <PrintPreview
-          type={appMode()}
+          type={appMode() === "pdf" ? "pdf" : "markdown"}
           content={appMode() === "markdown" ? document()?.content : undefined}
           pdfPath={appMode() === "pdf" ? pdfPath() || undefined : undefined}
           onClose={() => setShowPrintPreview(false)}
@@ -495,7 +643,39 @@ function App() {
       <Show when={showResearchHub()}>
         <ResearchHub onClose={() => setShowResearchHub(false)} />
       </Show>
+
+      {/* Sessions */}
+      <Show when={showSessions()}>
+        <div class="sessions-dialog">
+          <Sessions
+            onClose={() => setShowSessions(false)}
+            onError={handleSessionError}
+            showToast={showToast}
+          />
+        </div>
+      </Show>
+
+      {/* Vector Query */}
+      <Show when={showVectorQuery()}>
+        <div class="vector-query-dialog">
+          <VectorQuery onClose={() => setShowVectorQuery(false)} />
+        </div>
+      </Show>
+
+      {/* Provider Settings */}
+      <ProviderSettings
+        isOpen={showProviderSettings()}
+        onClose={() => setShowProviderSettings(false)}
+      />
     </div>
+  );
+}
+
+function App() {
+  return (
+    <ToastProvider>
+      <AppContent />
+    </ToastProvider>
   );
 }
 

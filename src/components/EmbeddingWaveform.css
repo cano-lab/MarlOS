@@ -1,0 +1,119 @@
+.embedding-waveform {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.waveform-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.waveform-container {
+  position: relative;
+}
+
+.waveform-canvas {
+  display: block;
+  border-radius: 4px;
+  cursor: crosshair;
+}
+
+.waveform-tooltip {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 8px;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.8);
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: 'Fira Code', monospace;
+  pointer-events: none;
+}
+
+.tooltip-index {
+  color: var(--text-secondary);
+}
+
+.tooltip-value {
+  color: #4a9eff;
+  font-weight: 600;
+}
+
+.waveform-stats {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.stat {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.stat-label {
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+.stat-value {
+  font-size: 11px;
+  font-family: 'Fira Code', monospace;
+  color: var(--text-primary);
+}
+
+/* Comparison mode - multiple waveforms */
+.waveform-comparison {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.waveform-comparison-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.waveform-comparison-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.similarity-badge {
+  padding: 4px 10px;
+  background: var(--accent);
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: white;
+}
+
+/* Diff visualization */
+.waveform-diff {
+  position: relative;
+}
+
+.waveform-diff .positive {
+  fill: rgba(76, 175, 80, 0.5);
+  stroke: #4caf50;
+}
+
+.waveform-diff .negative {
+  fill: rgba(244, 67, 54, 0.5);
+  stroke: #f44336;
+}

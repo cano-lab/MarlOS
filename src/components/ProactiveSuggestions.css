@@ -1,0 +1,230 @@
+.proactive-suggestions {
+  background: var(--bg-secondary, #1e1e2e);
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 8px;
+  border: 1px solid var(--border-color, #313244);
+}
+
+.proactive-suggestions.collapsed {
+  border-radius: 8px;
+}
+
+.suggestions-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--bg-tertiary, #181825);
+  cursor: pointer;
+  user-select: none;
+}
+
+.suggestions-header:hover {
+  background: var(--bg-hover, #262637);
+}
+
+.header-icon {
+  display: flex;
+  align-items: center;
+  color: var(--accent-color, #89b4fa);
+}
+
+.header-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary, #cdd6f4);
+}
+
+.suggestion-count {
+  background: var(--accent-color, #89b4fa);
+  color: var(--bg-primary, #1e1e2e);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 10px;
+  min-width: 18px;
+  text-align: center;
+}
+
+.collapse-icon {
+  color: var(--text-secondary, #a6adc8);
+  font-size: 14px;
+  width: 16px;
+  text-align: center;
+}
+
+.suggestions-content {
+  max-height: 400px;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.suggestions-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 20px;
+  color: var(--text-secondary, #a6adc8);
+  font-size: 13px;
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border-color, #313244);
+  border-top-color: var(--accent-color, #89b4fa);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.suggestions-error {
+  padding: 12px;
+  color: var(--error-color, #f38ba8);
+  font-size: 12px;
+  text-align: center;
+}
+
+.suggestions-empty {
+  padding: 20px;
+  color: var(--text-secondary, #a6adc8);
+  font-size: 12px;
+  text-align: center;
+  font-style: italic;
+}
+
+.suggestion-card {
+  background: var(--bg-primary, #11111b);
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border-left: 3px solid var(--accent-color, #89b4fa);
+}
+
+.suggestion-card:last-child {
+  margin-bottom: 0;
+}
+
+.suggestion-card:hover {
+  background: var(--bg-hover, #1a1a2e);
+  transform: translateX(2px);
+}
+
+.suggestion-card.warning {
+  border-left-color: var(--warning-color, #fab387);
+}
+
+.suggestion-card.decision {
+  border-left-color: var(--success-color, #a6e3a1);
+}
+
+.suggestion-card.continuity {
+  border-left-color: var(--info-color, #89dceb);
+}
+
+.suggestion-card.similar {
+  border-left-color: var(--purple-color, #cba6f7);
+}
+
+.suggestion-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.suggestion-icon {
+  display: flex;
+  align-items: center;
+  color: var(--text-secondary, #a6adc8);
+}
+
+.suggestion-type {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary, #a6adc8);
+  background: var(--bg-secondary, #1e1e2e);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.suggestion-relevance {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-tertiary, #6c7086);
+}
+
+.dismiss-btn {
+  background: none;
+  border: none;
+  color: var(--text-tertiary, #6c7086);
+  cursor: pointer;
+  padding: 2px 6px;
+  font-size: 16px;
+  line-height: 1;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.suggestion-card:hover .dismiss-btn {
+  opacity: 1;
+}
+
+.dismiss-btn:hover {
+  background: var(--bg-hover, #262637);
+  color: var(--text-primary, #cdd6f4);
+}
+
+.suggestion-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary, #cdd6f4);
+  margin-bottom: 4px;
+  line-height: 1.3;
+}
+
+.suggestion-reason {
+  font-size: 11px;
+  color: var(--text-secondary, #a6adc8);
+  margin-bottom: 6px;
+  font-style: italic;
+}
+
+.suggestion-content {
+  font-size: 12px;
+  color: var(--text-tertiary, #6c7086);
+  line-height: 1.4;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-color, #313244);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Scrollbar styling */
+.suggestions-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.suggestions-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.suggestions-content::-webkit-scrollbar-thumb {
+  background: var(--border-color, #313244);
+  border-radius: 3px;
+}
+
+.suggestions-content::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary, #6c7086);
+}

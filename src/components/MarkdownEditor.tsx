@@ -171,6 +171,12 @@ const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     <div class="markdown-editor">
       <div class="editor-toolbar">
         <div class="toolbar-group">
+          <button class="toolbar-btn toolbar-btn-save" title="Save (Ctrl+S)" onClick={props.onSave}>
+            💾 Save
+          </button>
+        </div>
+        <div class="toolbar-separator" />
+        <div class="toolbar-group">
           <button class="toolbar-btn" title="Bold (Ctrl+B)" onClick={() => insertMarkdown("**", "**")}>
             <strong>B</strong>
           </button>

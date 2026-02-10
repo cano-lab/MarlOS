@@ -53,8 +53,10 @@ use crate::ai::AiManager;
 // Re-export task implementations
 pub mod tasks;
 pub mod paper_tasks;
+pub mod thinking_debugger;
 pub use tasks::*;
 pub use paper_tasks::*;
+pub use thinking_debugger::*;
 
 // ============================================================================
 // Core Traits
