@@ -24,6 +24,32 @@ const valToColor = (val: number, min: number, max: number): string => {
   }
 };
 
+// Generate test vectors
+const generateVector = (type: string, length: number = 1024): number[] => {
+  const v = new Array(length);
+  if (type === "random") {
+    for (let i = 0; i < length; i++) v[i] = (Math.random() - 0.5) * 2;
+  } else if (type === "sparse") {
+    for (let i = 0; i < length; i++) v[i] = Math.random() < 0.1 ? (Math.random() - 0.5) * 4 : 0;
+  } else if (type === "clustered") {
+    for (let i = 0; i < length; i++) {
+      const cluster = Math.floor(i / 128);
+      v[i] = (Math.random() - 0.5) * 2 + Math.sin(cluster * 1.2) * 1.5;
+    }
+  } else if (type === "smooth") {
+    for (let i = 0; i < length; i++) {
+      v[i] = Math.sin(i * 0.05) * Math.cos(i * 0.02) + (Math.random() - 0.5) * 0.3;
+    }
+  } else if (type === "harmonic") {
+    for (let i = 0; i < length; i++) {
+      v[i] = Math.sin(i * 0.03) * 0.5 + Math.sin(i * 0.07) * 0.3 + Math.sin(i * 0.13) * 0.2;
+    }
+  }
+  return v;
+};
+
+const VECTOR_TYPES = ["random", "sparse", "clustered", "smooth", "harmonic"] as const;
+
 // Vector math utilities
 const magnitude = (v: number[]): number => Math.sqrt(v.reduce((s, x) => s + x * x, 0));
 const dotProduct = (a: number[], b: number[]): number => a.reduce((s, x, i) => s + x * b[i], 0);
@@ -33,6 +59,76 @@ const cosineSim = (a: number[], b: number[]): number => {
   return m > 0 ? dot / m : 0;
 };
 const lerp = (a: number[], b: number[], t: number): number[] => a.map((v, i) => v * (1 - t) + b[i] * t);
+
+// Smoothing functions
+const smoothMovingAverage = (v: number[], windowSize: number): number[] => {
+  if (windowSize <= 1) return v;
+  const half = Math.floor(windowSize / 2);
+  return v.map((_, i) => {
+    let sum = 0, count = 0;
+    for (let j = Math.max(0, i - half); j <= Math.min(v.length - 1, i + half); j++) {
+      sum += v[j];
+      count++;
+    }
+    return sum / count;
+  });
+};
+
+const smoothGaussian = (v: number[], sigma: number): number[] => {
+  if (sigma <= 0) return v;
+  const kernelSize = Math.ceil(sigma * 3) * 2 + 1;
+  const kernel: number[] = [];
+  let sum = 0;
+  for (let i = 0; i < kernelSize; i++) {
+    const x = i - Math.floor(kernelSize / 2);
+    const g = Math.exp(-(x * x) / (2 * sigma * sigma));
+    kernel.push(g);
+    sum += g;
+  }
+  kernel.forEach((_, i) => kernel[i] /= sum);
+
+  const half = Math.floor(kernelSize / 2);
+  return v.map((_, i) => {
+    let result = 0;
+    for (let k = 0; k < kernelSize; k++) {
+      const j = Math.min(Math.max(0, i - half + k), v.length - 1);
+      result += v[j] * kernel[k];
+    }
+    return result;
+  });
+};
+
+const smoothSavitzkyGolay = (v: number[], windowSize: number): number[] => {
+  if (windowSize <= 2) return v;
+  const half = Math.floor(windowSize / 2);
+  return v.map((_, i) => {
+    const start = Math.max(0, i - half);
+    const end = Math.min(v.length - 1, i + half);
+    const n = end - start + 1;
+    if (n < 3) return v[i];
+    let sumX = 0, sumX2 = 0, sumX3 = 0, sumX4 = 0;
+    let sumY = 0, sumXY = 0, sumX2Y = 0;
+    for (let j = start; j <= end; j++) {
+      const x = j - i;
+      sumX += x; sumX2 += x*x; sumX3 += x*x*x; sumX4 += x*x*x*x;
+      sumY += v[j]; sumXY += x * v[j]; sumX2Y += x*x * v[j];
+    }
+    const det = n * (sumX2 * sumX4 - sumX3 * sumX3) - sumX * (sumX * sumX4 - sumX2 * sumX3) + sumX2 * (sumX * sumX3 - sumX2 * sumX2);
+    if (Math.abs(det) < 1e-10) return v[i];
+    return (sumY * (sumX2 * sumX4 - sumX3 * sumX3) - sumXY * (sumX * sumX4 - sumX2 * sumX3) + sumX2Y * (sumX * sumX3 - sumX2 * sumX2)) / det;
+  });
+};
+
+type SmoothingType = "none" | "moving" | "gaussian" | "savgol";
+
+const applySmoothing = (v: number[], type: SmoothingType, strength: number): number[] => {
+  switch (type) {
+    case "moving": return smoothMovingAverage(v, Math.round(strength * 20) + 1);
+    case "gaussian": return smoothGaussian(v, strength * 8);
+    case "savgol": return smoothSavitzkyGolay(v, Math.round(strength * 15) + 3);
+    default: return v;
+  }
+};
 
 // Hilbert curve for 2D mapping
 const hilbertD2xy = (n: number, d: number): [number, number] => {
@@ -170,14 +266,21 @@ const RadialViz: Component<{ vector: number[]; compareVector?: number[] | null }
   );
 };
 
-// Waveform visualization
+// Waveform visualization with zoom and pan
 const WaveformViz: Component<{ vector: number[]; compareVector?: number[] | null }> = (props) => {
   let canvasRef: HTMLCanvasElement | undefined;
+  const [zoom, setZoom] = createSignal(1);
+  const [panX, setPanX] = createSignal(0);
+  const [isDragging, setIsDragging] = createSignal(false);
+  const [dragStartX, setDragStartX] = createSignal(0);
+  const [dragStartPan, setDragStartPan] = createSignal(0);
 
-  createEffect(() => {
+  const draw = () => {
     if (!canvasRef || !props.vector) return;
     const ctx = canvasRef.getContext("2d")!;
     const w = canvasRef.width, h = canvasRef.height;
+    const z = zoom();
+    const pan = panX();
 
     ctx.fillStyle = "#0a0a0f";
     ctx.fillRect(0, 0, w, h);
@@ -190,27 +293,115 @@ const WaveformViz: Component<{ vector: number[]; compareVector?: number[] | null
     ctx.lineTo(w, h / 2);
     ctx.stroke();
 
-    const drawWave = (v: number[], color: string) => {
+    // Grid lines based on zoom
+    ctx.strokeStyle = "rgba(100,120,160,0.1)";
+    const gridStep = z > 4 ? 16 : z > 2 ? 32 : z > 1 ? 64 : 128;
+    for (let i = 0; i < props.vector.length; i += gridStep) {
+      const x = ((i / (props.vector.length - 1)) * w * z) - pan;
+      if (x >= 0 && x <= w) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(100,120,160,0.5)";
+        ctx.font = "9px monospace";
+        ctx.fillText(String(i), x + 2, h - 4);
+      }
+    }
+
+    const drawWave = (v: number[], color: string, lineWidth: number = 1.2) => {
       const absMax = Math.max(...v.map(Math.abs));
       ctx.beginPath();
       ctx.strokeStyle = color;
-      ctx.lineWidth = 1.2;
+      ctx.lineWidth = lineWidth;
+
+      let started = false;
       v.forEach((val, i) => {
-        const x = (i / (v.length - 1)) * w;
+        const x = ((i / (v.length - 1)) * w * z) - pan;
         const y = h / 2 - (val / absMax) * (h * 0.4);
-        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        if (x >= -10 && x <= w + 10) {
+          if (!started) { ctx.moveTo(x, y); started = true; }
+          else { ctx.lineTo(x, y); }
+        }
       });
       ctx.stroke();
+
+      if (z >= 4) {
+        v.forEach((val, i) => {
+          const x = ((i / (v.length - 1)) * w * z) - pan;
+          const y = h / 2 - (val / absMax) * (h * 0.4);
+          if (x >= 0 && x <= w) {
+            ctx.beginPath();
+            ctx.arc(x, y, 3, 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.fill();
+          }
+        });
+      }
     };
 
-    if (props.compareVector) drawWave(props.compareVector, "rgba(255,120,80,0.4)");
-    drawWave(props.vector, "rgba(80,160,255,0.85)");
-  });
+    if (props.compareVector) drawWave(props.compareVector, "rgba(255,120,80,0.4)", 1);
+    drawWave(props.vector, "rgba(80,160,255,0.85)", z >= 2 ? 1.5 : 1.2);
+
+    ctx.fillStyle = "#667";
+    ctx.font = "11px monospace";
+    ctx.fillText(`Zoom: ${z.toFixed(1)}x`, 10, 16);
+    const startDim = Math.floor((pan / (w * z)) * props.vector.length);
+    const endDim = Math.ceil(((pan + w) / (w * z)) * props.vector.length);
+    ctx.fillText(`Dims: ${Math.max(0, startDim)}-${Math.min(props.vector.length, endDim)}`, 10, 30);
+  };
+
+  createEffect(draw);
+
+  const handleWheel = (e: WheelEvent) => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    const newZoom = Math.max(1, Math.min(32, zoom() * delta));
+    if (canvasRef) {
+      const rect = canvasRef.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const newPan = mouseX * (newZoom / zoom() - 1) + panX() * (newZoom / zoom());
+      setPanX(Math.max(0, Math.min(newPan, canvasRef.width * newZoom - canvasRef.width)));
+    }
+    setZoom(newZoom);
+  };
+
+  const handleMouseDown = (e: MouseEvent) => {
+    setIsDragging(true);
+    setDragStartX(e.clientX);
+    setDragStartPan(panX());
+  };
+
+  const handleMouseMove = (e: MouseEvent) => {
+    if (!isDragging()) return;
+    const dx = dragStartX() - e.clientX;
+    if (canvasRef) {
+      setPanX(Math.max(0, Math.min(dragStartPan() + dx, canvasRef.width * zoom() - canvasRef.width)));
+    }
+  };
+
+  const handleMouseUp = () => setIsDragging(false);
+  const resetView = () => { setZoom(1); setPanX(0); };
 
   return (
-    <div class="viz-container">
-      <canvas ref={canvasRef} width={1024} height={256} />
-      <div class="viz-label">Waveform — x = dim index, y = value (all {props.vector?.length || 0} dimensions)</div>
+    <div class="viz-container waveform-viz">
+      <div class="zoom-controls">
+        <button onClick={() => setZoom(z => Math.min(32, z * 1.5))}>+</button>
+        <button onClick={() => setZoom(z => Math.max(1, z / 1.5))}>−</button>
+        <button onClick={resetView}>Reset</button>
+      </div>
+      <canvas
+        ref={canvasRef}
+        width={1024}
+        height={300}
+        onWheel={handleWheel}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+        style={{ cursor: isDragging() ? "grabbing" : zoom() > 1 ? "grab" : "default" }}
+      />
+      <div class="viz-label">Scroll to zoom, drag to pan (all {props.vector?.length || 0} dimensions)</div>
     </div>
   );
 };
@@ -281,6 +472,8 @@ const EmbeddingExplorer: Component<EmbeddingExplorerProps> = (props) => {
   const [showCompare, setShowCompare] = createSignal(false);
   const [morphT, setMorphT] = createSignal(0);
   const [showMorph, setShowMorph] = createSignal(false);
+  const [smoothingType, setSmoothingType] = createSignal<SmoothingType>("none");
+  const [smoothingStrength, setSmoothingStrength] = createSignal(0.3);
 
   const handleSearch = async () => {
     if (!searchQuery().trim()) return;
@@ -323,10 +516,17 @@ const EmbeddingExplorer: Component<EmbeddingExplorerProps> = (props) => {
     const emb = embedding();
     const comp = compareEmbedding();
     if (!emb) return null;
+    let result = emb;
     if (showMorph() && comp) {
-      return lerp(emb, comp, morphT());
+      result = lerp(emb, comp, morphT());
     }
-    return emb;
+    return applySmoothing(result, smoothingType(), smoothingStrength());
+  });
+
+  const displayCompareVector = createMemo(() => {
+    const comp = compareEmbedding();
+    if (!comp || showMorph()) return null;
+    return applySmoothing(comp, smoothingType(), smoothingStrength());
   });
 
   const stats = createMemo(() => {
@@ -446,6 +646,58 @@ const EmbeddingExplorer: Component<EmbeddingExplorerProps> = (props) => {
                 </div>
               </Show>
 
+              {/* Test Vectors */}
+              <div class="sidebar-section">
+                <h4>Test Vectors</h4>
+                <div class="test-vector-grid">
+                  <For each={VECTOR_TYPES}>
+                    {(type) => (
+                      <button
+                        class="test-vector-btn"
+                        onClick={() => {
+                          const v = generateVector(type);
+                          if ((showCompare() || showMorph()) && embedding()) {
+                            setCompareEmbedding(v);
+                            setCompareName(`${type} (gen)`);
+                          } else {
+                            setEmbedding(v);
+                            setSelectedName(`${type} (gen)`);
+                            setSelectedSuid(null);
+                          }
+                        }}
+                      >
+                        {type}
+                      </button>
+                    )}
+                  </For>
+                </div>
+                <p class="test-hint">Generate 1024-dim test vector</p>
+              </div>
+
+              {/* Smoothing */}
+              <div class="sidebar-section">
+                <h4>Smoothing</h4>
+                <div class="smoothing-buttons">
+                  <button class={smoothingType() === "none" ? "active" : ""} onClick={() => setSmoothingType("none")}>None</button>
+                  <button class={smoothingType() === "moving" ? "active" : ""} onClick={() => setSmoothingType("moving")} title="Moving Average">Moving</button>
+                  <button class={smoothingType() === "gaussian" ? "active" : ""} onClick={() => setSmoothingType("gaussian")} title="Gaussian blur">Gaussian</button>
+                  <button class={smoothingType() === "savgol" ? "active" : ""} onClick={() => setSmoothingType("savgol")} title="Savitzky-Golay (preserves peaks)">S-G</button>
+                </div>
+                <Show when={smoothingType() !== "none"}>
+                  <div class="smoothing-slider">
+                    <input
+                      type="range"
+                      min="0.05"
+                      max="1"
+                      step="0.05"
+                      value={smoothingStrength()}
+                      onInput={(e) => setSmoothingStrength(parseFloat(e.currentTarget.value))}
+                    />
+                    <span class="smoothing-value">{(smoothingStrength() * 100).toFixed(0)}%</span>
+                  </div>
+                </Show>
+              </div>
+
               {/* Stats */}
               <Show when={stats()}>
                 <div class="sidebar-section stats-section">
@@ -508,13 +760,13 @@ const EmbeddingExplorer: Component<EmbeddingExplorerProps> = (props) => {
                   <Show when={view() === "waveform"}>
                     <WaveformViz
                       vector={displayVector()!}
-                      compareVector={(showCompare() && !showMorph()) ? compareEmbedding() : null}
+                      compareVector={showCompare() ? displayCompareVector() : null}
                     />
                   </Show>
                   <Show when={view() === "heatmap"}>
                     <HeatmapViz
                       vector={displayVector()!}
-                      compareVector={(showCompare() && !showMorph()) ? compareEmbedding() : null}
+                      compareVector={showCompare() ? displayCompareVector() : null}
                     />
                   </Show>
                   <Show when={view() === "hilbert"}>
@@ -523,13 +775,13 @@ const EmbeddingExplorer: Component<EmbeddingExplorerProps> = (props) => {
                   <Show when={view() === "radial"}>
                     <RadialViz
                       vector={displayVector()!}
-                      compareVector={(showCompare() && !showMorph()) ? compareEmbedding() : null}
+                      compareVector={showCompare() ? displayCompareVector() : null}
                     />
                   </Show>
                   <Show when={view() === "distribution"}>
                     <DistributionViz
                       vector={displayVector()!}
-                      compareVector={(showCompare() && !showMorph()) ? compareEmbedding() : null}
+                      compareVector={showCompare() ? displayCompareVector() : null}
                     />
                   </Show>
                 </Show>
