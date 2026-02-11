@@ -34,6 +34,7 @@ pub mod embedding_transform;
 pub mod pca_cache;
 pub mod repo_tracker;
 pub mod chunking;
+pub mod epub_notes;
 
 #[cfg(feature = "tauri-app")]
 use std::sync::Arc;
@@ -73,6 +74,11 @@ pub fn run() {
             let epub_manager = epub::EpubManager::new();
             log::info!("EPUB support enabled");
             app.manage(epub_manager);
+
+            // Initialize EPUB Notes manager
+            let epub_notes_manager = epub_notes::EpubNotesManager::new();
+            log::info!("EPUB Notes support enabled");
+            app.manage(epub_notes_manager);
 
             // Initialize AI manager (wrapped in Arc for shared ownership)
             let ai_manager = std::sync::Arc::new(ai::AiManager::new());
@@ -163,6 +169,14 @@ pub fn run() {
             commands::epub_get_chapter_by_path,
             commands::epub_search,
             commands::epub_get_cover,
+            commands::epub_debug_info,
+            // EPUB Notes commands
+            commands::epub_notes_save,
+            commands::epub_notes_load,
+            commands::epub_notes_delete,
+            commands::epub_notes_get_for_book,
+            commands::epub_notes_get_for_chapter,
+            commands::epub_notes_update_note,
             // AI commands
             commands::ai_check_status,
             commands::ai_get_config,

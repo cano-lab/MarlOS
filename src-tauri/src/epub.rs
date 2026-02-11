@@ -62,6 +62,8 @@ pub struct ChapterContent {
     pub html: String,
     /// Plain text version (for search/display)
     pub text: String,
+    /// CSS stylesheets from the EPUB
+    pub css: Vec<String>,
 }
 
 /// Stored EPUB state
@@ -141,7 +143,7 @@ impl EpubManager {
             bytes,
         });
 
-        log::info!("Opened EPUB: {} ({} chapters)", path, chapter_count);
+        log::info!("Opened EPUB: {} ({} chapters, {} TOC entries)", path, chapter_count, info.toc.len());
 
         Ok(info)
     }
@@ -180,17 +182,41 @@ impl EpubManager {
         let mut doc = EpubDoc::from_reader(std::io::Cursor::new(&loaded.bytes))
             .map_err(|e| EpubError::Epub(format!("{:?}", e)))?;
 
-        if index >= doc.get_num_chapters() {
+        let num_chapters = doc.get_num_chapters();
+        log::debug!("get_chapter({}) - total chapters: {}", index, num_chapters);
+
+        if index >= num_chapters {
+            log::warn!("Chapter {} not found (only {} chapters)", index, num_chapters);
             return Err(EpubError::ChapterNotFound(index));
         }
 
         // Navigate to the chapter
-        doc.set_current_chapter(index);
+        if !doc.set_current_chapter(index) {
+            log::warn!("set_current_chapter({}) returned false", index);
+        }
 
         // Get chapter content
-        let html = doc.get_current_str()
-            .map(|(content, _mime)| content)
-            .unwrap_or_default();
+        let (html, mime) = doc.get_current_str()
+            .unwrap_or_else(|| {
+                log::warn!("get_current_str() returned None for chapter {}", index);
+                (String::new(), String::new())
+            });
+
+        log::debug!("Chapter {} content: {} bytes, mime: {}", index, html.len(), mime);
+
+        // Extract CSS stylesheets from the EPUB
+        let css_paths: Vec<String> = doc.resources.iter()
+            .filter(|(path, resource)| resource.mime.contains("css") || path.ends_with(".css"))
+            .map(|(path, _)| path.clone())
+            .collect();
+
+        let mut css = Vec::new();
+        for path in css_paths {
+            if let Some(content) = doc.get_resource_str_by_path(&path) {
+                css.push(content);
+            }
+        }
+        log::debug!("Loaded {} CSS stylesheets", css.len());
 
         // Convert HTML to plain text for search/display
         let text = html2text::from_read(html.as_bytes(), 80);
@@ -203,6 +229,7 @@ impl EpubManager {
             title,
             html,
             text,
+            css,
         })
     }
 
@@ -211,13 +238,32 @@ impl EpubManager {
         let state = self.state.lock().map_err(|_| EpubError::Lock)?;
         let loaded = state.current_epub.as_ref().ok_or(EpubError::NotLoaded)?;
 
-        // Find index in TOC
-        let index = loaded.info.toc.iter()
-            .position(|t| t.content_path == content_path)
-            .unwrap_or(0);
+        // Reload EPUB to search spine
+        let doc = EpubDoc::from_reader(std::io::Cursor::new(&loaded.bytes))
+            .map_err(|e| EpubError::Epub(format!("{:?}", e)))?;
 
-        // Use get_chapter with the found index
-        drop(state); // Release lock before calling get_chapter
+        // Strip any fragment (e.g., "chapter1.xhtml#section1" -> "chapter1.xhtml")
+        let path_without_fragment = content_path.split('#').next().unwrap_or(content_path);
+
+        // Try to find chapter using the epub crate's built-in method
+        let path_buf = std::path::PathBuf::from(path_without_fragment);
+        let found_index = doc.resource_uri_to_chapter(&path_buf);
+
+        // Fall back to TOC position if spine lookup fails
+        let index = found_index.unwrap_or_else(|| {
+            // Try matching with different path formats
+            loaded.info.toc.iter()
+                .position(|t| {
+                    let toc_path = t.content_path.split('#').next().unwrap_or(&t.content_path);
+                    toc_path == path_without_fragment
+                        || toc_path.ends_with(path_without_fragment)
+                        || path_without_fragment.ends_with(toc_path)
+                })
+                .unwrap_or(0)
+        });
+
+        // Release lock before calling get_chapter
+        drop(state);
         self.get_chapter(index)
     }
 
@@ -284,6 +330,49 @@ impl EpubManager {
             Ok(None)
         }
     }
+
+    /// Get debug info about the current EPUB
+    pub fn get_debug_info(&self) -> Result<EpubDebugInfo> {
+        let state = self.state.lock().map_err(|_| EpubError::Lock)?;
+        let loaded = state.current_epub.as_ref().ok_or(EpubError::NotLoaded)?;
+
+        let mut doc = EpubDoc::from_reader(std::io::Cursor::new(&loaded.bytes))
+            .map_err(|e| EpubError::Epub(format!("{:?}", e)))?;
+
+        let spine_items: Vec<String> = doc.spine.iter()
+            .take(20)
+            .map(|s| s.idref.clone())
+            .collect();
+
+        let toc_items: Vec<(String, String)> = loaded.info.toc.iter()
+            .take(20)
+            .map(|t| (t.label.clone(), t.content_path.clone()))
+            .collect();
+
+        let resources: Vec<(String, String)> = doc.resources.iter()
+            .take(30)
+            .map(|(path, res)| (path.clone(), res.mime.clone()))
+            .collect();
+
+        // Get first chapter content preview
+        doc.set_current_chapter(0);
+        let first_chapter_preview = doc.get_current_str()
+            .map(|(content, _)| {
+                let preview: String = content.chars().take(500).collect();
+                preview
+            })
+            .unwrap_or_else(|| "No content".to_string());
+
+        Ok(EpubDebugInfo {
+            spine_count: doc.spine.len(),
+            toc_count: loaded.info.toc.len(),
+            resource_count: doc.resources.len(),
+            spine_items,
+            toc_items,
+            resources,
+            first_chapter_preview,
+        })
+    }
 }
 
 impl Default for EpubManager {
@@ -299,4 +388,16 @@ pub struct SearchResult {
     pub chapter_title: Option<String>,
     pub position: usize,
     pub context: String,
+}
+
+/// Debug info about EPUB structure
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpubDebugInfo {
+    pub spine_count: usize,
+    pub toc_count: usize,
+    pub resource_count: usize,
+    pub spine_items: Vec<String>,
+    pub toc_items: Vec<(String, String)>, // (label, path)
+    pub resources: Vec<(String, String)>, // (path, mime)
+    pub first_chapter_preview: String,
 }

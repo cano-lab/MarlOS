@@ -330,6 +330,76 @@ pub fn epub_get_cover(
     epub_manager.get_cover().map_err(|e| e.to_string())
 }
 
+/// Get debug info about EPUB structure
+#[tauri::command]
+pub fn epub_debug_info(
+    epub_manager: State<'_, EpubManager>,
+) -> Result<crate::epub::EpubDebugInfo, String> {
+    epub_manager.get_debug_info().map_err(|e| e.to_string())
+}
+
+// ============================================================================
+// EPUB Notes Commands
+// ============================================================================
+
+use crate::epub_notes::{EpubNotesManager, EpubHighlight};
+
+/// Save an EPUB highlight (create or update)
+#[tauri::command]
+pub fn epub_notes_save(
+    highlight: EpubHighlight,
+    notes_manager: State<'_, EpubNotesManager>,
+) -> Result<EpubHighlight, String> {
+    notes_manager.save(highlight)
+}
+
+/// Load an EPUB highlight by ID
+#[tauri::command]
+pub fn epub_notes_load(
+    id: String,
+    notes_manager: State<'_, EpubNotesManager>,
+) -> Result<Option<EpubHighlight>, String> {
+    notes_manager.load(&id)
+}
+
+/// Delete an EPUB highlight by ID
+#[tauri::command]
+pub fn epub_notes_delete(
+    id: String,
+    notes_manager: State<'_, EpubNotesManager>,
+) -> Result<bool, String> {
+    notes_manager.delete(&id)
+}
+
+/// Get all highlights for a specific book
+#[tauri::command]
+pub fn epub_notes_get_for_book(
+    book_path: String,
+    notes_manager: State<'_, EpubNotesManager>,
+) -> Result<Vec<EpubHighlight>, String> {
+    notes_manager.get_for_book(&book_path)
+}
+
+/// Get highlights for a specific book and chapter
+#[tauri::command]
+pub fn epub_notes_get_for_chapter(
+    book_path: String,
+    chapter_index: usize,
+    notes_manager: State<'_, EpubNotesManager>,
+) -> Result<Vec<EpubHighlight>, String> {
+    notes_manager.get_for_chapter(&book_path, chapter_index)
+}
+
+/// Update the note text for a highlight
+#[tauri::command]
+pub fn epub_notes_update_note(
+    id: String,
+    note: String,
+    notes_manager: State<'_, EpubNotesManager>,
+) -> Result<Option<EpubHighlight>, String> {
+    notes_manager.update_note(&id, note)
+}
+
 // ============================================================================
 // AI Commands
 // ============================================================================
