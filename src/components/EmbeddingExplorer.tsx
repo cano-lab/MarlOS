@@ -130,6 +130,211 @@ const applySmoothing = (v: number[], type: SmoothingType, strength: number): num
   }
 };
 
+// =====================
+// ANALYSIS FUNCTIONS
+// =====================
+
+// FFT (Cooley-Tukey radix-2 decimation-in-time)
+interface ComplexNum { re: number; im: number; }
+
+const fft = (signal: number[]): ComplexNum[] => {
+  const n = Math.pow(2, Math.ceil(Math.log2(signal.length)));
+  const padded = [...signal, ...new Array(n - signal.length).fill(0)];
+
+  const output: ComplexNum[] = padded.map(x => ({ re: x, im: 0 }));
+  const bits = Math.log2(n);
+  for (let i = 0; i < n; i++) {
+    let rev = 0;
+    for (let j = 0; j < bits; j++) {
+      rev = (rev << 1) | ((i >> j) & 1);
+    }
+    if (rev > i) [output[i], output[rev]] = [output[rev], output[i]];
+  }
+
+  for (let size = 2; size <= n; size *= 2) {
+    const halfSize = size / 2;
+    const angleStep = -2 * Math.PI / size;
+    for (let i = 0; i < n; i += size) {
+      for (let j = 0; j < halfSize; j++) {
+        const angle = angleStep * j;
+        const twiddle = { re: Math.cos(angle), im: Math.sin(angle) };
+        const even = output[i + j];
+        const odd = output[i + j + halfSize];
+        const t = {
+          re: odd.re * twiddle.re - odd.im * twiddle.im,
+          im: odd.re * twiddle.im + odd.im * twiddle.re
+        };
+        output[i + j] = { re: even.re + t.re, im: even.im + t.im };
+        output[i + j + halfSize] = { re: even.re - t.re, im: even.im - t.im };
+      }
+    }
+  }
+  return output;
+};
+
+const fftMagnitude = (signal: number[]): number[] => {
+  const spectrum = fft(signal);
+  return spectrum.slice(0, spectrum.length / 2).map(c =>
+    Math.sqrt(c.re * c.re + c.im * c.im) / signal.length
+  );
+};
+
+// Fourier series fitting (sine + cosine waves)
+interface FourierTerm {
+  frequency: number;  // Which harmonic (1, 2, 3, ...)
+  cosCoeff: number;   // aₙ coefficient
+  sinCoeff: number;   // bₙ coefficient
+  amplitude: number;  // √(aₙ² + bₙ²)
+  phase: number;      // atan2(bₙ, aₙ)
+}
+
+interface FourierFit {
+  dc: number;              // a₀ (constant/average term)
+  terms: FourierTerm[];    // Harmonic terms sorted by amplitude
+  fitted: number[];        // Reconstructed signal
+  numTerms: number;        // How many terms used
+  r2: number;              // Goodness of fit
+}
+
+const fitFourier = (y: number[], maxTerms: number = 20): FourierFit => {
+  const n = y.length;
+
+  // Calculate DC component (average)
+  const dc = y.reduce((a, b) => a + b, 0) / n;
+
+  // Calculate Fourier coefficients for each frequency
+  const allTerms: FourierTerm[] = [];
+  const maxFreq = Math.floor(n / 2); // Nyquist limit
+
+  for (let k = 1; k <= Math.min(maxFreq, 100); k++) {
+    let cosSum = 0, sinSum = 0;
+    for (let i = 0; i < n; i++) {
+      const angle = (2 * Math.PI * k * i) / n;
+      cosSum += y[i] * Math.cos(angle);
+      sinSum += y[i] * Math.sin(angle);
+    }
+    const cosCoeff = (2 * cosSum) / n;
+    const sinCoeff = (2 * sinSum) / n;
+    const amplitude = Math.sqrt(cosCoeff * cosCoeff + sinCoeff * sinCoeff);
+    const phase = Math.atan2(sinCoeff, cosCoeff);
+
+    allTerms.push({ frequency: k, cosCoeff, sinCoeff, amplitude, phase });
+  }
+
+  // Sort by amplitude and take top terms
+  allTerms.sort((a, b) => b.amplitude - a.amplitude);
+  const terms = allTerms.slice(0, maxTerms);
+
+  // Reconstruct signal using selected terms
+  const fitted = new Array(n).fill(dc);
+  for (const term of terms) {
+    for (let i = 0; i < n; i++) {
+      const angle = (2 * Math.PI * term.frequency * i) / n;
+      fitted[i] += term.cosCoeff * Math.cos(angle) + term.sinCoeff * Math.sin(angle);
+    }
+  }
+
+  // Calculate R²
+  const yMean = y.reduce((a, b) => a + b, 0) / n;
+  const ssTot = y.reduce((s, yi) => s + (yi - yMean) ** 2, 0);
+  const ssRes = y.reduce((s, yi, i) => s + (yi - fitted[i]) ** 2, 0);
+  const r2 = 1 - ssRes / (ssTot || 1);
+
+  return { dc, terms, fitted, numTerms: terms.length, r2 };
+};
+
+// Format Fourier series as formula string
+const formatFourierFormula = (fit: FourierFit, maxDisplay: number = 5): string => {
+  const parts: string[] = [];
+
+  // DC term
+  if (Math.abs(fit.dc) > 0.001) {
+    parts.push(fit.dc.toFixed(3));
+  }
+
+  // Harmonic terms (show top ones by amplitude)
+  const displayTerms = fit.terms.slice(0, maxDisplay);
+  for (const term of displayTerms) {
+    if (Math.abs(term.cosCoeff) > 0.001) {
+      const sign = term.cosCoeff >= 0 && parts.length > 0 ? "+" : "";
+      parts.push(`${sign}${term.cosCoeff.toFixed(3)}cos(${term.frequency}ω)`);
+    }
+    if (Math.abs(term.sinCoeff) > 0.001) {
+      const sign = term.sinCoeff >= 0 ? "+" : "";
+      parts.push(`${sign}${term.sinCoeff.toFixed(3)}sin(${term.frequency}ω)`);
+    }
+  }
+
+  if (fit.terms.length > maxDisplay) {
+    parts.push(`... +${fit.terms.length - maxDisplay} more`);
+  }
+
+  return parts.join(" ") || "0";
+};
+
+// Haar wavelet transform
+interface WaveletResult {
+  coefficients: number[][];
+  approximation: number[];
+  levels: number;
+}
+
+const haarWavelet = (signal: number[], maxLevels: number = 6): WaveletResult => {
+  const n = Math.pow(2, Math.ceil(Math.log2(signal.length)));
+  let current = [...signal, ...new Array(n - signal.length).fill(0)];
+
+  const coefficients: number[][] = [];
+  const levels = Math.min(maxLevels, Math.log2(n));
+
+  for (let level = 0; level < levels; level++) {
+    const len = current.length;
+    const approx: number[] = [];
+    const detail: number[] = [];
+
+    for (let i = 0; i < len; i += 2) {
+      approx.push((current[i] + current[i + 1]) / Math.sqrt(2));
+      detail.push((current[i] - current[i + 1]) / Math.sqrt(2));
+    }
+
+    coefficients.push(detail);
+    current = approx;
+  }
+
+  return { coefficients, approximation: current, levels };
+};
+
+// Peak detection
+interface Peak {
+  index: number;
+  value: number;
+  prominence: number;
+}
+
+const findPeaks = (signal: number[], minProminence: number = 0.1): Peak[] => {
+  const peaks: Peak[] = [];
+  const absMax = Math.max(...signal.map(Math.abs));
+  const threshold = absMax * minProminence;
+
+  for (let i = 1; i < signal.length - 1; i++) {
+    if (signal[i] > signal[i - 1] && signal[i] > signal[i + 1]) {
+      let leftMin = signal[i], rightMin = signal[i];
+      for (let j = i - 1; j >= 0 && signal[j] < signal[i]; j--) leftMin = Math.min(leftMin, signal[j]);
+      for (let j = i + 1; j < signal.length && signal[j] < signal[i]; j++) rightMin = Math.min(rightMin, signal[j]);
+      const prominence = signal[i] - Math.max(leftMin, rightMin);
+      if (prominence > threshold) peaks.push({ index: i, value: signal[i], prominence });
+    }
+    if (signal[i] < signal[i - 1] && signal[i] < signal[i + 1]) {
+      let leftMax = signal[i], rightMax = signal[i];
+      for (let j = i - 1; j >= 0 && signal[j] > signal[i]; j--) leftMax = Math.max(leftMax, signal[j]);
+      for (let j = i + 1; j < signal.length && signal[j] > signal[i]; j++) rightMax = Math.max(rightMax, signal[j]);
+      const prominence = Math.min(leftMax, rightMax) - signal[i];
+      if (prominence > threshold) peaks.push({ index: i, value: signal[i], prominence: -prominence });
+    }
+  }
+
+  return peaks.sort((a, b) => Math.abs(b.prominence) - Math.abs(a.prominence)).slice(0, 20);
+};
+
 // Hilbert curve for 2D mapping
 const hilbertD2xy = (n: number, d: number): [number, number] => {
   let x = 0, y = 0, rx: number, ry: number, s: number, t = d;
@@ -451,13 +656,343 @@ const DistributionViz: Component<{ vector: number[]; compareVector?: number[] | 
   );
 };
 
+// FFT Spectrum visualization
+const FFTViz: Component<{ vector: number[] }> = (props) => {
+  let canvasRef: HTMLCanvasElement | undefined;
+
+  createEffect(() => {
+    if (!canvasRef || !props.vector) return;
+    const ctx = canvasRef.getContext("2d")!;
+    const w = canvasRef.width, h = canvasRef.height;
+
+    ctx.fillStyle = "#0a0a0f";
+    ctx.fillRect(0, 0, w, h);
+
+    const spectrum = fftMagnitude(props.vector);
+    const maxMag = Math.max(...spectrum);
+
+    // Draw frequency bars
+    const barWidth = w / spectrum.length;
+    spectrum.forEach((mag, i) => {
+      const barH = (mag / maxMag) * h * 0.9;
+      const hue = 220 + (i / spectrum.length) * 60; // Blue to purple
+      ctx.fillStyle = `hsla(${hue}, 70%, 55%, 0.8)`;
+      ctx.fillRect(i * barWidth, h - barH, Math.max(1, barWidth - 0.5), barH);
+    });
+
+    // Frequency axis labels
+    ctx.fillStyle = "#667";
+    ctx.font = "10px monospace";
+    const nyquist = spectrum.length;
+    [0, 0.25, 0.5, 0.75, 1].forEach(f => {
+      const x = f * w;
+      ctx.fillText(`${Math.round(f * nyquist)}`, x + 2, h - 4);
+    });
+
+    // Find dominant frequencies
+    const indexed = spectrum.map((m, i) => ({ m, i })).sort((a, b) => b.m - a.m);
+    const top3 = indexed.slice(0, 3);
+    ctx.fillStyle = "#9cf";
+    ctx.fillText(`Top: ${top3.map(t => `f${t.i}`).join(", ")}`, 10, 16);
+  });
+
+  return (
+    <div class="viz-container">
+      <canvas ref={canvasRef} width={800} height={250} />
+      <div class="viz-label">Frequency spectrum (FFT magnitude) — X = frequency bin, Y = magnitude</div>
+    </div>
+  );
+};
+
+// Fourier series visualization
+const FourierViz: Component<{ vector: number[] }> = (props) => {
+  let canvasRef: HTMLCanvasElement | undefined;
+  const [numTerms, setNumTerms] = createSignal(10);
+  const [showFormula, setShowFormula] = createSignal(true);
+
+  const fourierFit = createMemo(() => {
+    if (!props.vector) return null;
+    return fitFourier(props.vector, numTerms());
+  });
+
+  createEffect(() => {
+    if (!canvasRef || !props.vector) return;
+    const ctx = canvasRef.getContext("2d")!;
+    const w = canvasRef.width, h = canvasRef.height;
+    const fit = fourierFit();
+    if (!fit) return;
+
+    ctx.fillStyle = "#0a0a0f";
+    ctx.fillRect(0, 0, w, h);
+
+    const absMax = Math.max(...props.vector.map(Math.abs), ...fit.fitted.map(Math.abs));
+
+    // Center line
+    ctx.strokeStyle = "rgba(100,120,160,0.2)";
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(0, h / 2);
+    ctx.lineTo(w, h / 2);
+    ctx.stroke();
+
+    // Draw original signal (faint blue)
+    ctx.beginPath();
+    ctx.strokeStyle = "rgba(80,160,255,0.35)";
+    ctx.lineWidth = 1;
+    props.vector.forEach((val, i) => {
+      const x = (i / (props.vector.length - 1)) * w;
+      const y = h / 2 - (val / absMax) * (h * 0.4);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // Draw fitted Fourier series (bright orange)
+    ctx.beginPath();
+    ctx.strokeStyle = "rgba(255,180,80,0.95)";
+    ctx.lineWidth = 2;
+    fit.fitted.forEach((val, i) => {
+      const x = (i / (fit.fitted.length - 1)) * w;
+      const y = h / 2 - (val / absMax) * (h * 0.4);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // Stats
+    ctx.fillStyle = "#8899aa";
+    ctx.font = "11px monospace";
+    ctx.fillText(`${fit.numTerms} harmonics  R²: ${fit.r2.toFixed(4)}`, 10, 16);
+
+    // Top frequencies
+    ctx.fillStyle = "#9cf";
+    ctx.font = "10px monospace";
+    const topFreqs = fit.terms.slice(0, 5).map(t => `f${t.frequency}:${t.amplitude.toFixed(2)}`).join("  ");
+    ctx.fillText(`Dominant: ${topFreqs}`, 10, 32);
+  });
+
+  return (
+    <div class="viz-container">
+      <div class="fourier-controls">
+        <span>Harmonics:</span>
+        <input
+          type="range"
+          min="1"
+          max="50"
+          value={numTerms()}
+          onInput={(e) => setNumTerms(parseInt(e.currentTarget.value))}
+        />
+        <span class="fourier-terms-val">{numTerms()}</span>
+        <label class="formula-toggle">
+          <input
+            type="checkbox"
+            checked={showFormula()}
+            onChange={(e) => setShowFormula(e.currentTarget.checked)}
+          />
+          Formula
+        </label>
+      </div>
+      <canvas ref={canvasRef} width={800} height={220} />
+      <Show when={showFormula() && fourierFit()}>
+        <div class="fourier-formula">
+          <span class="formula-label">f(x) ≈</span>
+          <span class="formula-text">{formatFourierFormula(fourierFit()!, 6)}</span>
+        </div>
+      </Show>
+      <div class="viz-label">Blue = original, Orange = Fourier reconstruction ({numTerms()} terms)</div>
+    </div>
+  );
+};
+
+// Wavelet visualization
+const WaveletViz: Component<{ vector: number[] }> = (props) => {
+  let canvasRef: HTMLCanvasElement | undefined;
+
+  createEffect(() => {
+    if (!canvasRef || !props.vector) return;
+    const ctx = canvasRef.getContext("2d")!;
+    const w = canvasRef.width, h = canvasRef.height;
+
+    ctx.fillStyle = "#0a0a0f";
+    ctx.fillRect(0, 0, w, h);
+
+    const wavelet = haarWavelet(props.vector, 8);
+    const allCoeffs = [...wavelet.coefficients.flat(), ...wavelet.approximation];
+    const absMax = Math.max(...allCoeffs.map(Math.abs)) || 1;
+
+    let y = 0;
+    const levelHeight = h / (wavelet.levels + 1);
+
+    // Draw each detail level
+    wavelet.coefficients.forEach((level, lvl) => {
+      const cellWidth = w / level.length;
+      level.forEach((val, i) => {
+        const normalized = val / absMax; // -1 to 1
+        // Blue for positive, orange/red for negative, brightness by magnitude
+        let r, g, b;
+        if (normalized >= 0) {
+          // Positive: dark blue to bright cyan
+          const t = normalized;
+          r = Math.round(20 + t * 60);
+          g = Math.round(40 + t * 180);
+          b = Math.round(80 + t * 175);
+        } else {
+          // Negative: dark to bright orange/red
+          const t = -normalized;
+          r = Math.round(80 + t * 175);
+          g = Math.round(30 + t * 90);
+          b = Math.round(20 + t * 40);
+        }
+        ctx.fillStyle = `rgb(${r},${g},${b})`;
+        ctx.fillRect(i * cellWidth, y, cellWidth + 0.5, levelHeight - 1);
+      });
+
+      // Level label with background
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.fillRect(2, y + 2, 70, 14);
+      ctx.fillStyle = "#aab";
+      ctx.font = "10px monospace";
+      ctx.fillText(`L${lvl + 1} (${level.length})`, 6, y + 13);
+
+      y += levelHeight;
+    });
+
+    // Draw approximation level
+    const approxCellWidth = w / wavelet.approximation.length;
+    wavelet.approximation.forEach((val, i) => {
+      const normalized = val / absMax;
+      let r, g, b;
+      if (normalized >= 0) {
+        // Positive: green tones
+        const t = Math.abs(normalized);
+        r = Math.round(20 + t * 80);
+        g = Math.round(60 + t * 195);
+        b = Math.round(40 + t * 80);
+      } else {
+        // Negative: purple tones
+        const t = Math.abs(normalized);
+        r = Math.round(60 + t * 150);
+        g = Math.round(30 + t * 50);
+        b = Math.round(80 + t * 175);
+      }
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.fillRect(i * approxCellWidth, y, approxCellWidth + 0.5, levelHeight - 1);
+    });
+
+    // Approximation label
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.fillRect(2, y + 2, 85, 14);
+    ctx.fillStyle = "#8f8";
+    ctx.font = "10px monospace";
+    ctx.fillText(`Approx (${wavelet.approximation.length})`, 6, y + 13);
+
+    // Legend
+    ctx.fillStyle = "rgba(0,0,0,0.7)";
+    ctx.fillRect(w - 120, 4, 116, 28);
+    ctx.fillStyle = "#6af";
+    ctx.fillText("+ positive", w - 115, 16);
+    ctx.fillStyle = "#fa6";
+    ctx.fillText("− negative", w - 115, 28);
+  });
+
+  return (
+    <div class="viz-container">
+      <canvas ref={canvasRef} width={800} height={320} />
+      <div class="viz-label">Haar wavelet decomposition — Top = fine detail (L1), Bottom = coarse structure (Approx)</div>
+    </div>
+  );
+};
+
+// Peaks visualization
+const PeaksViz: Component<{ vector: number[] }> = (props) => {
+  let canvasRef: HTMLCanvasElement | undefined;
+  const [threshold, setThreshold] = createSignal(0.15);
+
+  createEffect(() => {
+    if (!canvasRef || !props.vector) return;
+    const ctx = canvasRef.getContext("2d")!;
+    const w = canvasRef.width, h = canvasRef.height;
+
+    ctx.fillStyle = "#0a0a0f";
+    ctx.fillRect(0, 0, w, h);
+
+    const absMax = Math.max(...props.vector.map(Math.abs));
+    const peaks = findPeaks(props.vector, threshold());
+
+    // Draw waveform
+    ctx.beginPath();
+    ctx.strokeStyle = "rgba(80,160,255,0.5)";
+    ctx.lineWidth = 1;
+    props.vector.forEach((val, i) => {
+      const x = (i / (props.vector.length - 1)) * w;
+      const y = h / 2 - (val / absMax) * (h * 0.4);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // Draw peaks
+    peaks.forEach((peak, idx) => {
+      const x = (peak.index / (props.vector.length - 1)) * w;
+      const y = h / 2 - (peak.value / absMax) * (h * 0.4);
+      const isPositive = peak.prominence > 0;
+
+      // Marker
+      ctx.beginPath();
+      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = isPositive ? "rgba(80,255,120,0.9)" : "rgba(255,80,120,0.9)";
+      ctx.fill();
+      ctx.strokeStyle = isPositive ? "#0f0" : "#f00";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // Label (top peaks only)
+      if (idx < 8) {
+        ctx.fillStyle = "#aab";
+        ctx.font = "9px monospace";
+        ctx.fillText(`${peak.index}`, x - 8, isPositive ? y - 10 : y + 16);
+      }
+    });
+
+    // Stats
+    ctx.fillStyle = "#8899aa";
+    ctx.font = "11px monospace";
+    const posPeaks = peaks.filter(p => p.prominence > 0).length;
+    const negPeaks = peaks.filter(p => p.prominence < 0).length;
+    ctx.fillText(`Peaks: ${posPeaks} maxima, ${negPeaks} minima (threshold: ${(threshold() * 100).toFixed(0)}%)`, 10, 16);
+
+    // Peak list
+    ctx.fillStyle = "#667";
+    ctx.font = "9px monospace";
+    const topPeaks = peaks.slice(0, 6);
+    const peakStr = topPeaks.map(p => `dim${p.index}:${p.value.toFixed(2)}`).join("  ");
+    ctx.fillText(peakStr, 10, h - 8);
+  });
+
+  return (
+    <div class="viz-container">
+      <div class="peak-controls">
+        <span>Threshold:</span>
+        <input
+          type="range"
+          min="0.05"
+          max="0.5"
+          step="0.01"
+          value={threshold()}
+          onInput={(e) => setThreshold(parseFloat(e.currentTarget.value))}
+        />
+        <span class="peak-threshold-val">{(threshold() * 100).toFixed(0)}%</span>
+      </div>
+      <canvas ref={canvasRef} width={800} height={250} />
+      <div class="viz-label">Green = maxima, Red = minima — Numbers show dimension indices</div>
+    </div>
+  );
+};
+
 // Main component
 interface EmbeddingExplorerProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
-type ViewMode = "waveform" | "heatmap" | "hilbert" | "radial" | "distribution";
+type ViewMode = "waveform" | "heatmap" | "hilbert" | "radial" | "distribution" | "fft" | "fourier" | "wavelet" | "peaks";
 
 const EmbeddingExplorer: Component<EmbeddingExplorerProps> = (props) => {
   const [searchQuery, setSearchQuery] = createSignal("");
@@ -546,7 +1081,7 @@ const EmbeddingExplorer: Component<EmbeddingExplorerProps> = (props) => {
     return null;
   });
 
-  const VIEWS: ViewMode[] = ["waveform", "heatmap", "hilbert", "radial", "distribution"];
+  const VIEWS: ViewMode[] = ["waveform", "heatmap", "hilbert", "radial", "distribution", "fft", "fourier", "wavelet", "peaks"];
 
   return (
     <Show when={props.isOpen}>
@@ -784,6 +1319,18 @@ const EmbeddingExplorer: Component<EmbeddingExplorerProps> = (props) => {
                       compareVector={showCompare() ? displayCompareVector() : null}
                     />
                   </Show>
+                  <Show when={view() === "fft"}>
+                    <FFTViz vector={displayVector()!} />
+                  </Show>
+                  <Show when={view() === "fourier"}>
+                    <FourierViz vector={displayVector()!} />
+                  </Show>
+                  <Show when={view() === "wavelet"}>
+                    <WaveletViz vector={displayVector()!} />
+                  </Show>
+                  <Show when={view() === "peaks"}>
+                    <PeaksViz vector={displayVector()!} />
+                  </Show>
                 </Show>
               </div>
 
@@ -808,6 +1355,22 @@ const EmbeddingExplorer: Component<EmbeddingExplorerProps> = (props) => {
                 <Show when={view() === "distribution"}>
                   Value distribution across all dimensions. Most embeddings are approximately Gaussian.
                   The distribution shape reveals the vector's statistical character.
+                </Show>
+                <Show when={view() === "fft"}>
+                  FFT frequency spectrum. Shows which frequency components are present in the embedding.
+                  High values at low frequencies = smooth patterns. High values at high frequencies = rapid oscillations.
+                </Show>
+                <Show when={view() === "fourier"}>
+                  Fourier series approximation using sine and cosine waves.
+                  Shows the formula: f(x) ≈ a₀ + Σ(aₙcos(nωx) + bₙsin(nωx)). Higher R² = better fit.
+                </Show>
+                <Show when={view() === "wavelet"}>
+                  Haar wavelet decomposition. Top rows = fine detail, bottom = coarse structure.
+                  Blue = positive coefficients, Red = negative. Bright = large magnitude.
+                </Show>
+                <Show when={view() === "peaks"}>
+                  Peak detection finds local maxima (green) and minima (red).
+                  Adjust threshold to filter by prominence. Peak locations may encode semantic features.
                 </Show>
               </div>
             </div>
