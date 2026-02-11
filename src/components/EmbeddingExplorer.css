@@ -637,3 +637,279 @@
 .view-tabs {
   flex-wrap: wrap;
 }
+
+/* Audio playback controls */
+.audio-section {
+  background: rgba(80, 200, 120, 0.05);
+  border: 1px solid rgba(80, 200, 120, 0.15);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.audio-mode-buttons {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.audio-mode-buttons button {
+  padding: 6px 4px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  color: #667;
+  font-size: 9px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.audio-mode-buttons button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #889;
+}
+
+.audio-mode-buttons button.active {
+  background: rgba(80, 200, 120, 0.2);
+  border-color: rgba(80, 200, 120, 0.4);
+  color: #50c878;
+}
+
+.audio-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.play-btn {
+  padding: 10px 16px;
+  background: linear-gradient(135deg, rgba(80, 200, 120, 0.2), rgba(80, 200, 120, 0.1));
+  border: 1px solid rgba(80, 200, 120, 0.4);
+  border-radius: 6px;
+  color: #50c878;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.play-btn:hover {
+  background: linear-gradient(135deg, rgba(80, 200, 120, 0.3), rgba(80, 200, 120, 0.15));
+  border-color: rgba(80, 200, 120, 0.6);
+}
+
+.play-btn.playing {
+  background: linear-gradient(135deg, rgba(255, 100, 100, 0.2), rgba(255, 100, 100, 0.1));
+  border-color: rgba(255, 100, 100, 0.4);
+  color: #ff6464;
+}
+
+.play-btn.playing:hover {
+  background: linear-gradient(135deg, rgba(255, 100, 100, 0.3), rgba(255, 100, 100, 0.15));
+  border-color: rgba(255, 100, 100, 0.6);
+}
+
+.speed-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.speed-label {
+  font-size: 10px;
+  color: #667;
+  min-width: 36px;
+}
+
+.speed-control input[type="range"] {
+  flex: 1;
+  accent-color: #50c878;
+}
+
+.speed-value {
+  font-size: 10px;
+  color: #50c878;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  min-width: 28px;
+  text-align: right;
+}
+
+.audio-hint {
+  font-size: 9px;
+  color: #556;
+  margin: 6px 0 0 0;
+  text-align: center;
+}
+
+/* Pattern Analysis Section */
+.analysis-section {
+  background: rgba(180, 120, 255, 0.05);
+  border: 1px solid rgba(180, 120, 255, 0.15);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.analyze-btn {
+  width: 100%;
+  padding: 10px 16px;
+  background: linear-gradient(135deg, rgba(180, 120, 255, 0.2), rgba(180, 120, 255, 0.1));
+  border: 1px solid rgba(180, 120, 255, 0.4);
+  border-radius: 6px;
+  color: #b878ff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.analyze-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(180, 120, 255, 0.3), rgba(180, 120, 255, 0.15));
+  border-color: rgba(180, 120, 255, 0.6);
+}
+
+.analyze-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.analyze-btn.analyzing {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.view-analysis-btn {
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px 12px;
+  background: rgba(180, 120, 255, 0.1);
+  border: 1px solid rgba(180, 120, 255, 0.25);
+  border-radius: 4px;
+  color: #a080dd;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.view-analysis-btn:hover {
+  background: rgba(180, 120, 255, 0.15);
+}
+
+.analysis-hint {
+  font-size: 9px;
+  color: #556;
+  margin: 8px 0 0 0;
+  text-align: center;
+}
+
+/* Analysis Modal */
+.analysis-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.analysis-modal {
+  width: 90%;
+  max-width: 600px;
+  max-height: 80%;
+  background: #0c0c14;
+  border: 1px solid rgba(180, 120, 255, 0.3);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.analysis-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+  background: rgba(180, 120, 255, 0.08);
+  border-bottom: 1px solid rgba(180, 120, 255, 0.15);
+}
+
+.analysis-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #b878ff;
+}
+
+.close-analysis-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: #889;
+  font-size: 20px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.close-analysis-btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #fff;
+}
+
+.analysis-content {
+  flex: 1;
+  padding: 16px 18px;
+  overflow-y: auto;
+}
+
+.analysis-source {
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.source-label {
+  color: #667;
+  margin-right: 8px;
+}
+
+.source-name {
+  color: #aab;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.analysis-text {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #ccd;
+  white-space: pre-wrap;
+}
+
+.analysis-footer {
+  padding: 12px 18px;
+  background: rgba(255, 255, 255, 0.02);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.copy-analysis-btn {
+  padding: 8px 16px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  color: #889;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.copy-analysis-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #aab;
+}

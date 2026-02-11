@@ -335,6 +335,435 @@ const findPeaks = (signal: number[], minProminence: number = 0.1): Peak[] => {
   return peaks.sort((a, b) => Math.abs(b.prominence) - Math.abs(a.prominence)).slice(0, 20);
 };
 
+// =====================
+// AUDIO SYNTHESIS
+// =====================
+
+type PlaybackMode = "waveform" | "frequency" | "melody" | "drone";
+
+interface AudioEngine {
+  context: AudioContext | null;
+  isPlaying: boolean;
+  stop: () => void;
+}
+
+const createAudioEngine = (): AudioEngine => {
+  return {
+    context: null,
+    isPlaying: false,
+    stop: () => {}
+  };
+};
+
+// Play embedding as raw waveform (looped)
+const playWaveform = (
+  engine: AudioEngine,
+  vector: number[],
+  duration: number = 2,
+  sampleRate: number = 22050
+): void => {
+  if (engine.isPlaying) engine.stop();
+
+  const ctx = new AudioContext({ sampleRate });
+  engine.context = ctx;
+  engine.isPlaying = true;
+
+  // Normalize vector to [-1, 1]
+  const absMax = Math.max(...vector.map(Math.abs)) || 1;
+  const normalized = vector.map(v => v / absMax * 0.8);
+
+  // Stretch/compress to fill duration
+  const totalSamples = Math.floor(sampleRate * duration);
+  const buffer = ctx.createBuffer(1, totalSamples, sampleRate);
+  const data = buffer.getChannelData(0);
+
+  for (let i = 0; i < totalSamples; i++) {
+    const srcIdx = (i / totalSamples) * normalized.length;
+    const idx0 = Math.floor(srcIdx);
+    const idx1 = Math.min(idx0 + 1, normalized.length - 1);
+    const t = srcIdx - idx0;
+    data[i] = normalized[idx0] * (1 - t) + normalized[idx1] * t;
+  }
+
+  // Apply fade in/out to avoid clicks
+  const fadeLen = Math.floor(sampleRate * 0.02);
+  for (let i = 0; i < fadeLen; i++) {
+    const t = i / fadeLen;
+    data[i] *= t;
+    data[totalSamples - 1 - i] *= t;
+  }
+
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.loop = true;
+
+  const gain = ctx.createGain();
+  gain.gain.value = 0.5;
+
+  source.connect(gain);
+  gain.connect(ctx.destination);
+  source.start();
+
+  engine.stop = () => {
+    source.stop();
+    ctx.close();
+    engine.isPlaying = false;
+  };
+};
+
+// Play embedding using FFT frequencies as oscillators
+const playFrequencies = (
+  engine: AudioEngine,
+  vector: number[],
+  baseFreq: number = 110,
+  numVoices: number = 8
+): void => {
+  if (engine.isPlaying) engine.stop();
+
+  const ctx = new AudioContext();
+  engine.context = ctx;
+  engine.isPlaying = true;
+
+  const spectrum = fftMagnitude(vector);
+  const indexed = spectrum.map((m, i) => ({ m, i })).sort((a, b) => b.m - a.m);
+  const topFreqs = indexed.slice(0, numVoices);
+
+  const masterGain = ctx.createGain();
+  masterGain.gain.value = 0.3 / numVoices;
+  masterGain.connect(ctx.destination);
+
+  const oscillators: OscillatorNode[] = [];
+
+  topFreqs.forEach(({ m, i }, idx) => {
+    const osc = ctx.createOscillator();
+    const freq = baseFreq * (1 + i * 0.1); // Map index to frequency
+    osc.frequency.value = freq;
+    osc.type = idx % 2 === 0 ? "sine" : "triangle";
+
+    const oscGain = ctx.createGain();
+    oscGain.gain.value = m / (topFreqs[0].m || 1); // Relative amplitude
+
+    osc.connect(oscGain);
+    oscGain.connect(masterGain);
+    osc.start();
+    oscillators.push(osc);
+  });
+
+  engine.stop = () => {
+    oscillators.forEach(o => o.stop());
+    ctx.close();
+    engine.isPlaying = false;
+  };
+};
+
+// Play embedding as melody (dimensions become notes)
+const playMelody = (
+  engine: AudioEngine,
+  vector: number[],
+  tempo: number = 120,
+  scale: number[] = [0, 2, 4, 5, 7, 9, 11] // Major scale
+): void => {
+  if (engine.isPlaying) engine.stop();
+
+  const ctx = new AudioContext();
+  engine.context = ctx;
+  engine.isPlaying = true;
+
+  const beatDuration = 60 / tempo;
+  const noteDuration = beatDuration * 0.8;
+
+  // Sample every Nth dimension for melody
+  const step = Math.floor(vector.length / 32);
+  const notes: number[] = [];
+  for (let i = 0; i < vector.length; i += step) {
+    notes.push(vector[i]);
+  }
+
+  // Map values to MIDI notes
+  const absMax = Math.max(...notes.map(Math.abs)) || 1;
+  const baseNote = 60; // Middle C
+  const range = 24; // 2 octaves
+
+  const masterGain = ctx.createGain();
+  masterGain.gain.value = 0.4;
+  masterGain.connect(ctx.destination);
+
+  let currentTime = ctx.currentTime + 0.1;
+  const allOscs: OscillatorNode[] = [];
+
+  notes.forEach((val, idx) => {
+    const normalized = (val / absMax + 1) / 2; // 0 to 1
+    const scaleIdx = Math.floor(normalized * scale.length * 2);
+    const octave = Math.floor(scaleIdx / scale.length);
+    const noteInScale = scale[scaleIdx % scale.length];
+    const midiNote = baseNote + octave * 12 + noteInScale;
+    const freq = 440 * Math.pow(2, (midiNote - 69) / 12);
+
+    const osc = ctx.createOscillator();
+    osc.frequency.value = freq;
+    osc.type = "sine";
+
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0, currentTime);
+    env.gain.linearRampToValueAtTime(0.3, currentTime + 0.02);
+    env.gain.exponentialRampToValueAtTime(0.01, currentTime + noteDuration);
+
+    osc.connect(env);
+    env.connect(masterGain);
+    osc.start(currentTime);
+    osc.stop(currentTime + noteDuration + 0.1);
+    allOscs.push(osc);
+
+    currentTime += beatDuration * 0.25; // 16th notes
+  });
+
+  const totalDuration = notes.length * beatDuration * 0.25 + 1;
+  const stopTimeout = setTimeout(() => {
+    if (engine.isPlaying) {
+      engine.isPlaying = false;
+    }
+  }, totalDuration * 1000);
+
+  engine.stop = () => {
+    clearTimeout(stopTimeout);
+    allOscs.forEach(o => { try { o.stop(); } catch {} });
+    ctx.close();
+    engine.isPlaying = false;
+  };
+};
+
+// Play embedding as evolving drone
+const playDrone = (
+  engine: AudioEngine,
+  vector: number[],
+  baseFreq: number = 55
+): void => {
+  if (engine.isPlaying) engine.stop();
+
+  const ctx = new AudioContext();
+  engine.context = ctx;
+  engine.isPlaying = true;
+
+  // Divide vector into frequency bands
+  const bands = 6;
+  const bandSize = Math.floor(vector.length / bands);
+  const bandAvgs: number[] = [];
+  for (let b = 0; b < bands; b++) {
+    let sum = 0;
+    for (let i = 0; i < bandSize; i++) {
+      sum += Math.abs(vector[b * bandSize + i]);
+    }
+    bandAvgs.push(sum / bandSize);
+  }
+  const maxAvg = Math.max(...bandAvgs) || 1;
+
+  const masterGain = ctx.createGain();
+  masterGain.gain.value = 0.25;
+  masterGain.connect(ctx.destination);
+
+  const oscillators: OscillatorNode[] = [];
+  const harmonics = [1, 2, 3, 4, 5, 6];
+
+  harmonics.forEach((h, idx) => {
+    const osc = ctx.createOscillator();
+    osc.frequency.value = baseFreq * h;
+    osc.type = "sine";
+
+    const oscGain = ctx.createGain();
+    const amplitude = bandAvgs[idx] / maxAvg;
+    oscGain.gain.value = amplitude * (1 / h); // Higher harmonics quieter
+
+    // Add slow modulation
+    const lfo = ctx.createOscillator();
+    lfo.frequency.value = 0.1 + idx * 0.05;
+    const lfoGain = ctx.createGain();
+    lfoGain.gain.value = amplitude * 0.1;
+    lfo.connect(lfoGain);
+    lfoGain.connect(oscGain.gain);
+    lfo.start();
+
+    osc.connect(oscGain);
+    oscGain.connect(masterGain);
+    osc.start();
+    oscillators.push(osc, lfo);
+  });
+
+  engine.stop = () => {
+    oscillators.forEach(o => o.stop());
+    ctx.close();
+    engine.isPlaying = false;
+  };
+};
+
+// =====================
+// EMBEDDING FINGERPRINT
+// =====================
+
+interface EmbeddingFingerprint {
+  // Basic stats
+  dimensions: number;
+  magnitude: number;
+  mean: number;
+  std: number;
+  min: number;
+  max: number;
+  sparsity: number;      // % of values near zero
+  kurtosis: number;      // Peakedness (high = spiky, low = flat)
+
+  // FFT analysis
+  dominantFreqs: { bin: number; magnitude: number }[];
+  spectralCentroid: number;   // Center of mass of spectrum
+  lowFreqEnergy: number;      // % energy in low frequencies
+  highFreqEnergy: number;     // % energy in high frequencies
+
+  // Peak analysis
+  peakCount: number;
+  valleyCount: number;
+  avgPeakProminence: number;
+  peakLocations: number[];    // Top peak dimension indices
+
+  // Wavelet analysis
+  waveletEnergy: number[];    // Energy at each decomposition level
+  dominantScale: number;      // Which level has most energy
+
+  // Fourier fit
+  topHarmonics: { freq: number; cos: number; sin: number; amp: number }[];
+}
+
+const computeFingerprint = (vector: number[]): EmbeddingFingerprint => {
+  const n = vector.length;
+
+  // Basic stats
+  const mag = magnitude(vector);
+  const mean = vector.reduce((a, b) => a + b, 0) / n;
+  const variance = vector.reduce((s, v) => s + (v - mean) ** 2, 0) / n;
+  const std = Math.sqrt(variance);
+  const min = Math.min(...vector);
+  const max = Math.max(...vector);
+
+  // Sparsity (% within 0.1 of zero)
+  const nearZero = vector.filter(v => Math.abs(v) < 0.1).length;
+  const sparsity = nearZero / n;
+
+  // Kurtosis (normalized 4th moment)
+  const m4 = vector.reduce((s, v) => s + ((v - mean) / (std || 1)) ** 4, 0) / n;
+  const kurtosis = m4 - 3; // Excess kurtosis (0 = normal distribution)
+
+  // FFT analysis
+  const spectrum = fftMagnitude(vector);
+  const totalEnergy = spectrum.reduce((s, m) => s + m * m, 0);
+
+  // Spectral centroid
+  let weightedSum = 0;
+  spectrum.forEach((m, i) => weightedSum += i * m * m);
+  const spectralCentroid = totalEnergy > 0 ? weightedSum / totalEnergy : 0;
+
+  // Energy distribution
+  const lowCutoff = Math.floor(spectrum.length * 0.25);
+  const highCutoff = Math.floor(spectrum.length * 0.75);
+  const lowEnergy = spectrum.slice(0, lowCutoff).reduce((s, m) => s + m * m, 0);
+  const highEnergy = spectrum.slice(highCutoff).reduce((s, m) => s + m * m, 0);
+  const lowFreqEnergy = totalEnergy > 0 ? lowEnergy / totalEnergy : 0;
+  const highFreqEnergy = totalEnergy > 0 ? highEnergy / totalEnergy : 0;
+
+  // Dominant frequencies
+  const indexed = spectrum.map((m, i) => ({ bin: i, magnitude: m }));
+  indexed.sort((a, b) => b.magnitude - a.magnitude);
+  const dominantFreqs = indexed.slice(0, 5);
+
+  // Peak analysis
+  const peaks = findPeaks(vector, 0.1);
+  const posPeaks = peaks.filter(p => p.prominence > 0);
+  const negPeaks = peaks.filter(p => p.prominence < 0);
+  const avgProm = peaks.length > 0
+    ? peaks.reduce((s, p) => s + Math.abs(p.prominence), 0) / peaks.length
+    : 0;
+
+  // Wavelet analysis
+  const wavelet = haarWavelet(vector, 6);
+  const waveletEnergy = wavelet.coefficients.map(level =>
+    level.reduce((s, c) => s + c * c, 0)
+  );
+  const maxEnergy = Math.max(...waveletEnergy);
+  const dominantScale = waveletEnergy.indexOf(maxEnergy) + 1;
+
+  // Fourier fit (top harmonics)
+  const fourier = fitFourier(vector, 10);
+  const topHarmonics = fourier.terms.slice(0, 5).map(t => ({
+    freq: t.frequency,
+    cos: t.cosCoeff,
+    sin: t.sinCoeff,
+    amp: t.amplitude
+  }));
+
+  return {
+    dimensions: n,
+    magnitude: mag,
+    mean,
+    std,
+    min,
+    max,
+    sparsity,
+    kurtosis,
+    dominantFreqs,
+    spectralCentroid,
+    lowFreqEnergy,
+    highFreqEnergy,
+    peakCount: posPeaks.length,
+    valleyCount: negPeaks.length,
+    avgPeakProminence: avgProm,
+    peakLocations: posPeaks.slice(0, 5).map(p => p.index),
+    waveletEnergy,
+    dominantScale,
+    topHarmonics
+  };
+};
+
+const formatFingerprintForLLM = (fp: EmbeddingFingerprint, name?: string): string => {
+  const lines: string[] = [];
+
+  if (name) {
+    lines.push(`Embedding: "${name}"`);
+  }
+  lines.push(`Dimensions: ${fp.dimensions}`);
+  lines.push('');
+  lines.push('## Basic Statistics');
+  lines.push(`- Magnitude: ${fp.magnitude.toFixed(3)}`);
+  lines.push(`- Mean: ${fp.mean.toFixed(4)}, Std: ${fp.std.toFixed(4)}`);
+  lines.push(`- Range: [${fp.min.toFixed(3)}, ${fp.max.toFixed(3)}]`);
+  lines.push(`- Sparsity: ${(fp.sparsity * 100).toFixed(1)}% near zero`);
+  lines.push(`- Kurtosis: ${fp.kurtosis.toFixed(2)} (${fp.kurtosis > 1 ? 'spiky/peaked' : fp.kurtosis < -1 ? 'flat/uniform' : 'normal-like'})`);
+
+  lines.push('');
+  lines.push('## Frequency Analysis (FFT)');
+  lines.push(`- Spectral centroid: ${fp.spectralCentroid.toFixed(1)} (${fp.spectralCentroid < 100 ? 'low-frequency dominated' : fp.spectralCentroid > 200 ? 'high-frequency dominated' : 'balanced'})`);
+  lines.push(`- Low-freq energy: ${(fp.lowFreqEnergy * 100).toFixed(1)}%`);
+  lines.push(`- High-freq energy: ${(fp.highFreqEnergy * 100).toFixed(1)}%`);
+  lines.push(`- Dominant frequency bins: [${fp.dominantFreqs.map(f => f.bin).join(', ')}]`);
+
+  lines.push('');
+  lines.push('## Peak Structure');
+  lines.push(`- ${fp.peakCount} peaks, ${fp.valleyCount} valleys`);
+  lines.push(`- Average prominence: ${fp.avgPeakProminence.toFixed(3)}`);
+  if (fp.peakLocations.length > 0) {
+    lines.push(`- Notable peak dimensions: [${fp.peakLocations.join(', ')}]`);
+  }
+
+  lines.push('');
+  lines.push('## Multi-scale Structure (Wavelet)');
+  lines.push(`- Energy by level: [${fp.waveletEnergy.map(e => e.toFixed(2)).join(', ')}]`);
+  lines.push(`- Dominant scale: Level ${fp.dominantScale} (${fp.dominantScale <= 2 ? 'fine detail' : fp.dominantScale >= 5 ? 'coarse structure' : 'medium scale'})`);
+
+  lines.push('');
+  lines.push('## Fourier Decomposition');
+  const harmonicStr = fp.topHarmonics.map(h =>
+    `${h.amp.toFixed(3)}·sin(${h.freq}ω + φ)`
+  ).join(' + ');
+  lines.push(`- Top harmonics: ${harmonicStr}`);
+
+  return lines.join('\n');
+};
+
 // Hilbert curve for 2D mapping
 const hilbertD2xy = (n: number, d: number): [number, number] => {
   let x = 0, y = 0, rx: number, ry: number, s: number, t = d;
@@ -1010,6 +1439,25 @@ const EmbeddingExplorer: Component<EmbeddingExplorerProps> = (props) => {
   const [smoothingType, setSmoothingType] = createSignal<SmoothingType>("none");
   const [smoothingStrength, setSmoothingStrength] = createSignal(0.3);
 
+  // Audio state
+  const [audioEngine] = createSignal<AudioEngine>(createAudioEngine());
+  const [isPlaying, setIsPlaying] = createSignal(false);
+  const [playbackMode, setPlaybackMode] = createSignal<PlaybackMode>("waveform");
+  const [playbackSpeed, setPlaybackSpeed] = createSignal(1.0);
+
+  // Pattern analysis state
+  const [analyzing, setAnalyzing] = createSignal(false);
+  const [analysisResult, setAnalysisResult] = createSignal<string | null>(null);
+  const [showAnalysis, setShowAnalysis] = createSignal(false);
+
+  // Stop audio on unmount or close
+  onCleanup(() => {
+    const engine = audioEngine();
+    if (engine.isPlaying) {
+      engine.stop();
+    }
+  });
+
   const handleSearch = async () => {
     if (!searchQuery().trim()) return;
     setLoading(true);
@@ -1233,6 +1681,158 @@ const EmbeddingExplorer: Component<EmbeddingExplorerProps> = (props) => {
                 </Show>
               </div>
 
+              {/* Audio Playback */}
+              <Show when={displayVector()}>
+                <div class="sidebar-section audio-section">
+                  <h4>Listen</h4>
+                  <div class="audio-mode-buttons">
+                    <button
+                      class={playbackMode() === "waveform" ? "active" : ""}
+                      onClick={() => setPlaybackMode("waveform")}
+                      title="Play as audio waveform"
+                    >
+                      Wave
+                    </button>
+                    <button
+                      class={playbackMode() === "frequency" ? "active" : ""}
+                      onClick={() => setPlaybackMode("frequency")}
+                      title="Play dominant frequencies"
+                    >
+                      Freq
+                    </button>
+                    <button
+                      class={playbackMode() === "melody" ? "active" : ""}
+                      onClick={() => setPlaybackMode("melody")}
+                      title="Play as melody"
+                    >
+                      Melody
+                    </button>
+                    <button
+                      class={playbackMode() === "drone" ? "active" : ""}
+                      onClick={() => setPlaybackMode("drone")}
+                      title="Play as ambient drone"
+                    >
+                      Drone
+                    </button>
+                  </div>
+                  <div class="audio-controls">
+                    <button
+                      class={`play-btn ${isPlaying() ? "playing" : ""}`}
+                      onClick={() => {
+                        const engine = audioEngine();
+                        const vec = displayVector();
+                        if (!vec) return;
+
+                        if (isPlaying()) {
+                          engine.stop();
+                          setIsPlaying(false);
+                        } else {
+                          const duration = 2 / playbackSpeed();
+                          switch (playbackMode()) {
+                            case "waveform":
+                              playWaveform(engine, vec, duration);
+                              break;
+                            case "frequency":
+                              playFrequencies(engine, vec, 110 * playbackSpeed());
+                              break;
+                            case "melody":
+                              playMelody(engine, vec, 120 * playbackSpeed());
+                              break;
+                            case "drone":
+                              playDrone(engine, vec, 55 * playbackSpeed());
+                              break;
+                          }
+                          setIsPlaying(true);
+                        }
+                      }}
+                    >
+                      {isPlaying() ? "■ Stop" : "▶ Play"}
+                    </button>
+                    <div class="speed-control">
+                      <span class="speed-label">Speed</span>
+                      <input
+                        type="range"
+                        min="0.25"
+                        max="2"
+                        step="0.25"
+                        value={playbackSpeed()}
+                        onInput={(e) => setPlaybackSpeed(parseFloat(e.currentTarget.value))}
+                      />
+                      <span class="speed-value">{playbackSpeed()}x</span>
+                    </div>
+                  </div>
+                  <p class="audio-hint">
+                    {playbackMode() === "waveform" && "Embedding as raw audio"}
+                    {playbackMode() === "frequency" && "FFT frequencies as tones"}
+                    {playbackMode() === "melody" && "Dimensions as musical notes"}
+                    {playbackMode() === "drone" && "Harmonic drone synthesis"}
+                  </p>
+                </div>
+              </Show>
+
+              {/* Pattern Analysis */}
+              <Show when={displayVector()}>
+                <div class="sidebar-section analysis-section">
+                  <h4>AI Analysis</h4>
+                  <button
+                    class={`analyze-btn ${analyzing() ? "analyzing" : ""}`}
+                    disabled={analyzing()}
+                    onClick={async () => {
+                      const vec = displayVector();
+                      if (!vec) return;
+
+                      setAnalyzing(true);
+                      setAnalysisResult(null);
+
+                      try {
+                        const fingerprint = computeFingerprint(vec);
+                        const formatted = formatFingerprintForLLM(fingerprint, selectedName() || "Unknown");
+
+                        const systemPrompt = `You are an expert in analyzing embedding vectors and their mathematical properties.
+You understand that embeddings encode semantic meaning in high-dimensional space, and different types of content produce characteristic patterns.
+
+Analyze the embedding fingerprint provided and:
+1. Describe the overall character of this embedding (smooth/noisy, sparse/dense, structured/chaotic)
+2. Hypothesize what kind of content might produce this pattern (factual text, creative writing, code, conversational, technical, etc.)
+3. Note any unusual or distinctive features
+4. Compare to typical embedding patterns you'd expect
+
+Be concise but insightful. Focus on what makes this embedding interesting or distinctive.`;
+
+                        const prompt = `Analyze this embedding fingerprint:\n\n${formatted}`;
+
+                        const result = await invoke<{ content: string }>("ai_generate", {
+                          prompt,
+                          systemPrompt
+                        });
+
+                        setAnalysisResult(result.content);
+                        setShowAnalysis(true);
+                      } catch (e) {
+                        console.error("Analysis failed:", e);
+                        setAnalysisResult(`Analysis failed: ${e}`);
+                        setShowAnalysis(true);
+                      } finally {
+                        setAnalyzing(false);
+                      }
+                    }}
+                  >
+                    {analyzing() ? "Analyzing..." : "Analyze Pattern"}
+                  </button>
+                  <Show when={analysisResult()}>
+                    <button
+                      class="view-analysis-btn"
+                      onClick={() => setShowAnalysis(true)}
+                    >
+                      View Analysis
+                    </button>
+                  </Show>
+                  <p class="analysis-hint">
+                    Send fingerprint to LLM for interpretation
+                  </p>
+                </div>
+              </Show>
+
               {/* Stats */}
               <Show when={stats()}>
                 <div class="sidebar-section stats-section">
@@ -1375,6 +1975,34 @@ const EmbeddingExplorer: Component<EmbeddingExplorerProps> = (props) => {
               </div>
             </div>
           </div>
+
+          {/* Analysis Result Modal */}
+          <Show when={showAnalysis() && analysisResult()}>
+            <div class="analysis-overlay" onClick={() => setShowAnalysis(false)}>
+              <div class="analysis-modal" onClick={(e) => e.stopPropagation()}>
+                <div class="analysis-header">
+                  <h3>Embedding Pattern Analysis</h3>
+                  <button class="close-analysis-btn" onClick={() => setShowAnalysis(false)}>×</button>
+                </div>
+                <div class="analysis-content">
+                  <div class="analysis-source">
+                    <span class="source-label">Source:</span>
+                    <span class="source-name">{selectedName() || "Generated vector"}</span>
+                  </div>
+                  <div class="analysis-text">
+                    {analysisResult()}
+                  </div>
+                </div>
+                <div class="analysis-footer">
+                  <button class="copy-analysis-btn" onClick={() => {
+                    navigator.clipboard.writeText(analysisResult() || "");
+                  }}>
+                    Copy to Clipboard
+                  </button>
+                </div>
+              </div>
+            </div>
+          </Show>
         </div>
       </div>
     </Show>
