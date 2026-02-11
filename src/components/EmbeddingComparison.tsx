@@ -4,10 +4,13 @@ import EmbeddingWaveform from "./EmbeddingWaveform";
 import "./EmbeddingComparison.css";
 
 interface SearchResult {
-  suid: string;
-  name: string;
+  object: {
+    id: string;
+    kind: string;
+    content: string;
+    tags: string[];
+  };
   score: number;
-  summary: string;
 }
 
 interface EmbeddingComparisonProps {
@@ -34,7 +37,7 @@ const EmbeddingComparison: Component<EmbeddingComparisonProps> = (props) => {
   // Fetch embedding for an object
   const fetchEmbedding = async (suid: string): Promise<number[] | null> => {
     try {
-      const emb = await invoke<number[] | null>("get_object_embedding", { suid });
+      const emb = await invoke<number[] | null>("get_object_embedding", { "suid": suid });
       return emb;
     } catch (e) {
       console.error("Failed to fetch embedding:", e);
@@ -156,19 +159,19 @@ const EmbeddingComparison: Component<EmbeddingComparisonProps> = (props) => {
             {(result) => (
               <div class="search-result-item">
                 <div class="result-info">
-                  <span class="result-name">{result.name}</span>
+                  <span class="result-name">{result.object.content.slice(0, 50)}...</span>
                   <span class="result-score">{(result.score * 100).toFixed(0)}%</span>
                 </div>
                 <div class="result-actions">
                   <button
-                    class={`slot-btn ${selected1() === result.suid ? "selected" : ""}`}
-                    onClick={() => selectObject(result.suid, result.name, 1)}
+                    class={`slot-btn ${selected1() === result.object.id ? "selected" : ""}`}
+                    onClick={() => selectObject(result.object.id, result.object.content.slice(0, 30), 1)}
                   >
                     A
                   </button>
                   <button
-                    class={`slot-btn ${selected2() === result.suid ? "selected" : ""}`}
-                    onClick={() => selectObject(result.suid, result.name, 2)}
+                    class={`slot-btn ${selected2() === result.object.id ? "selected" : ""}`}
+                    onClick={() => selectObject(result.object.id, result.object.content.slice(0, 30), 2)}
                   >
                     B
                   </button>

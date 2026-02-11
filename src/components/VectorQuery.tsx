@@ -5,7 +5,7 @@ import EmbeddingSettings from "./EmbeddingSettings";
 import IdeaSpace3D from "./IdeaSpace3D";
 import EmbeddingWaveform from "./EmbeddingWaveform";
 import EmbeddingComparison from "./EmbeddingComparison";
-import EmbeddingWaveform3D from "./EmbeddingWaveform3D";
+import EmbeddingExplorer from "./EmbeddingExplorer";
 import "./VectorQuery.css";
 
 interface VectorSearchResult {
@@ -492,8 +492,8 @@ const VectorQuery: Component<VectorQueryProps> = (props) => {
         onClose={() => setShow3DSpace(false)}
       />
 
-      {/* 3D Waveform Visualization */}
-      <EmbeddingWaveform3D
+      {/* Embedding Explorer (2D Canvas visualizations) */}
+      <EmbeddingExplorer
         isOpen={showWaveform3D()}
         onClose={() => setShowWaveform3D(false)}
       />
