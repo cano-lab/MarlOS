@@ -153,12 +153,17 @@ const ChatPanel: Component<ChatPanelProps> = (props) => {
   let inputRef: HTMLTextAreaElement | undefined;
 
   onMount(async () => {
-    // Load custom providers
+    // Load custom providers (may set config if active provider exists)
     await loadCustomProviders();
+
     // Check if AI provider is available
     await checkStatus();
-    // Load config
-    await loadConfig();
+
+    // Only load generic config if no custom provider is active
+    if (!activeProviderId()) {
+      await loadConfig();
+    }
+
     // Add welcome message
     addSystemMessage("Chat ready. Type a message or use the quick actions above.");
   });
@@ -169,6 +174,24 @@ const ChatPanel: Component<ChatPanelProps> = (props) => {
       setCustomProviders(providers);
       const activeId = await invoke<string | null>("custom_provider_get_active_id");
       setActiveProviderId(activeId);
+
+      // Load active provider config if available
+      if (activeId) {
+        const activeProvider = await invoke<CustomProvider | null>("custom_provider_get", { id: activeId });
+        if (activeProvider) {
+          const newConfig: ProviderConfig = {
+            name: activeProvider.name,
+            base_url: activeProvider.base_url,
+            api_key: activeProvider.api_key,
+            model: activeProvider.model,
+            temperature: activeProvider.temperature,
+            max_tokens: activeProvider.max_tokens,
+            timeout_secs: activeProvider.timeout_secs,
+          };
+          setConfig(newConfig);
+          await invoke("ai_set_config", { config: newConfig });
+        }
+      }
     } catch (e) {
       console.debug("Custom providers not available:", e);
     }
@@ -337,6 +360,37 @@ const ChatPanel: Component<ChatPanelProps> = (props) => {
         addSystemMessage(`File "${args}" ingested into semantic memory.`);
       } catch (e) {
         addSystemMessage(`Could not ingest file: ${e}`);
+      } finally {
+        setIsLoading(false);
+      }
+      return true;
+    }
+
+    if (cmd === "/write" && args) {
+      addUserMessage(text);
+      setIsLoading(true);
+      try {
+        // Parse path and content from args
+        const writeParts = args.split(" ", 2);
+        const writePath = writeParts[0];
+        const writeContent = writeParts[1] || "";
+
+        if (!writePath) {
+          addSystemMessage("Usage: /write <path> [content]");
+          setIsLoading(false);
+          return true;
+        }
+
+        // Write to file using Tauri command
+        const result = await invoke<string>("write_file_content", {
+          path: writePath,
+          contents: writeContent
+        });
+
+        addFileOperation("write", writePath, `Wrote ${writeContent.length} characters`);
+        addSystemMessage(result);
+      } catch (e) {
+        addSystemMessage(`Could not write file: ${e}`);
       } finally {
         setIsLoading(false);
       }
