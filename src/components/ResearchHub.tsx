@@ -153,8 +153,15 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
   // Time filter state
   const [timeFilter, setTimeFilter] = createSignal<string>("all"); // all, 7d, 30d, 90d
 
+  // Pagination state
+  const [currentPage, setCurrentPage] = createSignal<number>(1);
+  const [pageSize] = createSignal<number>(50); // Sources per page
+  const [totalSources, setTotalSources] = createSignal<number>(0);
+  const [totalPages, setTotalPages] = createSignal<number>(0);
+
   onMount(() => {
     loadSources();
+    loadTotalSources();
     loadPapers();
   });
 
@@ -234,20 +241,62 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
     return `${Math.floor(diffDays / 365)} years ago`;
   };
 
-  const loadSources = async () => {
+  const loadSources = async (page?: number) => {
     setIsLoading(true);
     setError(null);
     try {
       const filter = tagFilter() || undefined;
+      const targetPage = page ?? currentPage();
+      const offset = (targetPage - 1) * pageSize();
       const results = await invoke<SourceView[]>("research_list_sources", {
         tagFilter: filter,
-        limit: 100,
+        limit: pageSize(),
+        offset: offset,
       });
       setSources(results);
+      // Note: totalSources is set separately by loadTotalSources
+      if (page) setCurrentPage(page);
     } catch (e) {
       setError(`Failed to load sources: ${e}`);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // Load total count for pagination UI
+  const loadTotalSources = async () => {
+    try {
+      const filter = tagFilter() || undefined;
+      // Request all sources (up to 500) to get total count
+      const allResults = await invoke<SourceView[]>("research_list_sources", {
+        tagFilter: filter,
+        limit: 500,
+        offset: 0,
+      });
+      const total = allResults.length;
+      setTotalSources(total);
+      setTotalPages(Math.ceil(total / pageSize()));
+    } catch (e) {
+      console.error("Failed to load total count:", e);
+    }
+  };
+
+  // Pagination handlers
+  const handleNextPage = async () => {
+    if (currentPage() < totalPages()) {
+      await loadSources(currentPage() + 1);
+    }
+  };
+
+  const handlePreviousPage = async () => {
+    if (currentPage() > 1) {
+      await loadSources(currentPage() - 1);
+    }
+  };
+
+  const handlePageJump = async (page: number) => {
+    if (page >= 1 && page <= totalPages() && page !== currentPage()) {
+      await loadSources(page);
     }
   };
 
@@ -289,7 +338,10 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
       setSuccessMsg(`Added source: ${source.title}`);
       resetForm();
       setViewMode("list");
-      loadSources();
+      // Reload first page to show new source
+      setCurrentPage(1);
+      await loadSources(1);
+      await loadTotalSources();
     } catch (e) {
       setError(`Failed to add source: ${e}`);
     } finally {
@@ -324,7 +376,10 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
       setSuccessMsg(`Added source: ${source.title}`);
       resetForm();
       setViewMode("list");
-      loadSources();
+      // Reload first page to show new source
+      setCurrentPage(1);
+      await loadSources(1);
+      await loadTotalSources();
     } catch (e) {
       setError(`Failed to add source: ${e}`);
     } finally {
@@ -759,7 +814,7 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
                   placeholder="Filter by tag..."
                   value={tagFilter()}
                   onInput={(e) => setTagFilter(e.currentTarget.value)}
-                  onKeyPress={(e) => e.key === "Enter" && loadSources()}
+                  onKeyPress={(e) => e.key === "Enter" && (setCurrentPage(1), loadSources(1), loadTotalSources())}
                 />
               </div>
               <div class="time-filter">
@@ -887,6 +942,32 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
                   </div>
                 )}
               </For>
+
+              {/* Pagination controls */}
+              <Show when={totalPages() > 1}>
+                <div class="pagination-controls">
+                  <button
+                    class="pagination-btn"
+                    disabled={currentPage() === 1}
+                    onClick={handlePreviousPage}
+                  >
+                    Previous
+                  </button>
+                  <span class="pagination-info">
+                    Page {currentPage()} of {totalPages()}
+                    <Show when={totalSources() > 0}>
+                      ({totalSources()} total)
+                    </Show>
+                  </span>
+                  <button
+                    class="pagination-btn"
+                    disabled={currentPage() >= totalPages()}
+                    onClick={handleNextPage}
+                  >
+                    Next
+                  </button>
+                </div>
+              </Show>
             </div>
 
             {/* Selection actions */}

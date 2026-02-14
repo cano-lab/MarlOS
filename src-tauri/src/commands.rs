@@ -1724,11 +1724,12 @@ pub async fn research_get_source(
     Ok(SourceView::from(&source))
 }
 
-/// List all sources
+/// List all sources with pagination support
 #[tauri::command]
 pub async fn research_list_sources(
     tag_filter: Option<String>,
     limit: Option<usize>,
+    offset: Option<usize>,
     search: State<'_, Arc<SemanticSearch>>,
 ) -> Result<Vec<SourceView>, String> {
     let store = search.store.read().await;
@@ -1749,6 +1750,15 @@ pub async fn research_list_sources(
 
     // Sort by accessed date (newest first)
     sources.sort_by(|a, b| b.accessed_date.cmp(&a.accessed_date));
+
+    // Apply offset for pagination
+    let offset = offset.unwrap_or(0);
+    if offset > 0 {
+        if offset >= sources.len() {
+            return Ok(vec![]);
+        }
+        sources = sources.split_off(offset);
+    }
 
     // Apply limit
     let limit = limit.unwrap_or(100);
@@ -8059,4 +8069,28 @@ pub async fn ingest_file_to_memory(
 
     log::info!("Ingested file to memory: {}", file_name);
     Ok(())
+}
+
+/// Write content to file (for chat /write command)
+#[tauri::command]
+pub async fn write_file_content(
+    path: String,
+    contents: String,
+) -> Result<String, String> {
+    let path = std::path::Path::new(&path);
+
+    // Create parent directories if they don't exist
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create parent directory: {}", e))?;
+    }
+
+    // Calculate length before moving contents
+    let len = contents.len();
+
+    // Write to file
+    std::fs::write(&path, contents)
+        .map_err(|e| format!("Failed to write file: {}", e))?;
+
+    Ok(format!("Wrote {} bytes to {}", len, path.display()))
 }
