@@ -342,6 +342,7 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
       setCurrentPage(1);
       await loadSources(1);
       await loadTotalSources();
+      await loadPapers(); // Refresh paper filter to include new source
     } catch (e) {
       setError(`Failed to add source: ${e}`);
     } finally {
@@ -380,6 +381,7 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
       setCurrentPage(1);
       await loadSources(1);
       await loadTotalSources();
+      await loadPapers(); // Refresh paper filter to include new source
     } catch (e) {
       setError(`Failed to add source: ${e}`);
     } finally {
