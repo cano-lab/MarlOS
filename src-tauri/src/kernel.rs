@@ -6,12 +6,33 @@
 //! - Memory integration for semantic storage
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard, PoisonError};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::memory::MemoryStore;
+
+// Lock recovery helpers - prevent cascade failures from poisoned locks
+fn recover_read_lock<'a, T>(result: Result<RwLockReadGuard<'a, T>, PoisonError<RwLockReadGuard<'a, T>>>) -> RwLockReadGuard<'a, T> {
+    match result {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            log::warn!("Kernel: recovered from poisoned read lock");
+            poisoned.into_inner()
+        }
+    }
+}
+
+fn recover_write_lock<'a, T>(result: Result<RwLockWriteGuard<'a, T>, PoisonError<RwLockWriteGuard<'a, T>>>) -> RwLockWriteGuard<'a, T> {
+    match result {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            log::warn!("Kernel: recovered from poisoned write lock");
+            poisoned.into_inner()
+        }
+    }
+}
 
 /// A kernel event that can be broadcast across contexts
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,21 +108,21 @@ pub struct SemanticKernel {
 }
 
 impl SemanticKernel {
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self, crate::memory::MemoryError> {
         log::info!("Initializing Semantic Kernel");
 
-        Self {
+        Ok(Self {
             contexts: RwLock::new(HashMap::new()),
             events: RwLock::new(Vec::with_capacity(5000)),
             max_events: 5000,
-            memory: Arc::new(MemoryStore::new().expect("Failed to initialize memory store")),
-        }
+            memory: Arc::new(MemoryStore::new()?),
+        })
     }
 
     /// Register a new context
     pub fn register_context(&self, handle: ContextHandle) -> String {
         let id = handle.id.clone();
-        let mut contexts = self.contexts.write().unwrap();
+        let mut contexts = recover_write_lock(self.contexts.write());
         contexts.insert(id.clone(), handle);
 
         self.emit("context.registered", serde_json::json!({ "context_id": id }));
@@ -112,7 +133,7 @@ impl SemanticKernel {
 
     /// Unregister a context
     pub fn unregister_context(&self, context_id: &str) -> Option<ContextHandle> {
-        let mut contexts = self.contexts.write().unwrap();
+        let mut contexts = recover_write_lock(self.contexts.write());
         let handle = contexts.remove(context_id);
 
         if handle.is_some() {
@@ -125,13 +146,13 @@ impl SemanticKernel {
 
     /// Get a context by ID
     pub fn get_context(&self, context_id: &str) -> Option<ContextHandle> {
-        let contexts = self.contexts.read().unwrap();
+        let contexts = recover_read_lock(self.contexts.read());
         contexts.get(context_id).cloned()
     }
 
     /// List all active contexts
     pub fn list_contexts(&self) -> Vec<ContextHandle> {
-        let contexts = self.contexts.read().unwrap();
+        let contexts = recover_read_lock(self.contexts.read());
         contexts.values().cloned().collect()
     }
 
@@ -139,7 +160,7 @@ impl SemanticKernel {
     pub fn emit(&self, event_type: &str, payload: serde_json::Value) -> KernelEvent {
         let event = KernelEvent::new(event_type, payload);
 
-        let mut events = self.events.write().unwrap();
+        let mut events = recover_write_lock(self.events.write());
         events.push(event.clone());
 
         // Trim if over max
@@ -159,7 +180,7 @@ impl SemanticKernel {
         context_id: Option<&str>,
         limit: usize,
     ) -> Vec<KernelEvent> {
-        let events = self.events.read().unwrap();
+        let events = recover_read_lock(self.events.read());
 
         events
             .iter()
@@ -178,8 +199,10 @@ impl SemanticKernel {
 }
 
 impl Default for SemanticKernel {
+    /// Creates a new SemanticKernel, panicking if memory store fails to initialize.
+    /// Use `SemanticKernel::new()` for fallible initialization.
     fn default() -> Self {
-        Self::new()
+        Self::new().expect("Failed to initialize SemanticKernel - memory store error")
     }
 }
 
@@ -189,7 +212,7 @@ mod tests {
 
     #[test]
     fn test_context_lifecycle() {
-        let kernel = SemanticKernel::new();
+        let kernel = SemanticKernel::new().expect("Failed to create kernel for test");
 
         let handle = ContextHandle::new("document").with_path("/test/file.md");
         let id = kernel.register_context(handle);
@@ -202,7 +225,7 @@ mod tests {
 
     #[test]
     fn test_event_emission() {
-        let kernel = SemanticKernel::new();
+        let kernel = SemanticKernel::new().expect("Failed to create kernel for test");
 
         kernel.emit("test.event", serde_json::json!({ "data": "test" }));
 

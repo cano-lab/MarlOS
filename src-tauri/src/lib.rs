@@ -56,7 +56,8 @@ pub fn run() {
             log::info!("MarlOS initialized");
 
             // Initialize the semantic kernel
-            let kernel = kernel::SemanticKernel::new();
+            let kernel = kernel::SemanticKernel::new()
+                .map_err(|e| format!("Failed to initialize semantic kernel: {}", e))?;
             app.manage(kernel);
 
             // Initialize PDF manager (may fail if PDFium not available)
@@ -92,15 +93,15 @@ pub fn run() {
 
             // Initialize ObjectStore and SemanticSearch
             let app_data_dir = app.path().app_data_dir()
-                .expect("Failed to get app data directory");
+                .map_err(|e| format!("Failed to get app data directory: {}", e))?;
             std::fs::create_dir_all(&app_data_dir)
-                .expect("Failed to create app data directory");
+                .map_err(|e| format!("Failed to create app data directory: {}", e))?;
 
             let db_path = app_data_dir.join("objects.db");
             log::info!("Object store path: {:?}", db_path);
 
             let object_store = object_store::ObjectStore::new(db_path)
-                .expect("Failed to create object store");
+                .map_err(|e| format!("Failed to create object store: {}", e))?;
 
             // Auto-detect embedding provider (LM Studio → Ollama → Mock)
             let embedding_manager = tauri::async_runtime::block_on(
@@ -113,7 +114,7 @@ pub fn run() {
 
             // Initialize SessionManager
             let session_manager = sessions::SessionManager::new()
-                .expect("Failed to create session manager");
+                .map_err(|e| format!("Failed to create session manager: {}", e))?;
 
             // Load existing sessions from disk
             if let Err(e) = session_manager.load() {

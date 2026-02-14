@@ -1,4 +1,4 @@
-import { createSignal, createEffect, onMount, Show } from "solid-js";
+import { createSignal, createEffect, onMount, Show, ErrorBoundary } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
@@ -18,6 +18,7 @@ import LearningPanel from "./components/LearningPanel";
 import ProviderSettings from "./components/ProviderSettings";
 import { ToastProvider, useToast } from "./components/Toast";
 import { useDocumentTimer } from "./hooks/useDocumentTimer";
+import ErrorFallback from "./components/ErrorBoundary";
 import "./App.css";
 
 interface VersionInfo {
@@ -641,24 +642,30 @@ function AppContent() {
 
       {/* Research Hub */}
       <Show when={showResearchHub()}>
-        <ResearchHub onClose={() => setShowResearchHub(false)} />
+        <ErrorBoundary fallback={(error, reset) => <ErrorFallback error={error} reset={reset} />}>
+          <ResearchHub onClose={() => setShowResearchHub(false)} />
+        </ErrorBoundary>
       </Show>
 
       {/* Sessions */}
       <Show when={showSessions()}>
         <div class="sessions-dialog">
-          <Sessions
-            onClose={() => setShowSessions(false)}
-            onError={handleSessionError}
-            showToast={showToast}
-          />
+          <ErrorBoundary fallback={(error, reset) => <ErrorFallback error={error} reset={reset} />}>
+            <Sessions
+              onClose={() => setShowSessions(false)}
+              onError={handleSessionError}
+              showToast={showToast}
+            />
+          </ErrorBoundary>
         </div>
       </Show>
 
       {/* Vector Query */}
       <Show when={showVectorQuery()}>
         <div class="vector-query-dialog">
-          <VectorQuery onClose={() => setShowVectorQuery(false)} />
+          <ErrorBoundary fallback={(error, reset) => <ErrorFallback error={error} reset={reset} />}>
+            <VectorQuery onClose={() => setShowVectorQuery(false)} />
+          </ErrorBoundary>
         </div>
       </Show>
 
@@ -673,9 +680,11 @@ function AppContent() {
 
 function App() {
   return (
-    <ToastProvider>
-      <AppContent />
-    </ToastProvider>
+    <ErrorBoundary fallback={(error, reset) => <ErrorFallback error={error} reset={reset} />}>
+      <ToastProvider>
+        <AppContent />
+      </ToastProvider>
+    </ErrorBoundary>
   );
 }
 

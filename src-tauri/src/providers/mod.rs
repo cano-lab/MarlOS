@@ -9,8 +9,34 @@
 //! - ON_DEMAND: Command-activated, may mutate with permission (e.g., Formatters)
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard, PoisonError};
 use serde::{Deserialize, Serialize};
+
+// ============================================================================
+// Lock Recovery Helpers
+// ============================================================================
+
+/// Recover from a poisoned read lock, logging a warning
+fn recover_read_lock<'a, T>(result: Result<RwLockReadGuard<'a, T>, PoisonError<RwLockReadGuard<'a, T>>>) -> RwLockReadGuard<'a, T> {
+    match result {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            log::warn!("Recovered from poisoned read lock");
+            poisoned.into_inner()
+        }
+    }
+}
+
+/// Recover from a poisoned write lock, logging a warning
+fn recover_write_lock<'a, T>(result: Result<RwLockWriteGuard<'a, T>, PoisonError<RwLockWriteGuard<'a, T>>>) -> RwLockWriteGuard<'a, T> {
+    match result {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            log::warn!("Recovered from poisoned write lock");
+            poisoned.into_inner()
+        }
+    }
+}
 
 // ============================================================================
 // Provider Category
@@ -91,7 +117,7 @@ impl CommandRegistry {
 
     /// Register a command
     pub fn register(&self, command: Command) -> Result<(), String> {
-        let mut commands = self.commands.write().unwrap();
+        let mut commands = recover_write_lock(self.commands.write());
         if commands.contains_key(&command.id) {
             return Err(format!("Command already registered: {}", command.id));
         }
@@ -102,25 +128,25 @@ impl CommandRegistry {
 
     /// Unregister a command
     pub fn unregister(&self, command_id: &str) {
-        let mut commands = self.commands.write().unwrap();
+        let mut commands = recover_write_lock(self.commands.write());
         commands.remove(command_id);
     }
 
     /// Get a command by ID
     pub fn get(&self, command_id: &str) -> Option<Command> {
-        let commands = self.commands.read().unwrap();
+        let commands = recover_read_lock(self.commands.read());
         commands.get(command_id).cloned()
     }
 
     /// List all commands
     pub fn list(&self) -> Vec<Command> {
-        let commands = self.commands.read().unwrap();
+        let commands = recover_read_lock(self.commands.read());
         commands.values().cloned().collect()
     }
 
     /// List commands by provider
     pub fn list_by_provider(&self, provider: &str) -> Vec<Command> {
-        let commands = self.commands.read().unwrap();
+        let commands = recover_read_lock(self.commands.read());
         commands
             .values()
             .filter(|c| c.provider == provider)
@@ -221,7 +247,7 @@ impl ProviderRegistry {
         provider.activate(&context)?;
 
         // Store in registry
-        let mut providers = self.providers.write().unwrap();
+        let mut providers = recover_write_lock(self.providers.write());
         providers.insert(name.clone(), provider);
 
         log::info!("Registered provider: {} ({:?})", name, category);
@@ -230,7 +256,7 @@ impl ProviderRegistry {
 
     /// Unregister a provider
     pub fn unregister(&self, name: &str) -> Option<Box<dyn Provider>> {
-        let mut providers = self.providers.write().unwrap();
+        let mut providers = recover_write_lock(self.providers.write());
         if let Some(mut provider) = providers.remove(name) {
             provider.deactivate();
             log::info!("Unregistered provider: {}", name);
@@ -242,7 +268,7 @@ impl ProviderRegistry {
 
     /// Notify all providers of content change
     pub fn notify_content_changed(&self, content: &str) {
-        let mut providers = self.providers.write().unwrap();
+        let mut providers = recover_write_lock(self.providers.write());
         for provider in providers.values_mut() {
             provider.on_content_changed(content);
         }
@@ -250,13 +276,13 @@ impl ProviderRegistry {
 
     /// Get provider state
     pub fn get_provider_state(&self, name: &str) -> Option<serde_json::Value> {
-        let providers = self.providers.read().unwrap();
+        let providers = recover_read_lock(self.providers.read());
         providers.get(name).map(|p| p.get_state())
     }
 
     /// List all registered providers
     pub fn list(&self) -> Vec<ProviderInfo> {
-        let providers = self.providers.read().unwrap();
+        let providers = recover_read_lock(self.providers.read());
         providers
             .values()
             .map(|p| ProviderInfo {

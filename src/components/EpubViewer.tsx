@@ -426,6 +426,21 @@ const EpubViewer: Component<EpubViewerProps> = (props) => {
   };
 
   // Process chapter HTML to inject highlight markers
+  // Escape HTML entities to prevent XSS
+  const escapeHtml = (unsafe: string): string => {
+    return unsafe
+      .replace(/&/g, "&amp;amp;")
+      .replace(/</g, "&amp;lt;")
+      .replace(/>/g, "&amp;gt;")
+      .replace(/"/g, "&amp;quot;")
+      .replace(/'/g, "&amp;#039;");
+  };
+
+  // Escape content within HTML attributes (prevents breaking out of attributes)
+  const escapeAttr = (unsafe: string): string => {
+    return escapeHtml(unsafe).replace(/"/g, "&amp;quot;");
+  };
+
   const processChapterHtml = (html: string) => {
     const content = chapterContent();
     if (!content) return html;
@@ -449,7 +464,11 @@ const EpubViewer: Component<EpubViewerProps> = (props) => {
       processedHtml = processedHtml.replace(regex, (match) => {
         if (!found) {
           found = true;
-          return `<mark class="epub-highlight epub-highlight-${hl.color}" data-highlight-id="${hl.id}" title="${hl.note || "Click to edit"}">${match}</mark>`;
+          // Escape all dynamic content to prevent XSS
+          const safeColor = escapeAttr(hl.color);
+          const safeId = escapeAttr(hl.id);
+          const safeNote = escapeAttr(hl.note || "Click to edit");
+          return `<mark class="epub-highlight epub-highlight-${safeColor}" data-highlight-id="${safeId}" title="${safeNote}">${match}</mark>`;
         }
         return match;
       });

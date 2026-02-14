@@ -509,8 +509,12 @@ impl PdfManager {
 }
 
 impl Default for PdfManager {
+    /// Creates a new PdfManager, panicking if PDFium fails to initialize.
+    /// Use `PdfManager::new()` for fallible initialization.
+    /// Note: In the main app, PdfManager is created with proper error handling
+    /// that gracefully disables PDF support if PDFium is unavailable.
     fn default() -> Self {
-        Self::new().expect("Failed to initialize PDFium")
+        Self::new().expect("Failed to initialize PDFium - library not found")
     }
 }
 
