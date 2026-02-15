@@ -2,7 +2,7 @@ import { Component, createSignal, createEffect, onMount, Show, For } from "solid
 import { invoke } from "@tauri-apps/api/core";
 import "./ChatPanel.css";
 import ThinkingDebugger from "./ThinkingDebugger";
-import { useLearningSession, LearningStep, webSearch, academicSearch, formatSearchResultsForContext, formatAcademicResultsForContext } from "../hooks/useLearningSession";
+import { useLearningSession, LearningStep, webSearch, academicSearch, formatSearchResultsForContext, formatAcademicResultsForContext, SearchResults, AcademicSearchResults } from "../hooks/useLearningSession";
 
 type ChatMode = "chat" | "learn";
 
@@ -138,6 +138,8 @@ const ChatPanel: Component<ChatPanelProps> = (props) => {
   const [useWebSearch, setUseWebSearch] = createSignal(false);
   const [useAcademicSearch, setUseAcademicSearch] = createSignal(false);
   const [searchResults, setSearchResults] = createSignal<string>("");
+  const [webSearchData, setWebSearchData] = createSignal<SearchResults | null>(null);
+  const [academicSearchData, setAcademicSearchData] = createSignal<AcademicSearchResults | null>(null);
 
   const [config, setConfig] = createSignal<ProviderConfig>({
     name: "LM Studio",
@@ -599,13 +601,19 @@ When helpful, ask the user if they want to check their past sessions for relevan
     if (topic) {
       let searchContext = "";
 
+      // Clear previous search results
+      setWebSearchData(null);
+      setAcademicSearchData(null);
+
       if (useWebSearch()) {
         const results = await webSearch(topic, 5);
+        setWebSearchData(results);
         searchContext += formatSearchResultsForContext(results);
       }
 
       if (useAcademicSearch()) {
         const results = await academicSearch(topic, 5);
+        setAcademicSearchData(results);
         searchContext += formatAcademicResultsForContext(results);
       }
 
@@ -988,9 +996,73 @@ When helpful, ask the user if they want to check their past sessions for relevan
                   <span class="value">{currentCycle().topic}</span>
                 </div>
 
-                <Show when={searchResults()}>
-                  <div class="search-results-indicator">
-                    🔍 Web/Academic search results will enhance the answer
+                <Show when={webSearchData() || academicSearchData()}>
+                  <div class="search-results-panel">
+                    <h4>🔍 Search Results</h4>
+
+                    {/* Web search results */}
+                    <Show when={webSearchData()}>
+                      <div class="search-results-section">
+                        <h5>Web Search</h5>
+                        <For each={webSearchData()!.results}>
+                          {(result) => (
+                            <div class="search-result-item">
+                              <a
+                                href={result.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                class="search-result-title"
+                              >
+                                {result.title}
+                              </a>
+                              <div class="search-result-url">{result.source_domain}</div>
+                              <div class="search-result-snippet">{result.snippet}</div>
+                            </div>
+                          )}
+                        </For>
+                      </div>
+                    </Show>
+
+                    {/* Academic search results */}
+                    <Show when={academicSearchData()}>
+                      <div class="search-results-section">
+                        <h5>Academic Papers</h5>
+                        <For each={academicSearchData()!.papers}>
+                          {(paper) => (
+                            <div class="search-result-item">
+                              <Show when={paper.url}>
+                                <a
+                                  href={paper.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  class="search-result-title"
+                                >
+                                  {paper.title}
+                                </a>
+                              </Show>
+                              <Show when={!paper.url}>
+                                <div class="search-result-title">{paper.title}</div>
+                              </Show>
+                              <Show when={paper.authors && paper.authors.length > 0}>
+                                <div class="search-result-authors">
+                                  {paper.authors.slice(0, 3).join(", ")}
+                                  {paper.authors.length > 3 ? " et al." : ""}
+                                </div>
+                              </Show>
+                              <Show when={paper.year}>
+                                <div class="search-result-meta">{paper.year}</div>
+                              </Show>
+                              <Show when={paper.venue}>
+                                <div class="search-result-meta">{paper.venue}</div>
+                              </Show>
+                              <Show when={paper.abstract_text}>
+                                <div class="search-result-snippet">{paper.abstract_text.slice(0, 200)}...</div>
+                              </Show>
+                            </div>
+                          )}
+                        </For>
+                      </div>
+                    </Show>
                   </div>
                 </Show>
 

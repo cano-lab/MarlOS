@@ -293,14 +293,14 @@ async function callAI(systemPrompt: string, userMessage: string): Promise<string
 }
 
 // Web search types
-interface SearchResult {
+export interface SearchResult {
   title: string;
   url: string;
   snippet: string;
   source_domain: string;
 }
 
-interface SearchResults {
+export interface SearchResults {
   query: string;
   results: SearchResult[];
   total_found: number;
