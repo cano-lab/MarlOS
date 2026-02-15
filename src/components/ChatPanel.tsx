@@ -140,6 +140,7 @@ const ChatPanel: Component<ChatPanelProps> = (props) => {
   const [searchResults, setSearchResults] = createSignal<string>("");
   const [webSearchData, setWebSearchData] = createSignal<SearchResults | null>(null);
   const [academicSearchData, setAcademicSearchData] = createSignal<AcademicSearchResults | null>(null);
+  const [searchError, setSearchError] = createSignal<string | null>(null);
 
   const [config, setConfig] = createSignal<ProviderConfig>({
     name: "LM Studio",
@@ -996,11 +997,17 @@ When helpful, ask the user if they want to check their past sessions for relevan
                   <span class="value">{currentCycle().topic}</span>
                 </div>
 
-                <Show when={webSearchData() || academicSearchData()}>
+                <Show when={webSearchData() || academicSearchData() || searchError()}>
                   <div class="search-results-panel">
                     <h4>🔍 Search Results</h4>
 
-                    {/* Web search results */}
+                    {/* Search error */}
+                    <Show when={searchError()}>
+                      <div class="search-results-section error-message">
+                        <h5 class="error-title">Search Error</h5>
+                        <div class="error-text">{searchError()}</div>
+                      </div>
+                    </Show>
                     <Show when={webSearchData()}>
                       <div class="search-results-section">
                         <h5>Web Search</h5>

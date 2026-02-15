@@ -334,8 +334,7 @@ export async function webSearch(query: string, numResults: number = 5): Promise<
     });
     return results;
   } catch (e) {
-    console.error("Web search failed:", e);
-    return { query, results: [], total_found: 0 };
+    return { query, results: [], total_found: 0, error: String(e) };
   }
 }
 
@@ -348,8 +347,7 @@ export async function academicSearch(query: string, numResults: number = 5): Pro
     });
     return results;
   } catch (e) {
-    console.error("Academic search failed:", e);
-    return { query, papers: [], total_found: 0 };
+    return { query, papers: [], total_found: 0, error: String(e) };
   }
 }
 
