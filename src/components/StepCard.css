@@ -1,0 +1,351 @@
+/* Step Card - Smaller card for milestone/step display */
+
+.step-card {
+  position: absolute;
+  width: 180px;
+  padding: 12px 14px;
+  padding-top: 16px;
+  background: var(--plan-card);
+  border-radius: 10px;
+  box-shadow:
+    0 2px 6px var(--plan-card-shadow),
+    0 1px 2px var(--plan-card-shadow);
+  user-select: none;
+  transition: box-shadow 0.2s ease, opacity 0.2s ease;
+  z-index: 5;
+  overflow: hidden;
+}
+
+.step-card:hover {
+  box-shadow:
+    0 4px 12px var(--plan-card-shadow-hover),
+    0 2px 4px var(--plan-card-shadow);
+}
+
+.step-card:active {
+  cursor: grabbing;
+  box-shadow:
+    0 8px 20px var(--plan-card-shadow-hover),
+    0 4px 8px var(--plan-card-shadow);
+  z-index: 100;
+}
+
+.step-card.completed {
+  opacity: 0.75;
+}
+
+.step-card.completed .step-card-title {
+  text-decoration: line-through;
+  color: var(--plan-text-muted);
+}
+
+/* Complexity indicator bar at top */
+.step-card-complexity {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: var(--complexity-color, var(--plan-accent));
+  border-radius: 10px 10px 0 0;
+}
+
+/* Header with checkbox and title */
+.step-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.step-card-checkbox {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--plan-border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.step-card-checkbox:hover {
+  border-color: var(--plan-accent-soft);
+}
+
+.step-card-checkbox.checked {
+  background: var(--plan-accent);
+  border-color: var(--plan-accent);
+}
+
+.step-card-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--plan-text);
+  margin: 0;
+  line-height: 1.3;
+}
+
+/* Branch indicator */
+.step-card-branch {
+  margin-bottom: 6px;
+}
+
+.step-branch-label {
+  display: inline-block;
+  padding: 2px 8px;
+  background: var(--plan-bg-subtle);
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--plan-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Notes */
+.step-card-notes {
+  font-size: 11px;
+  color: var(--plan-text-muted);
+  margin: 0 0 8px 0;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Subtasks list */
+.step-card-subtasks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.step-subtask-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.step-subtask-checkbox {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--plan-border);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.step-subtask-checkbox:hover {
+  border-color: var(--plan-accent-soft);
+}
+
+.step-subtask-checkbox.checked {
+  background: var(--plan-accent);
+  border-color: var(--plan-accent);
+}
+
+.step-subtask-text {
+  flex: 1;
+  font-size: 11px;
+  color: var(--plan-text);
+  line-height: 1.3;
+}
+
+.step-subtask-text.completed {
+  text-decoration: line-through;
+  color: var(--plan-text-muted);
+}
+
+/* Agent section */
+.step-card-agent {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--plan-border);
+}
+
+.step-agent-assign {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  border: 1px dashed var(--plan-border);
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--plan-text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.step-agent-assign:hover {
+  border-color: var(--plan-accent-soft);
+  color: var(--plan-accent);
+  background: rgba(91, 143, 185, 0.05);
+}
+
+.step-agent-launch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  background: linear-gradient(135deg, var(--plan-accent-soft) 0%, var(--plan-accent) 100%);
+  border: none;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: white;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.step-agent-launch:hover {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+
+.step-agent-icon {
+  font-size: 14px;
+}
+
+.step-agent-label {
+  flex: 1;
+  text-align: left;
+}
+
+.step-agent-arrow {
+  opacity: 0.8;
+}
+
+/* Agent type colors */
+.step-agent-launch.research {
+  background: linear-gradient(135deg, #63b3ed 0%, #3182ce 100%);
+}
+
+.step-agent-launch.code {
+  background: linear-gradient(135deg, #68d391 0%, #38a169 100%);
+}
+
+.step-agent-launch.image {
+  background: linear-gradient(135deg, #f687b3 0%, #d53f8c 100%);
+}
+
+.step-agent-launch.audio {
+  background: linear-gradient(135deg, #b794f4 0%, #805ad5 100%);
+}
+
+.step-agent-launch.write {
+  background: linear-gradient(135deg, #fbd38d 0%, #dd6b20 100%);
+}
+
+.step-agent-launch.analyze {
+  background: linear-gradient(135deg, #81e6d9 0%, #319795 100%);
+}
+
+.step-agent-launch.learn {
+  background: linear-gradient(135deg, #faf089 0%, #d69e2e 100%);
+}
+
+/* Agent picker */
+.step-agent-picker {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.step-agent-option {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: var(--plan-bg-subtle);
+  border: 1px solid var(--plan-border);
+  border-radius: 4px;
+  font-size: 10px;
+  color: var(--plan-text);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.step-agent-option:hover {
+  border-color: var(--plan-accent);
+  background: var(--plan-accent-soft);
+}
+
+.step-agent-option .step-agent-icon {
+  font-size: 12px;
+}
+
+/* Agent row with change button */
+.step-agent-row {
+  display: flex;
+  gap: 4px;
+}
+
+.step-agent-row .step-agent-launch {
+  flex: 1;
+}
+
+.step-agent-change {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  padding: 0;
+  background: var(--plan-bg-subtle);
+  border: 1px solid var(--plan-border);
+  border-radius: 6px;
+  color: var(--plan-text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.step-agent-change:hover {
+  border-color: var(--plan-accent);
+  color: var(--plan-accent);
+}
+
+/* Progress bar */
+.step-card-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--plan-border);
+}
+
+.step-progress-bar {
+  flex: 1;
+  height: 3px;
+  background: var(--plan-bg-subtle);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.step-progress-fill {
+  height: 100%;
+  background: var(--plan-accent);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.step-progress-text {
+  font-size: 10px;
+  color: var(--plan-text-muted);
+  min-width: 24px;
+  text-align: right;
+}

@@ -21,6 +21,8 @@ interface SidebarProps {
   sessionsOpen?: boolean;
   onToggleVectorQuery?: () => void;
   vectorQueryOpen?: boolean;
+  onTogglePlanSpace?: () => void;
+  planSpaceOpen?: boolean;
   currentFile?: string;
   currentProject?: string;
   // New props for home and recent files
@@ -192,6 +194,19 @@ const Sidebar: Component<SidebarProps> = (props) => {
                 <path d="M4 6h4M6 4v4" stroke="currentColor" stroke-width="0.8" />
               </svg>
               Vector Search
+            </button>
+            <button
+              class={`sidebar-btn planspace-btn ${props.planSpaceOpen ? "active" : ""}`}
+              onClick={props.onTogglePlanSpace}
+              title="Plan Space (Ctrl+G)"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <circle cx="4" cy="4" r="2" stroke="currentColor" stroke-width="1" fill="none" />
+                <circle cx="12" cy="4" r="2" stroke="currentColor" stroke-width="1" fill="none" />
+                <circle cx="8" cy="12" r="2" stroke="currentColor" stroke-width="1" fill="none" />
+                <path d="M5.5 5.5L7 10.5M10.5 5.5L9 10.5" stroke="currentColor" stroke-width="0.8" opacity="0.5" />
+              </svg>
+              Plan Space
             </button>
           </div>
 

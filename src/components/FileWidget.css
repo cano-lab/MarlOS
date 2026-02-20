@@ -1,0 +1,135 @@
+.file-widget {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 8px;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.file-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 8px;
+  transition: background 0.15s;
+}
+
+.file-content:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.file-image-preview {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 4px;
+}
+
+.file-image-preview img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.file-icon {
+  font-size: 48px;
+  line-height: 1;
+}
+
+.file-name {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: center;
+  word-break: break-word;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  margin-top: 8px;
+}
+
+.file-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 16px;
+  transition: background 0.15s;
+  border: 2px dashed var(--border-dim);
+}
+
+.file-empty:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--accent);
+}
+
+.file-empty-icon {
+  font-size: 32px;
+  opacity: 0.5;
+  margin-bottom: 8px;
+}
+
+.file-empty-text {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.file-actions {
+  display: flex;
+  gap: 6px;
+  border-top: 1px solid var(--border-dim);
+  padding-top: 8px;
+}
+
+.file-pick-btn {
+  flex: 1;
+  padding: 6px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.file-pick-btn:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.file-pick-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.file-clear-btn {
+  padding: 6px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s;
+  line-height: 1;
+}
+
+.file-clear-btn:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: white;
+}

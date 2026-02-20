@@ -241,6 +241,20 @@
   color: #9e4aff;
 }
 
+.action-btn.action-plan {
+  background: linear-gradient(135deg, #5b8fb920 0%, #a8c5db20 100%);
+  border-color: #5b8fb9;
+}
+
+.action-btn.action-plan:hover {
+  background: linear-gradient(135deg, #5b8fb930 0%, #a8c5db30 100%);
+  border-color: #4a7d9e;
+}
+
+.action-btn.action-plan .action-icon {
+  color: #5b8fb9;
+}
+
 .action-icon {
   font-size: 24px;
   color: var(--text-primary);

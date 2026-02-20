@@ -319,6 +319,7 @@ pub fn run() {
             commands::get_recent_files,
             commands::get_active_ai_sessions,
             commands::open_terminal,
+            commands::launch_claude_agent,
             commands::get_recent_context,
             commands::get_session_vector_analysis,
             // Vector Database Query UI commands
@@ -372,6 +373,21 @@ pub fn run() {
             commands::list_directory,
             commands::ingest_file_to_memory,
             commands::get_object_embedding,
+            // Plan Space commands
+            commands::plan_create_goal,
+            commands::plan_update_goal,
+            commands::plan_delete_goal,
+            commands::plan_list_goals,
+            commands::plan_save_canvas,
+            commands::plan_generate_milestones,
+            // Widget commands
+            commands::plan_create_widget,
+            commands::plan_list_widgets,
+            commands::plan_update_widget,
+            commands::plan_delete_widget,
+            commands::plan_save_canvas_widgets,
+            commands::open_file_path,
+            commands::pick_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
