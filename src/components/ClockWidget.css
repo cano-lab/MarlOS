@@ -1,0 +1,105 @@
+/* Clock Widget Styles */
+
+.clock-widget {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  font-size: 12px;
+  user-select: none;
+  overflow: hidden;
+}
+
+/* Digital Clock */
+.clock-digital {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  min-height: 0;
+}
+
+.clock-time {
+  font-size: 28px;
+  font-weight: 300;
+  color: var(--plan-text-primary, #1a1a2e);
+  font-family: "Courier New", monospace;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+
+.clock-time-large {
+  font-size: 32px;
+}
+
+.clock-time:not(.clock-time-large) {
+  font-size: 28px;
+}
+
+.clock-date {
+  font-size: 11px;
+  color: var(--plan-text-secondary, #6b7280);
+}
+
+/* Analog Clock */
+.clock-analog {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+}
+
+.clock-face {
+  width: 100%;
+  max-width: 140px;
+  height: auto;
+  color: var(--plan-text-primary, #1a1a2e);
+}
+
+.clock-date {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--plan-text-secondary, #6b7280);
+  text-align: center;
+}
+
+/* Settings */
+.clock-settings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  justify-content: center;
+}
+
+.clock-type-btn,
+.clock-option-btn {
+  padding: 3px 8px;
+  border: 1px solid var(--plan-border, rgba(0, 0, 0, 0.12));
+  background: transparent;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 500;
+  color: var(--plan-text-secondary, #6b7280);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.clock-type-btn:hover,
+.clock-option-btn:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.clock-type-btn.active,
+.clock-option-btn.active {
+  background: var(--plan-accent, #6366f1);
+  color: white;
+  border-color: var(--plan-accent, #6366f1);
+}

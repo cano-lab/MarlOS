@@ -98,11 +98,13 @@ interface PaperInfo {
 
 interface ResearchHubProps {
   onClose?: () => void;
+  initialTab?: ViewMode;
+  initialSearchQuery?: string;
 }
 
 const ResearchHub: Component<ResearchHubProps> = (props) => {
   // State
-  const [viewMode, setViewMode] = createSignal<ViewMode>("list");
+  const [viewMode, setViewMode] = createSignal<ViewMode>(props.initialTab || "list");
   const [sources, setSources] = createSignal<SourceView[]>([]);
   const [selectedSource, setSelectedSource] = createSignal<SourceView | null>(null);
   const [selectedSources, setSelectedSources] = createSignal<Set<string>>(new Set());
@@ -141,6 +143,7 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
   const [discoveryInput, setDiscoveryInput] = createSignal("");
   const [discoveryResult, setDiscoveryResult] = createSignal<DiscoveryResult | null>(null);
   const [isDiscovering, setIsDiscovering] = createSignal(false);
+  const [hasAutoSearched, setHasAutoSearched] = createSignal(false); // Track if initial search was done
 
   // MCP Agent state
   const [useAgent, setUseAgent] = createSignal(true); // Default to agent mode
@@ -163,6 +166,15 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
     loadSources();
     loadTotalSources();
     loadPapers();
+  });
+
+  // Auto-trigger search when initial search query is provided
+  createEffect(() => {
+    if (props.initialSearchQuery && props.initialTab === "discover" && !hasAutoSearched() && discoveryInput() === props.initialSearchQuery) {
+      setHasAutoSearched(true);
+      // Trigger search after a short delay to let the input render
+      setTimeout(() => discoverSources(), 100);
+    }
   });
 
   // Load all papers for the filter dropdown

@@ -59,6 +59,7 @@ clap = { version = "4", features = ["derive"] }
 urlencoding = "2"
 scraper = "0.22"
 open = "5"
+rfd = "0.14"
 walkdir = "2"
 
 # For embeddings (optional, add later)

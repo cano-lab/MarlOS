@@ -16,6 +16,7 @@ import Titlebar from "./components/Titlebar";
 import HomePage, { RecentFile } from "./components/HomePage";
 import LearningPanel from "./components/LearningPanel";
 import ProviderSettings from "./components/ProviderSettings";
+import PlanSpace, { AgentType, Milestone, Goal, exportGoalToMarkdown } from "./components/PlanSpace";
 import { ToastProvider, useToast } from "./components/Toast";
 import { useDocumentTimer } from "./hooks/useDocumentTimer";
 import ErrorFallback from "./components/ErrorBoundary";
@@ -37,7 +38,7 @@ interface Document {
 }
 
 type ViewMode = "editor" | "preview" | "split";
-type AppMode = "home" | "markdown" | "pdf" | "epub" | "learn" | "unstuck";
+type AppMode = "home" | "markdown" | "pdf" | "epub" | "learn" | "unstuck" | "planspace";
 
 function AppContent() {
   const { showToast } = useToast();
@@ -52,6 +53,8 @@ function AppContent() {
   const [showPrintPreview, setShowPrintPreview] = createSignal(false);
   const [showChat, setShowChat] = createSignal(false);  // Side panel chat (toggle with Ctrl+/)
   const [showResearchHub, setShowResearchHub] = createSignal(false);
+  const [researchHubInitialTab, setResearchHubInitialTab] = createSignal<string | undefined>(undefined);
+  const [researchHubSearchQuery, setResearchHubSearchQuery] = createSignal<string>("");
   const [showSessions, setShowSessions] = createSignal(false);
   const [showVectorQuery, setShowVectorQuery] = createSignal(false);
   const [selectedText, setSelectedText] = createSignal<string>("");
@@ -105,6 +108,227 @@ function AppContent() {
     setDocument(null);
     setPdfPath(null);
     setEpubPath(null);
+  };
+
+  const openPlanSpace = () => {
+    setAppMode("planspace");
+    setDocument(null);
+    setPdfPath(null);
+    setEpubPath(null);
+  };
+
+  // Handle agent launch from Plan Space
+  const handleAgentLaunch = (agentType: AgentType, context: string, milestone: Milestone, goal: Goal) => {
+    console.log(`Launching ${agentType} agent for: ${milestone.title}`);
+
+    switch (agentType) {
+      case "research":
+        // Open Research Hub with Discover tab and search query
+        const searchQuery = `${milestone.title} ${milestone.notes || ''} ${goal.title}`.trim();
+        setResearchHubSearchQuery(searchQuery);
+        setResearchHubInitialTab("discover");
+        setShowResearchHub(true);
+        showToast(`Research agent searching for: ${milestone.title}`, "info");
+        break;
+
+      case "learn":
+        // Open learning panel with context
+        setAppMode("learn");
+        // The learning panel will use the context
+        showToast(`Learning mode for: ${milestone.title}`, "info");
+        break;
+
+      case "code":
+        // Wrap in async IIFE to allow await
+        (async () => {
+        // Helper to read file contents based on type
+        const readFileForContext = async (filePath: string): Promise<string> => {
+          const ext = filePath.toLowerCase().split('.').pop() || '';
+
+          if (ext === 'pdf') {
+            try {
+              const pdfInfo = await invoke<{ text?: string }>("pdf_get_info", { path: filePath });
+              return pdfInfo.text || `[PDF: ${filePath} - text extraction not available]`;
+            } catch {
+              return `[PDF: ${filePath} - could not extract text]`;
+            }
+          } else if (ext === 'epub') {
+            try {
+              const epubInfo = await invoke<{ title: string; chapters: { title: string }[] }>("epub_get_info", { path: filePath });
+              let epubText = `# ${epubInfo.title}\n\n`;
+              for (let i = 0; i < Math.min(epubInfo.chapters.length, 10); i++) {
+                try {
+                  const chapter = await invoke<{ content: string }>("epub_get_chapter", { path: filePath, index: i });
+                  const plainText = chapter.content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+                  epubText += `## ${epubInfo.chapters[i].title}\n${plainText.slice(0, 5000)}\n\n`;
+                } catch {
+                  // Skip chapters that fail
+                }
+              }
+              return epubText;
+            } catch {
+              return `[EPUB: ${filePath} - could not extract text]`;
+            }
+          } else {
+            try {
+              const content = await readTextFile(filePath);
+              return content;
+            } catch {
+              return `[File: ${filePath} - could not read]`;
+            }
+          }
+        };
+
+        // Search database for relevant context
+        interface DbSearchResult {
+          object: {
+            id: string;
+            kind: string;
+            content: string;
+            tags: string[];
+          };
+          score: number;
+        }
+
+        const searchQuery = `${milestone.title} ${milestone.notes || ''} ${milestone.branch || ''}`.trim();
+        showToast("Searching knowledge base...", "info");
+
+        // Search for relevant objects from database
+        let dbContext = "";
+        try {
+          const searchResults = await invoke<DbSearchResult[]>("semantic_search", {
+            query: searchQuery,
+            limit: 10
+          });
+
+          if (searchResults && searchResults.length > 0) {
+            dbContext = "\n\n---\n\n# Relevant Knowledge from Database\n\n";
+            for (const result of searchResults) {
+              const obj = result.object;
+              dbContext += `## ${obj.kind}: ${obj.tags.filter(t => !t.startsWith('kind:')).join(', ') || 'Untitled'}\n`;
+              dbContext += `**Relevance:** ${Math.round(result.score * 100)}%\n\n`;
+              dbContext += obj.content + "\n\n";
+            }
+          }
+        } catch (e) {
+          console.log("Database search skipped:", e);
+        }
+
+        // Also search research sources
+        try {
+          const sourceResults = await invoke<Array<[{ title: string; summary?: string; content?: string; source_type: string }, number]>>("research_search_sources", {
+            query: searchQuery,
+            limit: 5
+          });
+
+          if (sourceResults && sourceResults.length > 0) {
+            dbContext += "\n\n## Research Sources\n\n";
+            for (const [source, score] of sourceResults) {
+              dbContext += `### ${source.title} (${source.source_type})\n`;
+              dbContext += `**Relevance:** ${Math.round(score * 100)}%\n\n`;
+              if (source.summary) {
+                dbContext += source.summary + "\n\n";
+              } else if (source.content) {
+                dbContext += source.content.slice(0, 2000) + "\n\n";
+              }
+            }
+          }
+        } catch (e) {
+          console.log("Research search skipped:", e);
+        }
+
+        // First, let user pick a working directory
+        open({
+          directory: true,
+          multiple: false,
+          title: "Select working directory for Claude Code",
+        }).then(async (selectedPath) => {
+          if (!selectedPath) {
+            navigator.clipboard.writeText(context + dbContext).then(() => {
+              showToast("Context copied to clipboard", "info");
+            });
+            return;
+          }
+
+          // Now ask if they want to attach additional files
+          const attachFiles = await open({
+            multiple: true,
+            title: "Attach additional files (optional - Cancel to skip)",
+            filters: [
+              { name: "Documents", extensions: ["md", "txt", "pdf", "epub", "json", "yaml", "yml", "toml"] },
+              { name: "Code", extensions: ["ts", "tsx", "js", "jsx", "py", "rs", "go", "java", "c", "cpp", "h", "hpp", "cs"] },
+              { name: "All Files", extensions: ["*"] }
+            ]
+          }).catch(() => null);
+
+          // Build enriched context: goal context + database results + attached files
+          let enrichedContext = context + dbContext;
+
+          if (attachFiles && Array.isArray(attachFiles) && attachFiles.length > 0) {
+            enrichedContext += "\n\n---\n\n# Additional Attached Files\n\n";
+            showToast(`Reading ${attachFiles.length} file(s)...`, "info");
+
+            for (const filePath of attachFiles) {
+              const fileName = (filePath as string).split(/[/\\]/).pop() || filePath;
+              enrichedContext += `## File: ${fileName}\n\n`;
+              enrichedContext += "```\n";
+              enrichedContext += await readFileForContext(filePath as string);
+              enrichedContext += "\n```\n\n";
+            }
+          }
+
+          // Launch Claude with the enriched context
+          invoke("launch_claude_agent", {
+            context: enrichedContext,
+            workingDir: selectedPath as string
+          })
+            .then(() => {
+              const fileCount = attachFiles && Array.isArray(attachFiles) ? attachFiles.length : 0;
+              const dbCount = dbContext ? " + knowledge base" : "";
+              showToast(
+                fileCount > 0
+                  ? `Launching Claude with ${fileCount} file(s)${dbCount}`
+                  : `Launching Claude Code${dbCount}`,
+                "info"
+              );
+            })
+            .catch((e) => {
+              console.error("Failed to launch Claude agent:", e);
+              navigator.clipboard.writeText(enrichedContext).then(() => {
+                showToast("Context copied! Run 'claude' in your terminal", "info");
+              });
+            });
+        }).catch((e) => {
+          console.error("Failed to open folder picker:", e);
+          invoke("launch_claude_agent", { context: context + dbContext })
+            .then(() => {
+              showToast(`Launching Claude Code for: ${milestone.title}`, "info");
+            })
+            .catch(() => {
+              navigator.clipboard.writeText(context + dbContext).then(() => {
+                showToast("Context copied! Run 'claude' in your terminal", "info");
+              });
+            });
+        });
+        })(); // End async IIFE
+        break;
+
+      case "write":
+      case "analyze":
+        // Open chat panel with appropriate context
+        setSelectedText(context);
+        setShowChat(true);
+        showToast(`${agentType === "write" ? "Writing" : "Analysis"} agent ready`, "info");
+        break;
+
+      case "image":
+      case "audio":
+        showToast(`${agentType} generation coming soon!`, "info");
+        break;
+
+      default:
+        console.log("Unknown agent type:", agentType);
+    }
   };
 
   const createNewDocument = async () => {
@@ -417,6 +641,14 @@ function AppContent() {
       e.preventDefault();
       setShowVectorQuery(!showVectorQuery());
     }
+    if ((e.ctrlKey || e.metaKey) && e.key === "g") {
+      e.preventDefault();
+      if (appMode() === "planspace") {
+        goHome();
+      } else {
+        openPlanSpace();
+      }
+    }
     // View mode shortcuts (only in markdown mode)
     if (appMode() === "markdown") {
       if ((e.ctrlKey || e.metaKey) && e.key === "1") {
@@ -446,6 +678,8 @@ function AppContent() {
         closePdf();
       } else if (appMode() === "epub") {
         closeEpub();
+      } else if (appMode() === "planspace") {
+        goHome();
       }
     }
   };
@@ -501,6 +735,8 @@ function AppContent() {
             sessionsOpen={showSessions()}
             onToggleVectorQuery={() => setShowVectorQuery(!showVectorQuery())}
             vectorQueryOpen={showVectorQuery()}
+            onTogglePlanSpace={openPlanSpace}
+            planSpaceOpen={appMode() === "planspace"}
             currentFile={document()?.path || pdfPath() || epubPath() || undefined}
             currentProject={document()?.path ? document()!.path!.split(/[/\\]/).slice(0, -1).join('/') : undefined}
             onGoHome={goHome}
@@ -522,6 +758,7 @@ function AppContent() {
               onToggleVectorSearch={() => setShowVectorQuery(!showVectorQuery())}
               onOpenLearn={openLearn}
               onOpenUnstuck={openUnstuck}
+              onOpenPlanSpace={openPlanSpace}
             />
           </Show>
 
@@ -549,6 +786,7 @@ function AppContent() {
                   onToggleVectorSearch={() => setShowVectorQuery(!showVectorQuery())}
                   onOpenLearn={openLearn}
                   onOpenUnstuck={openUnstuck}
+                  onOpenPlanSpace={openPlanSpace}
                 />
               }
             >
@@ -590,6 +828,11 @@ function AppContent() {
                 fullView={true}
               />
             </div>
+          </Show>
+
+          {/* Plan Space Mode */}
+          <Show when={appMode() === "planspace"}>
+            <PlanSpace onClose={goHome} onLaunchAgent={handleAgentLaunch} />
           </Show>
         </main>
 
@@ -643,7 +886,15 @@ function AppContent() {
       {/* Research Hub */}
       <Show when={showResearchHub()}>
         <ErrorBoundary fallback={(error, reset) => <ErrorFallback error={error} reset={reset} />}>
-          <ResearchHub onClose={() => setShowResearchHub(false)} />
+          <ResearchHub
+            onClose={() => {
+              setShowResearchHub(false);
+              setResearchHubInitialTab(undefined);
+              setResearchHubSearchQuery("");
+            }}
+            initialTab={researchHubInitialTab() as any}
+            initialSearchQuery={researchHubSearchQuery()}
+          />
         </ErrorBoundary>
       </Show>
 

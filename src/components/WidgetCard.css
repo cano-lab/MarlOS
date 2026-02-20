@@ -1,0 +1,206 @@
+/* Widget Card Styles - Following GoalCard.css patterns */
+
+.widget-card {
+  position: absolute;
+  background: var(--plan-card-bg, #ffffff);
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.06);
+  border: 1px solid var(--plan-card-border, rgba(0, 0, 0, 0.08));
+  cursor: grab;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.1s ease;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  user-select: none;
+}
+
+.widget-card:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.08);
+  border-color: var(--plan-accent, rgba(99, 102, 241, 0.3));
+}
+
+.widget-card.selected {
+  box-shadow: 0 0 0 2px var(--plan-accent, #6366f1),
+              0 4px 16px rgba(99, 102, 241, 0.2);
+  border-color: var(--plan-accent, #6366f1);
+}
+
+.widget-card.dragging {
+  cursor: grabbing;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15), 0 4px 10px rgba(0, 0, 0, 0.1);
+  transform: scale(1.02);
+  z-index: 1000;
+}
+
+/* Widget Card Header */
+.widget-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--plan-card-border, rgba(0, 0, 0, 0.06));
+  background: var(--plan-card-header-bg, rgba(0, 0, 0, 0.02));
+}
+
+.widget-card-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.widget-card-icon {
+  font-size: 16px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.widget-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--plan-text-primary, #1a1a2e);
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Delete Button */
+.widget-delete-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--plan-text-secondary, #6b7280);
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+.widget-delete-btn:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--plan-danger, #ef4444);
+}
+
+/* Widget Card Content */
+.widget-card-content {
+  flex: 1;
+  overflow: hidden;
+  padding: 12px;
+  min-height: 0;
+}
+
+.widget-placeholder {
+  color: var(--plan-text-secondary, #6b7280);
+  font-size: 12px;
+  text-align: center;
+  padding: 20px;
+  opacity: 0.6;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}
+
+.widget-placeholder-hint {
+  font-size: 10px;
+  color: var(--plan-text-tertiary, #9ca3af);
+  font-style: italic;
+}
+
+/* Resize Handle */
+.widget-resize-handle {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--plan-card-header-bg, rgba(0, 0, 0, 0.02));
+  border-top-left-radius: 4px;
+  color: var(--plan-text-secondary, #6b7280);
+  opacity: 0.5;
+  transition: opacity 0.15s ease;
+}
+
+.widget-resize-handle:hover {
+  opacity: 1;
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--plan-accent, #6366f1);
+}
+
+/* Widget Type-Specific Styles */
+
+/* Note Widget */
+.widget-card-note {
+  border-left: 3px solid #fbbf24;
+}
+
+.widget-card-note .widget-card-header {
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.08), transparent);
+}
+
+/* Weather Widget */
+.widget-card-weather {
+  border-left: 3px solid #60a5fa;
+}
+
+.widget-card-weather .widget-card-header {
+  background: linear-gradient(135deg, rgba(96, 165, 250, 0.08), transparent);
+}
+
+/* Calendar Widget */
+.widget-card-calendar {
+  border-left: 3px solid #a78bfa;
+}
+
+.widget-card-calendar .widget-card-header {
+  background: linear-gradient(135deg, rgba(167, 139, 250, 0.08), transparent);
+}
+
+/* Bookmark Widget */
+.widget-card-bookmark {
+  border-left: 3px solid #34d399;
+}
+
+.widget-card-bookmark .widget-card-header {
+  background: linear-gradient(135deg, rgba(52, 211, 153, 0.08), transparent);
+}
+
+/* Link Widget */
+.widget-card-link {
+  border-left: 3px solid #f472b6;
+}
+
+.widget-card-link .widget-card-header {
+  background: linear-gradient(135deg, rgba(244, 114, 182, 0.08), transparent);
+}
+
+/* Content Scrollbar Styling */
+.widget-card-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.widget-card-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.widget-card-content::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 3px;
+}
+
+.widget-card-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.2);
+}

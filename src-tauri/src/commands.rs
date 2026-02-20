@@ -5071,6 +5071,109 @@ pub async fn open_terminal(
     Ok(())
 }
 
+/// Launch Claude Code CLI with a context file for a Plan Space milestone
+#[tauri::command]
+pub async fn launch_claude_agent(
+    context: String,
+    working_dir: Option<String>,
+) -> Result<String, String> {
+    use std::process::Command;
+    use std::io::Write;
+
+    // Create a temp file with the context
+    let temp_dir = std::env::temp_dir();
+    let context_file = temp_dir.join("marlos-agent-context.md");
+
+    let mut file = std::fs::File::create(&context_file)
+        .map_err(|e| format!("Failed to create context file: {}", e))?;
+    file.write_all(context.as_bytes())
+        .map_err(|e| format!("Failed to write context: {}", e))?;
+
+    let context_path = context_file.to_string_lossy().to_string();
+
+    // Determine working directory
+    let path = working_dir.unwrap_or_else(|| {
+        std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string())
+    });
+
+    // Build the claude command - read context file and start interactive session
+    let claude_cmd = format!(
+        "echo. && echo === MarlOS Agent Context === && type \"{}\" && echo. && echo === Starting Claude Code === && echo. && claude",
+        context_path.replace("/", "\\")
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        // Try Windows Terminal first, fall back to cmd
+        let wt_exists = Command::new("where")
+            .arg("wt")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        let result = if wt_exists {
+            Command::new("wt")
+                .args(["-d", &path, "cmd", "/k", &claude_cmd])
+                .spawn()
+        } else {
+            Command::new("cmd")
+                .args(["/c", "start", "cmd", "/k", &format!("cd /d \"{}\" && {}", path, claude_cmd)])
+                .spawn()
+        };
+
+        result.map_err(|e| format!("Failed to open terminal: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            r#"tell application "Terminal"
+                activate
+                do script "cd '{}' && cat '{}' && echo '' && echo '=== Starting Claude Code ===' && claude"
+            end tell"#,
+            path, context_path
+        );
+
+        Command::new("osascript")
+            .args(["-e", &script])
+            .spawn()
+            .map_err(|e| format!("Failed to open terminal: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let terminals = ["gnome-terminal", "konsole", "xterm"];
+        let mut opened = false;
+
+        for term in terminals {
+            let result = match term {
+                "gnome-terminal" => Command::new(term)
+                    .args(["--working-directory", &path, "--", "bash", "-c", &format!("cat '{}' && echo '' && echo '=== Starting Claude Code ===' && claude; exec bash", context_path)])
+                    .spawn(),
+                "konsole" => Command::new(term)
+                    .args(["--workdir", &path, "-e", "bash", "-c", &format!("cat '{}' && echo '' && echo '=== Starting Claude Code ===' && claude; exec bash", context_path)])
+                    .spawn(),
+                _ => Command::new(term)
+                    .args(["-e", "bash", "-c", &format!("cd '{}' && cat '{}' && echo '' && echo '=== Starting Claude Code ===' && claude; exec bash", path, context_path)])
+                    .spawn(),
+            };
+
+            if result.is_ok() {
+                opened = true;
+                break;
+            }
+        }
+
+        if !opened {
+            return Err("No supported terminal emulator found".to_string());
+        }
+    }
+
+    Ok(context_path)
+}
+
 /// Estimate the character size of a session when formatted
 /// This helps with smart chunking for LLM processing
 fn estimate_session_size(session: &crate::sessions::Session) -> usize {
@@ -8093,4 +8196,679 @@ pub async fn write_file_content(
         .map_err(|e| format!("Failed to write file: {}", e))?;
 
     Ok(format!("Wrote {} bytes to {}", len, path.display()))
+}
+
+// ============================================================================
+// Plan Space Commands - Living Canvas for Goals & Ideas
+// ============================================================================
+
+/// Goal object for Plan Space
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanGoal {
+    pub suid: Option<String>,
+    pub title: String,
+    pub description: String,
+    #[serde(rename = "energyRequired")]
+    pub energy_required: String,  // "low" | "medium" | "high" | "flow"
+    #[serde(rename = "meaningScore")]
+    pub meaning_score: i32,
+    pub excitement: i32,
+    #[serde(rename = "progressType")]
+    pub progress_type: String,
+    pub progress: i32,
+    #[serde(default)]
+    pub milestones: Vec<PlanMilestone>,
+    pub position: PlanPosition,
+    pub color: Option<String>,
+    #[serde(rename = "relatedGoals")]
+    pub related_goals: Vec<String>,
+    #[serde(rename = "blockedBy")]
+    pub blocked_by: Option<Vec<String>>,
+    pub tags: Vec<String>,
+    #[serde(rename = "createdAt")]
+    pub created_at: Option<DateTime<Utc>>,
+    #[serde(rename = "lastTouched")]
+    pub last_touched: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanSubtask {
+    pub id: String,
+    pub title: String,
+    pub completed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanMilestonePosition {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanMilestone {
+    pub id: String,
+    pub title: String,
+    pub completed: bool,
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub subtasks: Vec<PlanSubtask>,
+    // Agent & complexity fields
+    #[serde(rename = "agentType")]
+    pub agent_type: Option<String>,
+    pub complexity: Option<String>,
+    pub branch: Option<String>,
+    #[serde(rename = "dependsOn")]
+    pub depends_on: Option<Vec<String>>,
+    // Position (when dragged)
+    pub position: Option<PlanMilestonePosition>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanPosition {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoalPositionUpdate {
+    pub suid: String,
+    pub x: f64,
+    pub y: f64,
+}
+
+/// Create a new goal in Plan Space
+#[tauri::command]
+pub async fn plan_create_goal(
+    goal: PlanGoal,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<String, String> {
+    // Create a unique identifier
+    let suid = Suid::new();
+    let suid_str = suid.to_string();
+
+    // Build metadata for the goal
+    let mut metadata = HashMap::new();
+    metadata.insert("type".to_string(), serde_json::Value::String("plan_goal".to_string()));
+    metadata.insert("energy_required".to_string(), serde_json::Value::String(goal.energy_required.clone()));
+    metadata.insert("meaning_score".to_string(), serde_json::Value::Number(goal.meaning_score.into()));
+    metadata.insert("excitement".to_string(), serde_json::Value::Number(goal.excitement.into()));
+    metadata.insert("progress_type".to_string(), serde_json::Value::String(goal.progress_type.clone()));
+    metadata.insert("progress".to_string(), serde_json::Value::Number(goal.progress.into()));
+    metadata.insert("position_x".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(goal.position.x).unwrap_or(serde_json::Number::from(0))));
+    metadata.insert("position_y".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(goal.position.y).unwrap_or(serde_json::Number::from(0))));
+
+    // Store milestones
+    let milestones_value = serde_json::to_value(&goal.milestones).unwrap_or(serde_json::Value::Array(vec![]));
+    metadata.insert("milestones".to_string(), milestones_value);
+
+    if let Some(color) = &goal.color {
+        metadata.insert("color".to_string(), serde_json::Value::String(color.clone()));
+    }
+    if !goal.related_goals.is_empty() {
+        metadata.insert("related_goals".to_string(), serde_json::to_value(&goal.related_goals).unwrap_or(serde_json::Value::Array(vec![])));
+    }
+    if let Some(blocked_by) = &goal.blocked_by {
+        metadata.insert("blocked_by".to_string(), serde_json::to_value(blocked_by).unwrap_or(serde_json::Value::Array(vec![])));
+    }
+
+    // Create the semantic object
+    let content = format!("{}\n\n{}", goal.title, goal.description);
+    let mut obj = SemanticObject::new(content.as_bytes().to_vec(), ContentType::Text);
+    obj.suid = suid;
+    obj.name = Some(goal.title.clone());
+    obj.summary = Some(goal.description.clone());
+    obj.metadata = metadata;
+
+    // Add tags
+    obj.tags.push("kind:plan_goal".to_string());
+    obj.tags.push("planspace".to_string());
+    for tag in &goal.tags {
+        obj.tags.push(format!("user_tag:{}", tag));
+    }
+
+    // Store the object
+    search.store(&obj).await
+        .map_err(|e| format!("Failed to create goal: {}", e))?;
+
+    log::info!("Created plan goal: {} ({})", goal.title, suid_str);
+    Ok(suid_str)
+}
+
+/// Update an existing goal
+#[tauri::command]
+pub async fn plan_update_goal(
+    suid: String,
+    updates: PlanGoal,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<(), String> {
+    let parsed_suid = Suid::parse(&suid)
+        .map_err(|e| format!("Invalid SUID: {}", e))?;
+
+    // Get existing object
+    let store = search.store.read().await;
+    let existing = store.get(&parsed_suid)
+        .map_err(|e| format!("Failed to get goal: {}", e))?
+        .ok_or_else(|| "Goal not found".to_string())?;
+    drop(store);
+
+    // Build updated metadata
+    let mut metadata = existing.metadata.clone();
+    metadata.insert("energy_required".to_string(), serde_json::Value::String(updates.energy_required.clone()));
+    metadata.insert("meaning_score".to_string(), serde_json::Value::Number(updates.meaning_score.into()));
+    metadata.insert("excitement".to_string(), serde_json::Value::Number(updates.excitement.into()));
+    metadata.insert("progress".to_string(), serde_json::Value::Number(updates.progress.into()));
+    metadata.insert("position_x".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(updates.position.x).unwrap_or(serde_json::Number::from(0))));
+    metadata.insert("position_y".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(updates.position.y).unwrap_or(serde_json::Number::from(0))));
+
+    // Store milestones
+    log::info!("plan_update_goal received {} milestones: {:?}", updates.milestones.len(), updates.milestones);
+    let milestones_value = serde_json::to_value(&updates.milestones).unwrap_or(serde_json::Value::Array(vec![]));
+    log::info!("Storing milestones value: {}", milestones_value);
+    metadata.insert("milestones".to_string(), milestones_value);
+
+    if let Some(color) = &updates.color {
+        metadata.insert("color".to_string(), serde_json::Value::String(color.clone()));
+    }
+    if !updates.related_goals.is_empty() {
+        metadata.insert("related_goals".to_string(), serde_json::to_value(&updates.related_goals).unwrap_or(serde_json::Value::Array(vec![])));
+    }
+    if let Some(blocked_by) = &updates.blocked_by {
+        metadata.insert("blocked_by".to_string(), serde_json::to_value(blocked_by).unwrap_or(serde_json::Value::Array(vec![])));
+    }
+
+    // Create updated object
+    let content = format!("{}\n\n{}", updates.title, updates.description);
+    let mut obj = SemanticObject::new(content.as_bytes().to_vec(), ContentType::Text);
+    obj.suid = parsed_suid;
+    obj.name = Some(updates.title.clone());
+    obj.summary = Some(updates.description.clone());
+    obj.metadata = metadata;
+    obj.created_at = existing.created_at;
+    obj.modified_at = Utc::now();
+
+    // Rebuild tags
+    obj.tags.push("kind:plan_goal".to_string());
+    obj.tags.push("planspace".to_string());
+    for tag in &updates.tags {
+        obj.tags.push(format!("user_tag:{}", tag));
+    }
+
+    // Update in store (use update, not store, to avoid UNIQUE constraint error)
+    search.update(&obj).await
+        .map_err(|e| format!("Failed to update goal: {}", e))?;
+
+    log::info!("Updated plan goal: {}", suid);
+    Ok(())
+}
+
+/// Delete a goal
+#[tauri::command]
+pub async fn plan_delete_goal(
+    suid: String,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<(), String> {
+    let parsed_suid = Suid::parse(&suid)
+        .map_err(|e| format!("Invalid SUID: {}", e))?;
+
+    let store = search.store.write().await;
+    store.delete(&parsed_suid)
+        .map_err(|e| format!("Failed to delete goal: {}", e))?;
+
+    log::info!("Deleted plan goal: {}", suid);
+    Ok(())
+}
+
+/// List all goals in Plan Space
+#[tauri::command]
+pub async fn plan_list_goals(
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<Vec<PlanGoal>, String> {
+    let store = search.store.read().await;
+    // Use list_by_tag to find all plan goals
+    let objects = store.list_by_tag("kind:plan_goal", 1000)
+        .map_err(|e| format!("Failed to list goals: {}", e))?;
+
+    let goals: Vec<PlanGoal> = objects
+        .into_iter()
+        .map(|obj| {
+            let metadata = &obj.metadata;
+
+            // Extract user tags
+            let tags: Vec<String> = obj.tags.iter()
+                .filter_map(|t: &String| t.strip_prefix("user_tag:").map(|s| s.to_string()))
+                .collect();
+
+            // Parse milestones from metadata
+            let milestones: Vec<PlanMilestone> = metadata.get("milestones")
+                .and_then(|v: &serde_json::Value| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+
+            // Parse related goals
+            let related_goals: Vec<String> = metadata.get("related_goals")
+                .and_then(|v: &serde_json::Value| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+
+            // Parse blocked_by
+            let blocked_by: Option<Vec<String>> = metadata.get("blocked_by")
+                .and_then(|v: &serde_json::Value| serde_json::from_value(v.clone()).ok());
+
+            PlanGoal {
+                suid: Some(obj.suid.to_string()),
+                title: obj.name.clone().unwrap_or_else(|| "Untitled".to_string()),
+                description: obj.summary.clone().unwrap_or_default(),
+                energy_required: metadata.get("energy_required")
+                    .and_then(|v: &serde_json::Value| v.as_str())
+                    .unwrap_or("medium")
+                    .to_string(),
+                meaning_score: metadata.get("meaning_score")
+                    .and_then(|v: &serde_json::Value| v.as_i64())
+                    .unwrap_or(5) as i32,
+                excitement: metadata.get("excitement")
+                    .and_then(|v: &serde_json::Value| v.as_i64())
+                    .unwrap_or(5) as i32,
+                progress_type: metadata.get("progress_type")
+                    .and_then(|v: &serde_json::Value| v.as_str())
+                    .unwrap_or("milestones")
+                    .to_string(),
+                progress: metadata.get("progress")
+                    .and_then(|v: &serde_json::Value| v.as_i64())
+                    .unwrap_or(0) as i32,
+                milestones,
+                position: PlanPosition {
+                    x: metadata.get("position_x")
+                        .and_then(|v: &serde_json::Value| v.as_f64())
+                        .unwrap_or(100.0),
+                    y: metadata.get("position_y")
+                        .and_then(|v: &serde_json::Value| v.as_f64())
+                        .unwrap_or(100.0),
+                },
+                color: metadata.get("color")
+                    .and_then(|v: &serde_json::Value| v.as_str())
+                    .map(|s: &str| s.to_string()),
+                related_goals,
+                blocked_by,
+                tags,
+                created_at: Some(obj.created_at),
+                last_touched: Some(obj.modified_at),
+            }
+        })
+        .collect();
+
+    log::debug!("Listed {} plan goals", goals.len());
+    Ok(goals)
+}
+
+/// Save canvas positions for all goals
+#[tauri::command]
+pub async fn plan_save_canvas(
+    positions: Vec<GoalPositionUpdate>,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<(), String> {
+    for pos in positions {
+        let parsed_suid = match Suid::parse(&pos.suid) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        // Get existing object
+        let store = search.store.read().await;
+        let existing = match store.get(&parsed_suid) {
+            Ok(Some(obj)) => obj,
+            _ => continue,
+        };
+        drop(store);
+
+        // Update position in metadata
+        let mut obj = existing.clone();
+        obj.metadata.insert("position_x".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(pos.x).unwrap_or(serde_json::Number::from(0))));
+        obj.metadata.insert("position_y".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(pos.y).unwrap_or(serde_json::Number::from(0))));
+        obj.modified_at = Utc::now();
+
+        // Save without regenerating embedding
+        let store = search.store.write().await;
+        store.update(&obj)
+            .map_err(|e| format!("Failed to save position: {}", e))?;
+    }
+
+    log::debug!("Saved canvas positions");
+    Ok(())
+}
+
+/// AI-generated milestone suggestions
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MilestoneSuggestion {
+    pub title: String,
+    pub description: Option<String>,
+}
+
+/// Generate milestone suggestions for a goal using AI
+#[tauri::command]
+pub async fn plan_generate_milestones(
+    goal_title: String,
+    goal_description: String,
+    energy_level: String,
+    ai_manager: State<'_, Arc<AiManager>>,
+) -> Result<Vec<MilestoneSuggestion>, String> {
+    let system_prompt = r#"You are a helpful goal-planning assistant. When given a goal, break it down into 3-7 clear, actionable milestones. Each milestone should be:
+- Specific and measurable
+- Achievable as a single focused task
+- Ordered logically (earlier steps before later ones)
+
+Respond with a JSON array of milestones. Each milestone has a "title" (required, short action phrase) and "description" (optional, brief clarification).
+
+Example response:
+[
+  {"title": "Research available options", "description": "Spend 30 mins exploring top 3 alternatives"},
+  {"title": "Create initial outline", "description": null},
+  {"title": "Draft first version"}
+]
+
+Only respond with the JSON array, no other text."#;
+
+    let prompt = format!(
+        "Break down this goal into milestones:\n\nGoal: {}\n\nDescription: {}\n\nEnergy level required: {} (consider this when sizing milestones - low energy goals should have simpler milestones)",
+        goal_title,
+        if goal_description.is_empty() { "No additional details provided" } else { &goal_description },
+        energy_level
+    );
+
+    let response = ai_manager.generate(&prompt, Some(system_prompt)).await
+        .map_err(|e| format!("AI generation failed: {}", e))?;
+
+    // Parse the response as JSON
+    let content = response.content.trim();
+
+    // Try to extract JSON array from response (handle markdown code blocks)
+    let json_str = if content.starts_with("```") {
+        content
+            .lines()
+            .skip(1)
+            .take_while(|line| !line.starts_with("```"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        content.to_string()
+    };
+
+    let milestones: Vec<MilestoneSuggestion> = serde_json::from_str(&json_str)
+        .map_err(|e| format!("Failed to parse AI response as milestones: {}. Response was: {}", e, content))?;
+
+    log::info!("Generated {} milestones for goal: {}", milestones.len(), goal_title);
+    Ok(milestones)
+}
+
+// ============================================================================
+// Widget System for Plan Space
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WidgetSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CanvasWidget {
+    pub id: String,
+    #[serde(rename = "widgetType")]
+    pub widget_type: String,
+    pub title: String,
+    pub position: PlanPosition,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<WidgetSize>,
+    #[serde(rename = "createdAt")]
+    pub created_at: Option<DateTime<Utc>>,
+    #[serde(rename = "lastTouched")]
+    pub last_touched: Option<DateTime<Utc>>,
+    // Widget-specific data stored as JSON value
+    pub data: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WidgetPositionUpdate {
+    pub id: String,
+    pub x: f64,
+    pub y: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+}
+
+/// Create a new widget in Plan Space
+#[tauri::command]
+pub async fn plan_create_widget(
+    widget: CanvasWidget,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<String, String> {
+    // Create a unique identifier if not provided
+    let suid = if widget.id.is_empty() {
+        Suid::new()
+    } else {
+        Suid::parse(&widget.id).map_err(|e| format!("Invalid widget ID: {}", e))?
+    };
+    let suid_str = suid.to_string();
+
+    // Build metadata for the widget
+    let mut metadata = HashMap::new();
+    metadata.insert("type".to_string(), serde_json::Value::String("plan_widget".to_string()));
+    metadata.insert("widget_type".to_string(), serde_json::Value::String(widget.widget_type.clone()));
+    metadata.insert("position_x".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(widget.position.x).unwrap_or(serde_json::Number::from(0))));
+    metadata.insert("position_y".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(widget.position.y).unwrap_or(serde_json::Number::from(0))));
+
+    // Store size if provided
+    if let Some(size) = &widget.size {
+        metadata.insert("width".to_string(), serde_json::Value::Number(size.width.into()));
+        metadata.insert("height".to_string(), serde_json::Value::Number(size.height.into()));
+    }
+
+    // Store widget-specific data
+    metadata.insert("widget_data".to_string(), widget.data);
+
+    // Create the semantic object
+    let content = format!("{} widget: {}", widget.widget_type, widget.title);
+    let mut obj = SemanticObject::new(content.as_bytes().to_vec(), ContentType::Text);
+    obj.suid = suid;
+    obj.name = Some(widget.title.clone());
+    obj.summary = Some(format!("{} widget", widget.widget_type));
+    obj.metadata = metadata;
+
+    // Add tags
+    obj.tags.push("kind:plan_widget".to_string());
+    obj.tags.push("planspace".to_string());
+    obj.tags.push(format!("widget_type:{}", widget.widget_type));
+
+    // Store the object
+    search.store(&obj).await
+        .map_err(|e| format!("Failed to create widget: {}", e))?;
+
+    log::info!("Created plan widget: {} ({})", widget.title, suid_str);
+    Ok(suid_str)
+}
+
+/// List all widgets in Plan Space
+#[tauri::command]
+pub async fn plan_list_widgets(
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<Vec<CanvasWidget>, String> {
+    let store = search.store.read().await;
+
+    // Use list_by_tag to find all plan widgets
+    let objects = store.list_by_tag("kind:plan_widget", 1000)
+        .map_err(|e| format!("Failed to query widgets: {}", e))?;
+
+    let mut widgets = Vec::new();
+    for obj in objects {
+        // Extract widget type from metadata or tags
+        let widget_type = obj.metadata.get("widget_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("note")
+            .to_string();
+
+        let position_x = obj.metadata.get("position_x")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+
+        let position_y = obj.metadata.get("position_y")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+
+        let size = if let (Some(width), Some(height)) = (
+            obj.metadata.get("width").and_then(|v| v.as_u64()),
+            obj.metadata.get("height").and_then(|v| v.as_u64())
+        ) {
+            Some(WidgetSize {
+                width: width as u32,
+                height: height as u32,
+            })
+        } else {
+            None
+        };
+
+        let widget_data = obj.metadata.get("widget_data")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+
+        widgets.push(CanvasWidget {
+            id: obj.suid.to_string(),
+            widget_type,
+            title: obj.name.unwrap_or_else(|| "Untitled Widget".to_string()),
+            position: PlanPosition { x: position_x, y: position_y },
+            size,
+            created_at: Some(obj.created_at),
+            last_touched: Some(obj.modified_at),
+            data: widget_data,
+        });
+    }
+
+    log::debug!("Listed {} widgets", widgets.len());
+    Ok(widgets)
+}
+
+/// Update an existing widget
+#[tauri::command]
+pub async fn plan_update_widget(
+    id: String,
+    updates: CanvasWidget,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<(), String> {
+    let parsed_suid = Suid::parse(&id).map_err(|e| format!("Invalid widget ID: {}", e))?;
+
+    // Get existing object
+    let store = search.store.read().await;
+    let existing = match store.get(&parsed_suid) {
+        Ok(Some(obj)) => obj,
+        Ok(None) => return Err("Widget not found".to_string()),
+        Err(e) => return Err(format!("Failed to get widget: {}", e)),
+    };
+    drop(store);
+
+    // Update metadata
+    let mut obj = existing.clone();
+    obj.metadata.insert("widget_type".to_string(), serde_json::Value::String(updates.widget_type.clone()));
+    obj.metadata.insert("position_x".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(updates.position.x).unwrap_or(serde_json::Number::from(0))));
+    obj.metadata.insert("position_y".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(updates.position.y).unwrap_or(serde_json::Number::from(0))));
+
+    if let Some(size) = &updates.size {
+        obj.metadata.insert("width".to_string(), serde_json::Value::Number(size.width.into()));
+        obj.metadata.insert("height".to_string(), serde_json::Value::Number(size.height.into()));
+    }
+
+    obj.metadata.insert("widget_data".to_string(), updates.data);
+
+    if !updates.title.is_empty() {
+        obj.name = Some(updates.title);
+    }
+
+    obj.modified_at = Utc::now();
+
+    // Save without regenerating embedding
+    let store = search.store.write().await;
+    store.update(&obj)
+        .map_err(|e| format!("Failed to update widget: {}", e))?;
+
+    log::info!("Updated plan widget: {}", id);
+    Ok(())
+}
+
+/// Delete a widget
+#[tauri::command]
+pub async fn plan_delete_widget(
+    id: String,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<(), String> {
+    let parsed_suid = Suid::parse(&id).map_err(|e| format!("Invalid widget ID: {}", e))?;
+
+    let store = search.store.write().await;
+    store.delete(&parsed_suid)
+        .map_err(|e| format!("Failed to delete widget: {}", e))?;
+
+    log::info!("Deleted plan widget: {}", id);
+    Ok(())
+}
+
+/// Save canvas positions for all widgets
+#[tauri::command]
+pub async fn plan_save_canvas_widgets(
+    positions: Vec<WidgetPositionUpdate>,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<(), String> {
+    for pos in positions {
+        let parsed_suid = match Suid::parse(&pos.id) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        // Get existing object
+        let store = search.store.read().await;
+        let existing = match store.get(&parsed_suid) {
+            Ok(Some(obj)) => obj,
+            _ => continue,
+        };
+        drop(store);
+
+        // Update position in metadata
+        let mut obj = existing.clone();
+        obj.metadata.insert("position_x".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(pos.x).unwrap_or(serde_json::Number::from(0))));
+        obj.metadata.insert("position_y".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(pos.y).unwrap_or(serde_json::Number::from(0))));
+
+        if let Some(width) = pos.width {
+            obj.metadata.insert("width".to_string(), serde_json::Value::Number(width.into()));
+        }
+        if let Some(height) = pos.height {
+            obj.metadata.insert("height".to_string(), serde_json::Value::Number(height.into()));
+        }
+
+        obj.modified_at = Utc::now();
+
+        // Save without regenerating embedding
+        let store = search.store.write().await;
+        store.update(&obj)
+            .map_err(|e| format!("Failed to save widget position: {}", e))?;
+    }
+
+    log::debug!("Saved canvas widget positions");
+    Ok(())
+}
+
+/// Open a file with the system's default application
+#[tauri::command]
+pub fn open_file_path(path: String) -> Result<(), String> {
+    open::that(path)
+        .map_err(|e| format!("Failed to open file: {}", e))
+}
+
+/// Open a file picker dialog and return the selected file path
+#[tauri::command]
+pub async fn pick_file() -> Result<Option<String>, String> {
+    use rfd::AsyncFileDialog;
+
+    let file: Option<rfd::FileHandle> = AsyncFileDialog::new()
+        .pick_file()
+        .await;
+
+    match file {
+        Some(f) => Ok(f.path().to_str().map(|s| s.to_string())),
+        None => Ok(None),
+    }
 }

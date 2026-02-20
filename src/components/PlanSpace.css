@@ -1,0 +1,1018 @@
+/* Plan Space - Living Canvas for Goals & Ideas
+ * Atmosphere: Pre-dawn sky - light and open
+ */
+
+/* Light theme variables for Plan Space */
+.plan-space {
+  --plan-bg: #e8eef4;
+  --plan-bg-subtle: #dce5ed;
+  --plan-card: #ffffff;
+  --plan-card-shadow: rgba(100, 120, 140, 0.08);
+  --plan-card-shadow-hover: rgba(100, 120, 140, 0.14);
+  --plan-text: #2d3748;
+  --plan-text-muted: #64748b;
+  --plan-accent: #5b8fb9;
+  --plan-accent-soft: #a8c5db;
+  --plan-highlight: #ffffff;
+  --plan-glow: rgba(255, 255, 255, 0.6);
+  --plan-border: rgba(100, 120, 140, 0.12);
+
+  /* Energy colors */
+  --energy-low: #68d391;
+  --energy-medium: #f6ad55;
+  --energy-high: #fc8181;
+  --energy-flow: #63b3ed;
+}
+
+/* Main container - fills the view */
+.plan-space {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--plan-bg);
+  overflow: hidden;
+}
+
+/* Header bar */
+.plan-space-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  background: var(--plan-highlight);
+  border-bottom: 1px solid var(--plan-border);
+  box-shadow: 0 1px 3px var(--plan-card-shadow);
+  z-index: 10;
+}
+
+.plan-space-header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.plan-space-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--plan-text);
+  margin: 0;
+}
+
+.plan-space-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Energy selector */
+.energy-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--plan-bg-subtle);
+  border-radius: 20px;
+  font-size: 13px;
+  color: var(--plan-text-muted);
+}
+
+.energy-selector-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.energy-dots {
+  display: flex;
+  gap: 3px;
+}
+
+.energy-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--plan-border);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.energy-dot.active {
+  background: var(--plan-accent);
+}
+
+.energy-dot:hover {
+  transform: scale(1.2);
+}
+
+/* Buttons */
+.plan-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: var(--plan-highlight);
+  border: 1px solid var(--plan-border);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--plan-text);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.plan-btn:hover {
+  background: var(--plan-bg-subtle);
+  border-color: var(--plan-accent-soft);
+}
+
+.plan-btn-primary {
+  background: var(--plan-accent);
+  border-color: var(--plan-accent);
+  color: white;
+}
+
+.plan-btn-primary:hover {
+  background: #4a7d9e;
+  border-color: #4a7d9e;
+}
+
+.plan-btn-secondary {
+  background: var(--plan-highlight);
+  border-color: var(--plan-accent-soft);
+  color: var(--plan-accent);
+}
+
+.plan-btn-secondary:hover {
+  background: var(--plan-accent-soft);
+  border-color: var(--plan-accent);
+}
+
+.plan-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Canvas area */
+.plan-canvas-container {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  cursor: grab;
+}
+
+.plan-canvas-container:active {
+  cursor: grabbing;
+}
+
+.plan-canvas {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  transform-origin: 0 0;
+}
+
+/* Subtle grid pattern for spatial awareness */
+.plan-canvas::before {
+  content: '';
+  position: absolute;
+  top: -100%;
+  left: -100%;
+  right: -100%;
+  bottom: -100%;
+  background-image:
+    radial-gradient(circle, var(--plan-border) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+/* Goal Card */
+.goal-card {
+  position: absolute;
+  width: 240px;
+  padding: 16px 20px;
+  background: var(--plan-card);
+  border-radius: 12px;
+  box-shadow:
+    0 2px 8px var(--plan-card-shadow),
+    0 1px 2px var(--plan-card-shadow);
+  cursor: move;
+  user-select: none;
+  transition: box-shadow 0.2s ease, transform 0.1s ease;
+}
+
+.goal-card:hover {
+  box-shadow:
+    0 4px 16px var(--plan-card-shadow-hover),
+    0 2px 4px var(--plan-card-shadow);
+}
+
+.goal-card.dragging {
+  box-shadow:
+    0 8px 24px var(--plan-card-shadow-hover),
+    0 4px 8px var(--plan-card-shadow);
+  transform: scale(1.02);
+  z-index: 100;
+  cursor: grabbing;
+}
+
+.goal-card.selected {
+  outline: 2px solid var(--plan-accent);
+  outline-offset: 2px;
+}
+
+/* Goal card header with expand button */
+.goal-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.goal-card-header .goal-card-title {
+  margin: 0;
+}
+
+.goal-card-title {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--plan-text);
+  margin: 0 0 12px 0;
+  line-height: 1.4;
+}
+
+/* Expand/collapse button */
+.goal-expand-btn {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--plan-bg-subtle);
+  border: 1px solid var(--plan-border);
+  border-radius: 6px;
+  color: var(--plan-text-muted);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.goal-expand-btn:hover {
+  background: var(--plan-accent-soft);
+  border-color: var(--plan-accent-soft);
+  color: var(--plan-accent);
+}
+
+.goal-expand-btn svg {
+  transition: transform 0.2s ease;
+}
+
+.goal-expand-btn.expanded svg {
+  transform: rotate(180deg);
+}
+
+.goal-expand-btn.expanded {
+  background: var(--plan-accent);
+  border-color: var(--plan-accent);
+  color: white;
+}
+
+/* Expanded state for goal card */
+.goal-card.expanded {
+  z-index: 10;
+  outline: 2px solid var(--plan-accent-soft);
+  outline-offset: 2px;
+}
+
+/* Steps expanded indicator */
+.goal-steps-indicator {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--plan-border);
+}
+
+.goal-steps-count {
+  font-size: 11px;
+  color: var(--plan-accent);
+  font-weight: 500;
+}
+
+.goal-card-description {
+  font-size: 13px;
+  color: var(--plan-text-muted);
+  margin: 0 0 14px 0;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Progress indicator */
+.goal-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.goal-progress-bar {
+  flex: 1;
+  height: 4px;
+  background: var(--plan-bg-subtle);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.goal-progress-fill {
+  height: 100%;
+  background: var(--plan-accent);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.goal-progress-text {
+  font-size: 12px;
+  color: var(--plan-text-muted);
+  min-width: 32px;
+  text-align: right;
+}
+
+/* Energy badge */
+.goal-energy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: lowercase;
+}
+
+.goal-energy.low {
+  background: rgba(104, 211, 145, 0.15);
+  color: #2f855a;
+}
+
+.goal-energy.medium {
+  background: rgba(246, 173, 85, 0.15);
+  color: #c05621;
+}
+
+.goal-energy.high {
+  background: rgba(252, 129, 129, 0.15);
+  color: #c53030;
+}
+
+.goal-energy.flow {
+  background: rgba(99, 179, 237, 0.15);
+  color: #2b6cb0;
+}
+
+.goal-energy-icon {
+  font-size: 12px;
+}
+
+/* Footer info */
+.goal-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--plan-border);
+}
+
+.goal-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.goal-tag {
+  padding: 2px 6px;
+  background: var(--plan-bg-subtle);
+  border-radius: 4px;
+  font-size: 10px;
+  color: var(--plan-text-muted);
+}
+
+.goal-meaning {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--plan-text-muted);
+}
+
+.goal-meaning-stars {
+  color: var(--plan-accent);
+  letter-spacing: -1px;
+}
+
+/* Empty state */
+.plan-empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  padding: 40px;
+}
+
+.plan-empty-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  opacity: 0.5;
+}
+
+.plan-empty-title {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--plan-text);
+  margin: 0 0 8px 0;
+}
+
+.plan-empty-text {
+  font-size: 14px;
+  color: var(--plan-text-muted);
+  margin: 0 0 20px 0;
+  max-width: 300px;
+}
+
+/* AI Whisper Bar */
+.plan-whisper-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  background: var(--plan-highlight);
+  border-top: 1px solid var(--plan-border);
+  font-size: 13px;
+  color: var(--plan-text-muted);
+}
+
+.plan-whisper-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: var(--plan-accent-soft);
+  border-radius: 50%;
+  color: var(--plan-accent);
+  font-size: 12px;
+}
+
+.plan-whisper-text {
+  flex: 1;
+}
+
+.plan-whisper-dismiss {
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--plan-text-muted);
+  cursor: pointer;
+}
+
+.plan-whisper-dismiss:hover {
+  background: var(--plan-bg-subtle);
+}
+
+/* Goal Editor Modal */
+.goal-editor-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(45, 55, 72, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.goal-editor {
+  width: 100%;
+  max-width: 480px;
+  background: var(--plan-card);
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(100, 120, 140, 0.2);
+  overflow: hidden;
+}
+
+.goal-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--plan-border);
+}
+
+.goal-editor-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--plan-text);
+  margin: 0;
+}
+
+.goal-editor-close {
+  padding: 6px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--plan-text-muted);
+  cursor: pointer;
+}
+
+.goal-editor-close:hover {
+  background: var(--plan-bg-subtle);
+}
+
+.goal-editor-body {
+  padding: 20px;
+}
+
+.goal-editor-field {
+  margin-bottom: 20px;
+}
+
+.goal-editor-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--plan-text-muted);
+  margin-bottom: 8px;
+}
+
+.goal-editor-input {
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--plan-bg);
+  border: 1px solid var(--plan-border);
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--plan-text);
+  transition: border-color 0.15s ease;
+}
+
+.goal-editor-input:focus {
+  outline: none;
+  border-color: var(--plan-accent);
+}
+
+.goal-editor-textarea {
+  min-height: 100px;
+  resize: vertical;
+  font-family: inherit;
+}
+
+/* Energy selector in editor */
+.goal-editor-energy {
+  display: flex;
+  gap: 8px;
+}
+
+.goal-editor-energy-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px;
+  background: var(--plan-bg);
+  border: 1px solid var(--plan-border);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--plan-text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.goal-editor-energy-btn:hover {
+  border-color: var(--plan-accent-soft);
+}
+
+.goal-editor-energy-btn.active {
+  background: var(--plan-accent);
+  border-color: var(--plan-accent);
+  color: white;
+}
+
+/* Slider for meaning/excitement */
+.goal-editor-slider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.goal-editor-slider input[type="range"] {
+  flex: 1;
+  height: 4px;
+  background: var(--plan-bg-subtle);
+  border-radius: 2px;
+  -webkit-appearance: none;
+}
+
+.goal-editor-slider input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  background: var(--plan-accent);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.goal-editor-slider-value {
+  min-width: 24px;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--plan-text);
+}
+
+/* Label row with button */
+.goal-editor-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.goal-editor-label-row .goal-editor-label {
+  margin-bottom: 0;
+}
+
+/* AI button styling */
+.plan-btn-ai {
+  background: linear-gradient(135deg, var(--plan-accent-soft) 0%, var(--plan-accent) 100%);
+  border-color: var(--plan-accent);
+  color: white;
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
+.plan-btn-ai:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.plan-btn-ai:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Loading spinner */
+.ai-loading-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Error message */
+.goal-editor-error {
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  background: rgba(197, 48, 48, 0.1);
+  border: 1px solid rgba(197, 48, 48, 0.3);
+  border-radius: 6px;
+  font-size: 12px;
+  color: #c53030;
+}
+
+.goal-editor-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--plan-border);
+}
+
+/* Milestones list in editor */
+.goal-editor-milestones {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.goal-milestone-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--plan-bg);
+  border-radius: 8px;
+}
+
+.goal-milestone-checkbox {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--plan-border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.goal-milestone-checkbox.checked {
+  background: var(--plan-accent);
+  border-color: var(--plan-accent);
+}
+
+.goal-milestone-text {
+  flex: 1;
+  font-size: 13px;
+  color: var(--plan-text);
+}
+
+.goal-milestone-text.completed {
+  text-decoration: line-through;
+  color: var(--plan-text-muted);
+}
+
+.goal-milestone-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: transparent;
+  border: 1px dashed var(--plan-border);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--plan-text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.goal-milestone-add:hover {
+  border-color: var(--plan-accent-soft);
+  color: var(--plan-accent);
+}
+
+/* Milestone wrapper for expandable subtasks */
+.goal-milestone-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* Expand button for milestones */
+.goal-milestone-expand {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--plan-text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.goal-milestone-expand:hover {
+  background: var(--plan-bg-subtle);
+  color: var(--plan-accent);
+}
+
+.goal-milestone-expand svg {
+  transition: transform 0.2s ease;
+}
+
+.goal-milestone-expand.expanded svg {
+  transform: rotate(180deg);
+}
+
+/* Subtask count badge */
+.goal-milestone-subtask-count {
+  font-size: 10px;
+  color: var(--plan-text-muted);
+  background: var(--plan-bg-subtle);
+  padding: 2px 6px;
+  border-radius: 10px;
+  margin-left: auto;
+  margin-right: 4px;
+}
+
+/* Subtasks section in editor */
+.goal-subtasks-section {
+  margin-left: 28px;
+  padding: 8px 0 8px 12px;
+  border-left: 2px solid var(--plan-border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.goal-subtask-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--plan-bg);
+  border-radius: 6px;
+}
+
+.goal-subtask-checkbox {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--plan-border);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.goal-subtask-checkbox:hover {
+  border-color: var(--plan-accent-soft);
+}
+
+.goal-subtask-checkbox.checked {
+  background: var(--plan-accent);
+  border-color: var(--plan-accent);
+}
+
+.goal-subtask-text {
+  flex: 1;
+  font-size: 12px;
+  color: var(--plan-text);
+}
+
+.goal-subtask-text.completed {
+  text-decoration: line-through;
+  color: var(--plan-text-muted);
+}
+
+/* Subtask add input */
+.goal-subtask-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: transparent;
+  border: 1px dashed var(--plan-border);
+  border-radius: 6px;
+}
+
+.goal-subtask-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  font-size: 11px;
+  color: var(--plan-text);
+  padding: 0;
+}
+
+.goal-subtask-input:focus {
+  outline: none;
+}
+
+.goal-subtask-input::placeholder {
+  color: var(--plan-text-muted);
+}
+
+/* Milestone configuration in editor */
+.milestone-config-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.milestone-config-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.milestone-config-label {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--plan-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.milestone-config-select {
+  padding: 4px 8px;
+  background: var(--plan-bg);
+  border: 1px solid var(--plan-border);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--plan-text);
+  cursor: pointer;
+}
+
+.milestone-config-select:focus {
+  outline: none;
+  border-color: var(--plan-accent);
+}
+
+.milestone-config-input {
+  padding: 4px 8px;
+  background: var(--plan-bg);
+  border: 1px solid var(--plan-border);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--plan-text);
+}
+
+.milestone-config-input:focus {
+  outline: none;
+  border-color: var(--plan-accent);
+}
+
+.milestone-config-input::placeholder {
+  color: var(--plan-text-muted);
+}
+
+.milestone-subtasks-label {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--plan-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 8px;
+  margin-bottom: 4px;
+}
+
+/* Close button */
+.plan-close-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 8px;
+  background: var(--plan-highlight);
+  border: 1px solid var(--plan-border);
+  border-radius: 8px;
+  color: var(--plan-text-muted);
+  cursor: pointer;
+  z-index: 20;
+  transition: all 0.15s ease;
+}
+
+.plan-close-btn:hover {
+  background: var(--plan-bg-subtle);
+  color: var(--plan-text);
+}
+
+.plan-close-btn svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+/* Zoom controls */
+.plan-zoom-controls {
+  position: absolute;
+  bottom: 60px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 10;
+}
+
+.plan-zoom-btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--plan-highlight);
+  border: 1px solid var(--plan-border);
+  border-radius: 8px;
+  color: var(--plan-text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.plan-zoom-btn:hover {
+  background: var(--plan-bg-subtle);
+  color: var(--plan-text);
+}
+
+.plan-zoom-level {
+  text-align: center;
+  font-size: 11px;
+  color: var(--plan-text-muted);
+  padding: 4px;
+}

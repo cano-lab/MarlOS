@@ -1,0 +1,129 @@
+/* Note Widget Styles */
+
+.note-widget {
+  width: 100%;
+  height: 100%;
+  min-height: 100px;
+  border-radius: 8px;
+  padding: 12px;
+  cursor: pointer;
+  transition: box-shadow 0.15s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.note-widget:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* Editing Mode */
+.note-widget-editing {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  cursor: default;
+}
+
+.note-widget-textarea {
+  flex: 1;
+  border: none;
+  background: transparent;
+  resize: none;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--plan-text-primary, #1a1a2e);
+  outline: none;
+  min-height: 80px;
+  width: 100%;
+}
+
+.note-widget-textarea::placeholder {
+  color: var(--plan-text-tertiary, #9ca3af);
+}
+
+/* Toolbar */
+.note-widget-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.note-widget-colors {
+  display: flex;
+  gap: 6px;
+}
+
+.note-widget-color {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  padding: 0;
+}
+
+.note-widget-color:hover {
+  transform: scale(1.1);
+}
+
+.note-widget-color.active {
+  border-color: var(--plan-text-primary, #1a1a2e);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.5);
+}
+
+.note-widget-actions {
+  display: flex;
+  align-items: center;
+}
+
+.note-widget-hint {
+  font-size: 10px;
+  color: var(--plan-text-secondary, #6b7280);
+  opacity: 0.7;
+}
+
+/* View Mode */
+.note-widget-content {
+  height: 100%;
+  overflow: auto;
+}
+
+.note-widget-text {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--plan-text-primary, #1a1a2e);
+  margin: 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.note-widget-placeholder {
+  font-size: 13px;
+  color: var(--plan-text-secondary, #6b7280);
+  margin: 0;
+  opacity: 0.6;
+  font-style: italic;
+}
+
+/* Scrollbar */
+.note-widget-content::-webkit-scrollbar {
+  width: 4px;
+}
+
+.note-widget-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.note-widget-content::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 2px;
+}
+
+.note-widget-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
+}

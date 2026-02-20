@@ -108,11 +108,67 @@ interface ChatPanelProps {
   onClose?: () => void;
   /** Whether to render in full view mode (takes up main content area) */
   fullView?: boolean;
+  /** Discovery/search state and handlers */
+  showDiscovery?: boolean;
+  onToggleDiscovery?: () => void;
 }
 
 const ChatPanel: Component<ChatPanelProps> = (props) => {
   // Mode toggle: chat or learn
   const [mode, setMode] = createSignal<ChatMode>("chat");
+
+  // Discovery/search handlers and state
+  const [showDiscovery, setShowDiscovery] = createSignal(false);
+  const [discoveryQuery, setDiscoveryQuery] = createSignal("");
+  const [discoveryResults, setDiscoveryResults] = createSignal<Array<{
+    name: string;
+    summary: string;
+    score: number;
+    source_type?: string;
+    url: string;
+    authors?: string[];
+    year?: number;
+    pdf_url?: string;
+    doi?: string;
+    venue?: string;
+    citations?: number;
+  }>>([]);
+  const [isDiscovering, setIsDiscovering] = createSignal(false);
+
+  const toggleDiscovery = () => setShowDiscovery(!showDiscovery());
+  const discoverSources = async () => {
+    const query = discoveryQuery().trim();
+    if (!query) return;
+
+    setIsDiscovering(true);
+    setDiscoveryResults(null);
+    setError(null);
+
+    try {
+      // Use web search by default
+      const results = await invoke<Array<{ name: string; summary: string; score: number }>>(
+        "semantic_search",
+        {
+          query,
+          limit: 10
+        }
+      );
+
+      setDiscoveryResults({
+        sources: results.map(r => ({
+          name: r.name,
+          summary: r.summary,
+          score: r.score,
+          url: r.url,
+          source_type: "web"
+        }))
+      });
+    } catch (e) {
+      setError(`Search failed: ${e}`);
+    } finally {
+      setIsDiscovering(false);
+    }
+  };
 
   // Chat mode state
   const [messages, setMessages] = createSignal<Message[]>([]);
