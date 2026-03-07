@@ -2,6 +2,7 @@ import { Component, createSignal, For, Show } from "solid-js";
 import MemoryBrowser from "./MemoryBrowser";
 import ProactiveSuggestions from "./ProactiveSuggestions";
 import DecisionLogger from "./DecisionLogger";
+import AISettings from "./AISettings";
 import type { RecentFile } from "./HomePage";
 import "./Sidebar.css";
 
@@ -28,7 +29,7 @@ interface SidebarProps {
   onOpenRecent?: (path: string) => void;
 }
 
-type SidebarTab = "files" | "memory";
+type SidebarTab = "files" | "memory" | "ai";
 
 const Sidebar: Component<SidebarProps> = (props) => {
   const [activeTab, setActiveTab] = createSignal<SidebarTab>("files");
@@ -78,6 +79,12 @@ const Sidebar: Component<SidebarProps> = (props) => {
           onClick={() => setActiveTab("memory")}
         >
           Memory
+        </button>
+        <button
+          class={`tab-btn ${activeTab() === "ai" ? "active" : ""}`}
+          onClick={() => setActiveTab("ai")}
+        >
+          AI
         </button>
       </div>
 
@@ -236,7 +243,9 @@ const Sidebar: Component<SidebarProps> = (props) => {
         </>
       ) : activeTab() === "memory" ? (
         <MemoryBrowser />
-      ) : null}
+      ) : (
+        <AISettings />
+      )}
 
       {/* Decision Logger Modal */}
       <DecisionLogger
