@@ -28,7 +28,6 @@ interface HomePageProps {
   onToggleVectorSearch: () => void;
   onOpenLearn?: () => void;
   onOpenUnstuck?: () => void;
-  onOpenPlanSpace?: () => void;
 }
 
 const HomePage: Component<HomePageProps> = (props) => {
@@ -272,12 +271,6 @@ const HomePage: Component<HomePageProps> = (props) => {
               <button class="action-btn action-learn" onClick={props.onOpenLearn}>
                 <span class="action-icon">{"\u{1F4DA}"}</span>
                 <span class="action-label">Learn</span>
-              </button>
-            </Show>
-            <Show when={props.onOpenPlanSpace}>
-              <button class="action-btn action-plan" onClick={props.onOpenPlanSpace}>
-                <span class="action-icon">{"\u{1F3AF}"}</span>
-                <span class="action-label">Plan Space</span>
               </button>
             </Show>
           </div>
