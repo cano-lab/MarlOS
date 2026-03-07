@@ -1,0 +1,41 @@
+.ghost-text-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.ghost-text {
+  color: var(--text-muted, #888);
+  opacity: 0.6;
+  font-style: italic;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  pointer-events: none;
+  user-select: none;
+}
+
+.ghost-text-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted-subtle, #aaa);
+  opacity: 0.5;
+  font-style: normal;
+}
+
+.ghost-text-loading {
+  color: var(--primary-color, #007acc);
+  opacity: 0.5;
+}
+
+/* Animation for ghost text appearance */
+@keyframes ghostFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 0.6;
+  }
+}
+
+.ghost-text {
+  animation: ghostFadeIn 0.2s ease-out;
+}

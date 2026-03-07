@@ -6,6 +6,7 @@ import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldGutter, indentOnInput } from "@codemirror/language";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
+import { inlineAI } from "./inline-ai-extension";
 import "./MarkdownEditor.css";
 
 interface MarkdownEditorProps {
@@ -135,6 +136,7 @@ const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         darkTheme,
         updateListener,
         EditorView.lineWrapping,
+        inlineAI(), // Add inline AI ghost text
       ],
     });
 
