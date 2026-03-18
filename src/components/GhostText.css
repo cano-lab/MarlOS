@@ -1,7 +1,83 @@
+:root {
+  --ghost-text-color: rgba(136, 136, 136, 0.5);
+  --ghost-hint-bg: rgba(86, 156, 214, 0.15);
+  --ghost-hint-color: rgba(86, 156, 214, 0.7);
+}
+
+/* Ghost text container */
+.cm-ghost-text-container {
+  display: inline-flex !important;
+  align-items: baseline;
+  gap: 4px;
+  animation: ghostFadeIn 0.15s ease-out;
+}
+
+/* The ghost text itself - subtle and italic */
+.cm-ghost-text {
+  color: var(--ghost-text-color);
+  font-style: italic;
+  opacity: 0.6;
+  white-space: pre-wrap;
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 0.1s ease;
+}
+
+/* Keyboard hint badge */
+.cm-ghost-hint {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 4px;
+  font-size: 9px;
+  font-weight: 500;
+  font-family: system-ui, -apple-system, sans-serif;
+  color: var(--ghost-hint-color);
+  background: var(--ghost-hint-bg);
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  opacity: 0.7;
+  pointer-events: none;
+  user-select: none;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+/* Content type indicators */
+.cm-ghost-text[data-type="code"] {
+  --ghost-text-color: rgba(206, 145, 120, 0.5);
+  font-style: normal;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.cm-ghost-text[data-type="academic"] {
+  --ghost-text-color: rgba(78, 201, 176, 0.5);
+}
+
+/* Animation for ghost text appearance */
+@keyframes ghostFadeIn {
+  from {
+    opacity: 0;
+    transform: translateX(-2px);
+  }
+  to {
+    opacity: 0.6;
+    transform: translateX(0);
+  }
+}
+
+/* When ghost text is about to be accepted (optional visual feedback) */
+.cm-ghost-text.accepting {
+  opacity: 0.8;
+  color: var(--text-muted, #888);
+}
+
+/* Legacy GhostText component styles (for non-CodeMirror usage) */
 .ghost-text-container {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
+  animation: ghostFadeIn 0.2s ease-out;
 }
 
 .ghost-text {
@@ -24,18 +100,4 @@
 .ghost-text-loading {
   color: var(--primary-color, #007acc);
   opacity: 0.5;
-}
-
-/* Animation for ghost text appearance */
-@keyframes ghostFadeIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 0.6;
-  }
-}
-
-.ghost-text {
-  animation: ghostFadeIn 0.2s ease-out;
 }
