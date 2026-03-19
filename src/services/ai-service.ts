@@ -4,6 +4,7 @@
  */
 
 import { aiProviderManager, type AIProvider } from './ai-config';
+import { localLLMService } from './local-llm-service';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -41,6 +42,32 @@ class AIService {
    */
   async chat(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
     const provider = aiProviderManager.getActiveProvider();
+
+    // Handle browser provider (local transformers.js)
+    if (provider.type === 'browser') {
+      const content = await localLLMService.generate(
+        request.messages.map((m) => ({
+          role: m.role,
+          content: m.content,
+        })),
+        {
+          max_new_tokens: request.maxTokens,
+          temperature: request.temperature,
+          stream: request.stream,
+        }
+      );
+
+      return {
+        content,
+        model: provider.defaultModel,
+        usage: {
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+        },
+      };
+    }
+
     const config = aiProviderManager.getConfig();
     
     const body = this.formatRequest(provider, request, config);
@@ -88,6 +115,13 @@ class AIService {
     textAfter: string,
     context?: string
   ): Promise<string | null> {
+    const provider = aiProviderManager.getActiveProvider();
+
+    // Use local LLM for browser provider
+    if (provider.type === 'browser') {
+      return localLLMService.getInlineCompletion(textBefore, textAfter, context);
+    }
+
     const prompt = `Complete the following text naturally. Only provide the completion, no explanation.
 
 Context: ${context || 'General writing'}
@@ -119,8 +153,14 @@ Continue the text:`;
    * Check if the AI service is available
    */
   async checkHealth(): Promise<boolean> {
+    const provider = aiProviderManager.getActiveProvider();
+
+    // Browser provider is always "available" if we can check WebGPU
+    if (provider.type === 'browser') {
+      return localLLMService.checkWebGPU();
+    }
+
     try {
-      const provider = aiProviderManager.getActiveProvider();
       const response = await fetch(
         aiProviderManager.getUrl('/models', provider),
         {
@@ -195,3 +235,7 @@ export function useAIHealth() {
   const [health] = createResource(() => aiService.checkHealth());
   return health;
 }
+
+// Re-export local LLM service for direct access
+export { localLLMService, useLocalLLM } from './local-llm-service';
+export type { LocalModelProgress, LocalGenerationOptions } from './local-llm-service';

@@ -1,11 +1,15 @@
-import { Component, createSignal, For, Show } from "solid-js";
-import { aiProviderManager, defaultAIConfig, type AIProvider } from "../../services/ai-config";
+import { Component, createSignal, For, Show, createEffect } from "solid-js";
+import { aiProviderManager, defaultAIConfig, type AIProvider } from "../services/ai-config";
+import { useLocalLLM } from "../services/ai-service";
 import "./AISettings.css";
 
 const AISettings: Component = () => {
   const [config, setConfig] = createSignal(aiProviderManager.getConfig());
   const [editingProvider, setEditingProvider] = createSignal<string | null>(null);
   const [testStatus, setTestStatus] = createSignal<{ provider: string; success: boolean; message: string } | null>(null);
+  
+  // Local LLM hooks for browser provider
+  const localLLM = useLocalLLM();
 
   const handleSetActive = (id: string) => {
     aiProviderManager.setActiveProvider(id);
@@ -67,66 +71,118 @@ const AISettings: Component = () => {
 
               <Show when={editingProvider() === provider.id}>
                 <div class="provider-edit">
-                  <label>
-                    Base URL:
-                    <input
-                      type="text"
-                      value={provider.baseUrl}
-                      onChange={(e) => handleUpdateProvider(provider.id, { baseUrl: e.target.value })}
-                      placeholder="http://localhost:1234/v1"
-                    />
-                  </label>
+                  {/* Browser provider specific UI */}
+                  <Show when={provider.type === 'browser'}>
+                    <div class="browser-provider-ui">
+                      <div class="webgpu-status">
+                        WebGPU Support: {localLLM.isWebGPUSupported() === null ? 'Checking...' : 
+                          localLLM.isWebGPUSupported() ? '✅ Available' : '❌ Not available (will use CPU)'}
+                      </div>
+                      
+                      <div class="model-status">
+                        Model Status: {localLLM.status().status === 'idle' ? '📦 Not loaded' :
+                          localLLM.status().status === 'loading' ? `⏳ Loading (${Math.round(localLLM.status().progress || 0)}%)` :
+                          localLLM.status().status === 'ready' ? '✅ Ready' :
+                          localLLM.status().status === 'error' ? `❌ Error: ${localLLM.status().message}` : 'Unknown'}
+                      </div>
 
-                  <Show when={provider.type === 'cloud'}>
-                    <label>
-                      API Key:
-                      <input
-                        type="password"
-                        value={provider.apiKey || ''}
-                        onChange={(e) => handleUpdateProvider(provider.id, { apiKey: e.target.value })}
-                        placeholder="sk-..."
-                      />
-                    </label>
-                  </Show>
+                      <Show when={localLLM.status().status === 'idle' || localLLM.status().status === 'error'}>
+                        <button 
+                          class="btn-primary"
+                          onClick={() => localLLM.loadModel(localLLM.isWebGPUSupported() ? 'webgpu' : 'cpu')}
+                          disabled={localLLM.status().status === 'loading'}
+                        >
+                          Load Model
+                        </button>
+                      </Show>
 
-                  <label>
-                    Default Model:
-                    <select
-                      value={provider.defaultModel}
-                      onChange={(e) => handleUpdateProvider(provider.id, { defaultModel: e.target.value })}
-                    >
-                      <For each={provider.availableModels}>
-                        {(model) => <option value={model}>{model}</option>}
-                      </For>
-                    </select>
-                  </label>
+                      <Show when={localLLM.status().status === 'ready'}>
+                        <button 
+                          class="btn-secondary"
+                          onClick={() => localLLM.unloadModel()}
+                        >
+                          Unload Model
+                        </button>
+                      </Show>
 
-                  <div class="provider-actions">
-                    <button 
-                      class="btn-secondary"
-                      onClick={() => handleTestConnection(provider)}
-                    >
-                      Test Connection
-                    </button>
-                    <button 
-                      class="btn-secondary"
-                      onClick={() => setEditingProvider(null)}
-                    >
-                      Done
-                    </button>
-                  </div>
-
-                  <Show when={testStatus()?.provider === provider.id}>
-                    <div class={`test-result ${testStatus()?.success ? 'success' : 'error'}`}>
-                      {testStatus()?.message}
+                      <Show when={localLLM.status().message}>
+                        <div class="status-message">{localLLM.status().message}</div>
+                      </Show>
                     </div>
                   </Show>
+
+                  <Show when={provider.type !== 'browser'}>
+                    <label>
+                      Base URL:
+                      <input
+                        type="text"
+                        value={provider.baseUrl}
+                        onChange={(e) => handleUpdateProvider(provider.id, { baseUrl: e.target.value })}
+                        placeholder="http://localhost:1234/v1"
+                      />
+                    </label>
+
+                    <Show when={provider.type === 'cloud'}>
+                      <label>
+                        API Key:
+                        <input
+                          type="password"
+                          value={provider.apiKey || ''}
+                          onChange={(e) => handleUpdateProvider(provider.id, { apiKey: e.target.value })}
+                          placeholder="sk-..."
+                        />
+                      </label>
+                    </Show>
+
+                    <label>
+                      Default Model:
+                      <select
+                        value={provider.defaultModel}
+                        onChange={(e) => handleUpdateProvider(provider.id, { defaultModel: e.target.value })}
+                      >
+                        <For each={provider.availableModels}>
+                          {(model) => <option value={model}>{model}</option>}
+                        </For>
+                      </select>
+                    </label>
+
+                    <div class="provider-actions">
+                      <button 
+                        class="btn-secondary"
+                        onClick={() => handleTestConnection(provider)}
+                      >
+                        Test Connection
+                      </button>
+                      <Show when={testStatus()?.provider === provider.id}>
+                        <div class={`test-result ${testStatus()?.success ? 'success' : 'error'}`}>
+                          {testStatus()?.message}
+                        </div>
+                      </Show>
+                    </div>
+                  </Show>
+
+                  <button 
+                    class="btn-secondary"
+                    onClick={() => setEditingProvider(null)}
+                  >
+                    Done
+                  </button>
                 </div>
               </Show>
 
               <Show when={editingProvider() !== provider.id}>
                 <div class="provider-info">
-                  <span class="provider-url">{provider.baseUrl}</span>
+                  <Show when={provider.type === 'browser'}>
+                    <span class="provider-url">
+                      {localLLM.status().status === 'ready' ? '✅ Model loaded' : 
+                       localLLM.status().status === 'loading' ? `⏳ Loading ${Math.round(localLLM.status().progress || 0)}%` :
+                       '📦 Click Edit to load model'}
+                    </span>
+                  </Show>
+                  <Show when={provider.type !== 'browser'}>
+                    <span class="provider-url">{provider.baseUrl}</span>
+                  </Show>
+                  
                   <button 
                     class="btn-link"
                     onClick={(e) => {

@@ -6,7 +6,7 @@
 export interface AIProvider {
   id: string;
   name: string;
-  type: 'local' | 'cloud';
+  type: 'local' | 'cloud' | 'browser';
   baseUrl: string;
   apiKey?: string;
   defaultModel: string;
@@ -28,8 +28,16 @@ export const defaultAIConfig: AIConfig = {
   activeProvider: 'local',
   providers: [
     {
+      id: 'browser',
+      name: 'Local Browser (Qwen3.5-0.8B)',
+      type: 'browser',
+      baseUrl: '', // Not used for browser provider
+      defaultModel: 'Qwen3.5-0.8B-ONNX',
+      availableModels: ['Qwen3.5-0.8B-ONNX'],
+    },
+    {
       id: 'local',
-      name: 'Local (LM Studio/Ollama)',
+      name: 'Local API (LM Studio/Ollama)',
       type: 'local',
       baseUrl: 'http://localhost:1234/v1', // LM Studio default
       defaultModel: 'local-model',
@@ -144,6 +152,25 @@ class AIProviderManager {
     const base = p.baseUrl.replace(/\/$/, '');
     const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
     return `${base}${path}`;
+  }
+
+  // Check health of a provider (for API-based providers)
+  async checkHealth(): Promise<boolean> {
+    const provider = this.getActiveProvider();
+    
+    // Browser provider doesn't use HTTP
+    if (provider.type === 'browser') {
+      return true;
+    }
+
+    try {
+      const response = await fetch(this.getUrl('/models', provider), {
+        headers: this.getHeaders(provider),
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
   }
 }
 
