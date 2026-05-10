@@ -1,0 +1,462 @@
+//! Book structure recognition.
+//!
+//! Operates on pandoc-emitted HTML (`<section class="level1">` elements
+//! with H1 headings) and produces:
+//!  - a structured book model (front matter / chapters / interludes /
+//!    back matter), and
+//!  - the same HTML enriched with `data-section-type`, `data-section-number`,
+//!    and `data-section-title` attributes on each top-level `<section>`,
+//!    so the Phase C CSS template can target them.
+//!
+//! Classification rules:
+//!  - `Chapter <num>[: title]` (or em-dash) → chapter
+//!  - `Interlude <num>[— title]` → interlude
+//!  - Anything appearing **before** the first chapter → front matter
+//!  - Anything appearing **after** the last chapter (and not an interlude)
+//!    → back matter
+//!  - Numbers may be Arabic (1, 2, 3) or Roman (I, II, III)
+//!
+//! This is not perfect but matches the manuscript's structure exactly.
+
+use std::sync::OnceLock;
+
+use regex::Regex;
+use scraper::{Html, Selector};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SectionKind {
+    FrontMatter,
+    Chapter,
+    Interlude,
+    BackMatter,
+}
+
+impl SectionKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SectionKind::FrontMatter => "front-matter",
+            SectionKind::Chapter => "chapter",
+            SectionKind::Interlude => "interlude",
+            SectionKind::BackMatter => "back-matter",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BookSection {
+    pub kind: SectionKind,
+    /// 1-based ordering across all top-level sections.
+    pub order: usize,
+    /// 1-based chapter number for Chapter sections; 1-based interlude
+    /// number for Interlude sections; None otherwise.
+    pub number: Option<u32>,
+    /// Roman numeral version of the number (used for interludes & front
+    /// matter pagination), if applicable.
+    pub roman_number: Option<String>,
+    pub title: String,
+    /// The H1 text exactly as it appears.
+    pub h1_raw: String,
+    /// Pandoc's section id, e.g. `chchapter-1-the-questions...`.
+    pub html_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BookStructure {
+    pub sections: Vec<BookSection>,
+    pub chapter_count: u32,
+    pub interlude_count: u32,
+    pub front_matter_count: u32,
+    pub back_matter_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StructuredHtml {
+    pub structure: BookStructure,
+    /// Pandoc HTML with data-section-* attributes added to each top-level
+    /// `<section>`.
+    pub enriched_html: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum StructureError {
+    #[error("regex error: {0}")]
+    Regex(#[from] regex::Error),
+    #[error("invalid HTML (no top-level sections found)")]
+    NoSections,
+}
+
+static CHAPTER_RE: OnceLock<Regex> = OnceLock::new();
+static INTERLUDE_RE: OnceLock<Regex> = OnceLock::new();
+static SECTION_OPEN_RE: OnceLock<Regex> = OnceLock::new();
+
+fn chapter_re() -> &'static Regex {
+    CHAPTER_RE.get_or_init(|| {
+        // (?s) makes `.` match newlines — H1 text may be wrapped across
+        // lines after pandoc reformats. We normalize whitespace before
+        // matching anyway, but the flag is belt-and-suspenders.
+        Regex::new(
+            r"(?six)
+            ^\s*
+            (?:chapter|ch\.?)\s+
+            (?P<num>\d+|[ivxlcdm]+)
+            \s*[:\-—–]?\s*
+            (?P<title>.*?)
+            \s*$
+        ",
+        )
+        .expect("chapter regex")
+    })
+}
+
+fn interlude_re() -> &'static Regex {
+    INTERLUDE_RE.get_or_init(|| {
+        Regex::new(
+            r"(?six)
+            ^\s*
+            interlude\s+
+            (?P<num>\d+|[ivxlcdm]+)
+            \s*[:\-—–]?\s*
+            (?P<title>.*?)
+            \s*$
+        ",
+        )
+        .expect("interlude regex")
+    })
+}
+
+/// Collapse runs of whitespace (including newlines) to a single space and
+/// trim — needed because pandoc may wrap long headings across lines.
+fn normalize_h1(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut last_was_space = true;
+    for c in s.chars() {
+        if c.is_whitespace() {
+            if !last_was_space {
+                out.push(' ');
+                last_was_space = true;
+            }
+        } else {
+            out.push(c);
+            last_was_space = false;
+        }
+    }
+    out.trim().to_string()
+}
+
+/// Match the opening `<section ...>` tag for top-level (level1) sections.
+fn section_open_re() -> &'static Regex {
+    SECTION_OPEN_RE.get_or_init(|| {
+        Regex::new(
+            r#"(?xs)
+            <section
+            \s+
+            (?P<attrs>[^>]*?id="(?P<id>[^"]+)"[^>]*?class="[^"]*\blevel1\b[^"]*"[^>]*)
+            >
+        "#,
+        )
+        .expect("section regex")
+    })
+}
+
+/// Convert a Roman numeral string to u32. Lower- or upper-case. Returns
+/// None for non-Roman input.
+fn parse_roman(s: &str) -> Option<u32> {
+    let s = s.trim().to_ascii_uppercase();
+    if s.is_empty() || s.chars().any(|c| !"IVXLCDM".contains(c)) {
+        return None;
+    }
+    let mut total: u32 = 0;
+    let mut prev: u32 = 0;
+    for c in s.chars().rev() {
+        let v = match c {
+            'I' => 1,
+            'V' => 5,
+            'X' => 10,
+            'L' => 50,
+            'C' => 100,
+            'D' => 500,
+            'M' => 1000,
+            _ => return None,
+        };
+        if v < prev {
+            total = total.checked_sub(v)?;
+        } else {
+            total = total.checked_add(v)?;
+        }
+        prev = v;
+    }
+    Some(total)
+}
+
+fn to_roman(n: u32) -> String {
+    let mut out = String::new();
+    let pairs: &[(u32, &str)] = &[
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ];
+    let mut n = n;
+    for &(v, sym) in pairs {
+        while n >= v {
+            out.push_str(sym);
+            n -= v;
+        }
+    }
+    out
+}
+
+fn parse_number(s: &str) -> Option<u32> {
+    s.trim().parse::<u32>().ok().or_else(|| parse_roman(s))
+}
+
+#[derive(Debug, Clone)]
+struct RawHeading {
+    h1_raw: String,
+    html_id: String,
+}
+
+/// Walk the pandoc HTML and extract one entry per top-level section.
+fn extract_top_level_sections(html: &str) -> Vec<RawHeading> {
+    let doc = Html::parse_fragment(html);
+    let section_sel = Selector::parse(r#"section.level1"#).expect("selector");
+    let h1_sel = Selector::parse("h1").expect("h1 selector");
+
+    let mut out = Vec::new();
+    for section in doc.select(&section_sel) {
+        let id = section.value().attr("id").unwrap_or("").to_string();
+        let h1 = section
+            .select(&h1_sel)
+            .next()
+            .map(|h| h.text().collect::<Vec<_>>().join(""))
+            .unwrap_or_default();
+        out.push(RawHeading {
+            h1_raw: h1,
+            html_id: id,
+        });
+    }
+    out
+}
+
+/// Classify and number each section. Position-aware: front matter is
+/// "before first chapter," back matter is "after last chapter."
+pub fn classify_sections(headings: &[RawHeading]) -> Vec<BookSection> {
+    let chapter_re = chapter_re();
+    let interlude_re = interlude_re();
+
+    // First pass: tentative classification.
+    #[derive(Clone)]
+    enum Tentative {
+        Chapter(u32, String),
+        Interlude(u32, String),
+        Plain(String), // any other H1 — could be front or back matter
+    }
+
+    let mut tentative: Vec<Tentative> = Vec::with_capacity(headings.len());
+    let mut first_chapter_idx: Option<usize> = None;
+    let mut last_chapter_idx: Option<usize> = None;
+
+    for (i, h) in headings.iter().enumerate() {
+        let normalized = normalize_h1(&h.h1_raw);
+        if let Some(caps) = chapter_re.captures(&normalized) {
+            let num = caps
+                .name("num")
+                .and_then(|m| parse_number(m.as_str()))
+                .unwrap_or(0);
+            let title = caps
+                .name("title")
+                .map(|m| normalize_h1(m.as_str()))
+                .unwrap_or_default();
+            tentative.push(Tentative::Chapter(num, title));
+            first_chapter_idx.get_or_insert(i);
+            last_chapter_idx = Some(i);
+        } else if let Some(caps) = interlude_re.captures(&normalized) {
+            let num = caps
+                .name("num")
+                .and_then(|m| parse_number(m.as_str()))
+                .unwrap_or(0);
+            let title = caps
+                .name("title")
+                .map(|m| normalize_h1(m.as_str()))
+                .unwrap_or_default();
+            tentative.push(Tentative::Interlude(num, title));
+        } else {
+            tentative.push(Tentative::Plain(normalized));
+        }
+    }
+
+    let mut chapter_seen = 0u32;
+    let mut interlude_seen = 0u32;
+    let mut sections = Vec::with_capacity(headings.len());
+    for (i, (raw, t)) in headings.iter().zip(tentative.into_iter()).enumerate() {
+        let order = i + 1;
+        match t {
+            Tentative::Chapter(num, title) => {
+                chapter_seen += 1;
+                let n = if num > 0 { num } else { chapter_seen };
+                sections.push(BookSection {
+                    kind: SectionKind::Chapter,
+                    order,
+                    number: Some(n),
+                    roman_number: Some(to_roman(n)),
+                    title,
+                    h1_raw: raw.h1_raw.clone(),
+                    html_id: raw.html_id.clone(),
+                });
+            }
+            Tentative::Interlude(num, title) => {
+                interlude_seen += 1;
+                let n = if num > 0 { num } else { interlude_seen };
+                sections.push(BookSection {
+                    kind: SectionKind::Interlude,
+                    order,
+                    number: Some(n),
+                    roman_number: Some(to_roman(n)),
+                    title,
+                    h1_raw: raw.h1_raw.clone(),
+                    html_id: raw.html_id.clone(),
+                });
+            }
+            Tentative::Plain(title) => {
+                let kind = match (first_chapter_idx, last_chapter_idx) {
+                    (Some(first), _) if i < first => SectionKind::FrontMatter,
+                    (_, Some(last)) if i > last => SectionKind::BackMatter,
+                    // No chapters at all → treat as front matter
+                    (None, None) => SectionKind::FrontMatter,
+                    _ => SectionKind::FrontMatter, // unreachable but safe
+                };
+                sections.push(BookSection {
+                    kind,
+                    order,
+                    number: None,
+                    roman_number: None,
+                    title,
+                    h1_raw: raw.h1_raw.clone(),
+                    html_id: raw.html_id.clone(),
+                });
+            }
+        }
+    }
+    sections
+}
+
+/// Inject `data-section-type`, `data-section-number`, and
+/// `data-section-title` attributes into every matching top-level `<section>`
+/// opening tag in the pandoc HTML. Sections are matched by their `id`.
+pub fn enrich_html(html: &str, sections: &[BookSection]) -> String {
+    let re = section_open_re();
+    let mut by_id = std::collections::HashMap::new();
+    for s in sections {
+        by_id.insert(s.html_id.clone(), s);
+    }
+    re.replace_all(html, |caps: &regex::Captures| {
+        let id = caps.name("id").map(|m| m.as_str()).unwrap_or("");
+        let attrs = caps.name("attrs").map(|m| m.as_str()).unwrap_or("");
+        match by_id.get(id) {
+            Some(section) => {
+                let mut extra = format!(
+                    r#" data-section-type="{}" data-section-order="{}""#,
+                    section.kind.as_str(),
+                    section.order
+                );
+                if let Some(n) = section.number {
+                    extra.push_str(&format!(r#" data-section-number="{}""#, n));
+                }
+                if let Some(roman) = &section.roman_number {
+                    extra.push_str(&format!(r#" data-section-roman="{}""#, roman));
+                }
+                let safe_title = section
+                    .title
+                    .replace('&', "&amp;")
+                    .replace('"', "&quot;");
+                extra.push_str(&format!(r#" data-section-title="{}""#, safe_title));
+                format!("<section {}{}>", attrs, extra)
+            }
+            None => caps[0].to_string(),
+        }
+    })
+    .into_owned()
+}
+
+pub fn analyze(html: &str) -> Result<StructuredHtml, StructureError> {
+    let headings = extract_top_level_sections(html);
+    if headings.is_empty() {
+        return Err(StructureError::NoSections);
+    }
+    let sections = classify_sections(&headings);
+    let chapter_count = sections.iter().filter(|s| s.kind == SectionKind::Chapter).count() as u32;
+    let interlude_count = sections.iter().filter(|s| s.kind == SectionKind::Interlude).count() as u32;
+    let front_matter_count = sections.iter().filter(|s| s.kind == SectionKind::FrontMatter).count() as u32;
+    let back_matter_count = sections.iter().filter(|s| s.kind == SectionKind::BackMatter).count() as u32;
+    let enriched_html = enrich_html(html, &sections);
+
+    Ok(StructuredHtml {
+        structure: BookStructure {
+            sections,
+            chapter_count,
+            interlude_count,
+            front_matter_count,
+            back_matter_count,
+        },
+        enriched_html,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roman_round_trip() {
+        for n in [1, 4, 9, 14, 40, 90, 400, 1994] {
+            assert_eq!(parse_roman(&to_roman(n)), Some(n));
+        }
+    }
+
+    #[test]
+    fn classifies_chapter_and_interlude() {
+        let html = r##"
+            <section id="ch1" class="level1"><h1>Chapter 1: The Hook</h1></section>
+            <section id="ch2" class="level1"><h1>Interlude I — The Student</h1></section>
+            <section id="ch3" class="level1"><h1>Chapter 2: The Crack</h1></section>
+        "##;
+        let s = analyze(html).expect("analyze");
+        assert_eq!(s.structure.chapter_count, 2);
+        assert_eq!(s.structure.interlude_count, 1);
+        assert_eq!(s.structure.sections[0].number, Some(1));
+        assert_eq!(s.structure.sections[1].number, Some(1));
+        assert_eq!(s.structure.sections[2].number, Some(2));
+    }
+
+    #[test]
+    fn front_matter_before_first_chapter() {
+        let html = r##"
+            <section id="fa" class="level1"><h1>Author's Note</h1></section>
+            <section id="ch1" class="level1"><h1>Chapter 1: Start</h1></section>
+            <section id="bb" class="level1"><h1>Appendix: Extras</h1></section>
+        "##;
+        let s = analyze(html).expect("analyze");
+        assert_eq!(s.structure.sections[0].kind, SectionKind::FrontMatter);
+        assert_eq!(s.structure.sections[1].kind, SectionKind::Chapter);
+        assert_eq!(s.structure.sections[2].kind, SectionKind::BackMatter);
+    }
+
+    #[test]
+    fn enriches_with_data_attributes() {
+        let html = r##"<section id="ch1" class="level1"><h1>Chapter 1: A</h1></section>"##;
+        let out = analyze(html).expect("analyze");
+        assert!(out.enriched_html.contains(r#"data-section-type="chapter""#));
+        assert!(out.enriched_html.contains(r#"data-section-number="1""#));
+    }
+}

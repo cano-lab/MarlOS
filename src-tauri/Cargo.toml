@@ -24,6 +24,16 @@ path = "src/bin/marlos.rs"
 name = "marlos-mcp"
 path = "src/bin/marlos-mcp.rs"
 
+[[bin]]
+name = "typesetter_smoke"
+path = "src/bin/typesetter_smoke.rs"
+required-features = ["tauri-app"]
+
+[[bin]]
+name = "citations_smoke"
+path = "src/bin/citations_smoke.rs"
+required-features = ["tauri-app"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [], optional = true }
 
@@ -58,6 +68,9 @@ async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
 urlencoding = "2"
 scraper = "0.22"
+toml = "0.8"
+headless_chrome = "1.0"
+anyhow = "1"
 open = "5"
 rfd = "0.14"
 walkdir = "2"

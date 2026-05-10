@@ -1,0 +1,495 @@
+.book-mode {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.book-mode-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-tertiary);
+}
+
+.book-mode-header h2 {
+  margin: 0;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.book-mode-badge {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  background: rgba(86, 156, 214, 0.12);
+  border: 1px solid rgba(86, 156, 214, 0.4);
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.book-mode-close {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.book-mode-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.book-mode-ok {
+  color: #81c784;
+  font-weight: 600;
+}
+
+.book-mode-warn {
+  color: #ffd180;
+}
+
+.book-mode-warn code {
+  font-family: var(--font-mono, monospace);
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.book-mode-meta {
+  margin-left: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.book-mode-controls {
+  display: flex;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  align-items: center;
+}
+
+.book-mode-path {
+  flex: 1;
+  padding: 6px 10px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  outline: none;
+}
+
+.book-mode-btn {
+  padding: 6px 14px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.book-mode-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.book-mode-btn-primary {
+  background: rgba(86, 156, 214, 0.18);
+  border-color: rgba(86, 156, 214, 0.6);
+  color: #cfe6ff;
+}
+
+.book-mode-error {
+  margin: 10px 16px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(244, 67, 54, 0.12);
+  border: 1px solid rgba(244, 67, 54, 0.4);
+  color: #ff8a80;
+  font-size: 13px;
+}
+
+.book-mode-stats {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.book-mode-stats strong {
+  color: var(--text-primary);
+}
+
+.book-mode-stats-fail {
+  color: #ff8a80;
+}
+
+.book-mode-stats-spacer {
+  flex: 1;
+}
+
+.book-mode-warnings {
+  margin: 8px 16px;
+  font-size: 12px;
+}
+
+.book-mode-warnings summary {
+  cursor: pointer;
+  color: #ffd180;
+  padding: 4px 0;
+}
+
+.book-mode-warnings pre {
+  margin: 4px 0 0;
+  padding: 8px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  font-size: 11px;
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.book-mode-preview {
+  flex: 1;
+  overflow: auto;
+  padding: 24px 32px;
+  background: #fafafa;
+  color: #222;
+}
+
+.book-mode-rendered {
+  max-width: 720px;
+  margin: 0 auto;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 16px;
+  line-height: 1.65;
+}
+
+.book-mode-rendered h1,
+.book-mode-rendered h2,
+.book-mode-rendered h3 {
+  font-family: Georgia, "Times New Roman", serif;
+  margin-top: 1.6em;
+}
+
+.book-mode-rendered section + section {
+  margin-top: 2em;
+}
+
+.book-mode-rendered .footnote-ref a {
+  font-size: 11px;
+  vertical-align: super;
+  text-decoration: none;
+}
+
+.book-mode-raw {
+  margin: 0 auto;
+  max-width: 1100px;
+  padding: 16px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  border-radius: 4px;
+}
+
+.book-mode-info {
+  margin: 10px 16px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(86, 156, 214, 0.12);
+  border: 1px solid rgba(86, 156, 214, 0.4);
+  color: #cfe6ff;
+  font-size: 13px;
+}
+
+.book-mode-meta-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 14px;
+  padding: 10px 16px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-tertiary);
+}
+
+.book-mode-title {
+  font-size: 15px;
+}
+
+.book-mode-subtitle {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.book-mode-trim {
+  margin-left: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.book-mode-view-toggle {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.book-mode-view-btn {
+  padding: 4px 12px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  border: none;
+  font-size: 12px;
+  cursor: pointer;
+  border-right: 1px solid var(--border);
+}
+
+.book-mode-view-btn:last-child {
+  border-right: none;
+}
+
+.book-mode-view-btn.active {
+  background: rgba(86, 156, 214, 0.25);
+  color: #cfe6ff;
+}
+
+.book-mode-btn-settings.active {
+  background: rgba(86, 156, 214, 0.18);
+  border-color: rgba(86, 156, 214, 0.6);
+  color: #cfe6ff;
+}
+
+.book-mode-main-area {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+
+.book-mode-content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Pages and Source view containers stay mounted so we preserve their
+   internal state (paginated DOM, textarea cursor) across tab switches
+   — without unmounting and paying the re-render cost every time. */
+.book-mode-view-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.book-mode-view-host.hidden {
+  display: none;
+}
+
+/* Split mode: Source on the left, Pages on the right, both visible
+   simultaneously. Each takes half the available width; saves auto-
+   trigger pagination. */
+.book-mode-content-split {
+  flex-direction: row !important;
+}
+
+.book-mode-content-split .book-mode-view-host-split-left {
+  border-right: 1px solid var(--border);
+}
+
+.book-mode-content-split .book-mode-view-host-split-left,
+.book-mode-content-split .book-mode-view-host-split-right {
+  flex: 1 1 50%;
+  min-width: 0;
+}
+
+.book-mode-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.book-mode-tree {
+  width: 280px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  padding: 10px 8px;
+  font-size: 12px;
+}
+
+.book-mode-tree-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.book-mode-chip {
+  padding: 3px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  cursor: pointer;
+  font-family: var(--font-mono, monospace);
+  text-transform: lowercase;
+}
+
+.book-mode-chip-active {
+  background: rgba(86, 156, 214, 0.25);
+  border-color: rgba(86, 156, 214, 0.7);
+  color: #cfe6ff;
+}
+
+.book-mode-chip-front-matter {
+  --kind-color: #a1887f;
+}
+.book-mode-chip-chapter {
+  --kind-color: #569cd6;
+}
+.book-mode-chip-interlude {
+  --kind-color: #ce93d8;
+}
+.book-mode-chip-back-matter {
+  --kind-color: #81c784;
+}
+
+.book-mode-tree-group {
+  margin-bottom: 14px;
+}
+
+.book-mode-tree-heading {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 4px 6px;
+  margin-bottom: 4px;
+  color: var(--kind-color, var(--text-secondary));
+  border-left: 2px solid var(--kind-color, var(--border));
+}
+
+.book-mode-tree-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 4px 8px;
+  margin: 1px 0;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  cursor: pointer;
+  border-radius: 3px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.book-mode-tree-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.book-mode-tree-num {
+  flex-shrink: 0;
+  display: inline-block;
+  min-width: 20px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-align: right;
+}
+
+.book-mode-tree-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Visual chrome for section markers in the rendered preview */
+.book-mode-rendered section[data-section-type] {
+  position: relative;
+  padding-top: 8px;
+  margin-top: 24px;
+  border-top: 1px dashed transparent;
+}
+
+.book-mode-rendered section[data-section-type]::before {
+  content: attr(data-section-type) " " attr(data-section-number);
+  position: absolute;
+  top: -10px;
+  left: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 2px 6px;
+  border-radius: 8px;
+  background: #fff;
+  color: #999;
+  border: 1px solid #ddd;
+}
+
+.book-mode-rendered section[data-section-type="chapter"]::before {
+  background: rgba(86, 156, 214, 0.15);
+  color: #1e5a8d;
+  border-color: rgba(86, 156, 214, 0.4);
+}
+
+.book-mode-rendered section[data-section-type="interlude"]::before {
+  background: rgba(206, 147, 216, 0.15);
+  color: #6a3a82;
+  border-color: rgba(206, 147, 216, 0.4);
+}
+
+.book-mode-rendered section[data-section-type="front-matter"]::before {
+  background: rgba(161, 136, 127, 0.15);
+  color: #5d4037;
+  border-color: rgba(161, 136, 127, 0.4);
+}
+
+.book-mode-rendered section[data-section-type="back-matter"]::before {
+  background: rgba(129, 199, 132, 0.15);
+  color: #2e6b32;
+  border-color: rgba(129, 199, 132, 0.4);
+}
+
+.book-mode-section-flash {
+  animation: book-mode-flash 1.2s ease-out;
+}
+
+@keyframes book-mode-flash {
+  0%   { background-color: rgba(86, 156, 214, 0.25); }
+  100% { background-color: transparent; }
+}

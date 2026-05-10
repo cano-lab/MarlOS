@@ -33,6 +33,9 @@ use crate::llm_tasks::{
 };
 use crate::mcp::{McpServer, McpContext, ContextSource, ResearchAgent};
 use crate::images::{ImageManager, ImageInfo, ToneMapOptions};
+use crate::document_versions::{VersionStore, VersionSummary, DocumentVersion, VersionDiff};
+use crate::reference_library::{Reference, ReferenceStore, dedup::DuplicateMatch};
+use crate::research_project::{ProjectStore, ProjectView, ProjectStatus};
 
 /// Response for version info
 #[derive(Serialize)]
@@ -449,6 +452,14 @@ pub fn ai_set_config(
     ai_manager.set_config(config).map_err(|e| e.to_string())
 }
 
+/// List available models from the AI provider
+#[tauri::command]
+pub async fn ai_list_models(
+    ai_manager: State<'_, Arc<AiManager>>,
+) -> Result<Vec<String>, String> {
+    ai_manager.list_models().await.map_err(|e| e.to_string())
+}
+
 /// Send a chat message and get response
 #[tauri::command]
 pub async fn ai_chat(
@@ -857,6 +868,23 @@ pub struct ObjectSearchResult {
     pub match_type: String,
 }
 
+/// Waveform similarity components for API
+#[derive(Serialize)]
+pub struct WaveformSimilarityComponents {
+    pub cross_correlation: f32,
+    pub spectral: f32,
+    pub multiscale: f32,
+}
+
+/// Waveform search result for API
+#[derive(Serialize)]
+pub struct WaveformSearchResult {
+    pub object: ObjectView,
+    pub score: f32,
+    pub waveform: WaveformSimilarityComponents,
+    pub saturation_detected: bool,
+}
+
 /// Tier change request
 #[derive(Deserialize)]
 pub struct TierChangeRequest {
@@ -1040,6 +1068,79 @@ pub async fn object_find_similar(
             object: ObjectView::from(&hit.object),
             score: hit.score,
             match_type: format!("{:?}", hit.match_type),
+        })
+        .collect())
+}
+
+/// Search objects using waveform similarity
+///
+/// Treats embeddings as signals and uses cross-correlation, spectral analysis,
+/// and multi-scale comparison to find similarities that cosine similarity misses.
+/// Particularly effective at scale where cosine similarity saturates.
+#[tauri::command]
+pub async fn object_search_waveform(
+    query: String,
+    limit: Option<usize>,
+    max_tier: Option<String>,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<Vec<WaveformSearchResult>, String> {
+    use crate::semantic_search::SearchOptions;
+
+    let tier = max_tier
+        .map(|s| match s.as_str() {
+            "Open" | "open" => SecurityTier::Open,
+            "Guarded" | "guarded" => SecurityTier::Guarded,
+            _ => SecurityTier::Sealed,
+        })
+        .unwrap_or(SecurityTier::Guarded);
+
+    let options = SearchOptions {
+        limit: limit.unwrap_or(20),
+        max_tier: tier,
+        ..Default::default()
+    };
+
+    let results = search.search_waveform(&query, options).await
+        .map_err(|e| format!("{}", e))?;
+
+    Ok(results
+        .into_iter()
+        .map(|hit| WaveformSearchResult {
+            object: ObjectView::from(&hit.object),
+            score: hit.score,
+            waveform: WaveformSimilarityComponents {
+                cross_correlation: hit.waveform.cross_correlation,
+                spectral: hit.waveform.spectral,
+                multiscale: hit.waveform.multiscale,
+            },
+            saturation_detected: hit.saturation_detected,
+        })
+        .collect())
+}
+
+/// Find objects similar to a given object using waveform similarity
+#[tauri::command]
+pub async fn object_find_similar_waveform(
+    suid: String,
+    limit: Option<usize>,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<Vec<WaveformSearchResult>, String> {
+    let suid = Suid::parse(&suid).map_err(|e| format!("Invalid SUID: {}", e))?;
+
+    let results = search.find_similar_waveform(&suid, limit.unwrap_or(10)).await
+        .map_err(|e| format!("{}", e))?;
+
+    Ok(results
+        .into_iter()
+        .map(|hit| WaveformSearchResult {
+            object: ObjectView::from(&hit.object),
+            score: hit.score,
+            waveform: WaveformSimilarityComponents {
+                cross_correlation: hit.waveform.cross_correlation,
+                spectral: hit.waveform.spectral,
+                multiscale: hit.waveform.multiscale,
+            },
+            saturation_detected: hit.saturation_detected,
         })
         .collect())
 }
@@ -3148,6 +3249,7 @@ pub async fn paper_export(
         "markdown" | "md" => ExportFormat::Markdown,
         "html" => ExportFormat::Html,
         "text" | "plain" | "txt" => ExportFormat::PlainText,
+        "latex" | "tex" => ExportFormat::LaTeX,
         _ => ExportFormat::Markdown,
     };
 
@@ -3163,6 +3265,39 @@ pub async fn paper_export(
     };
 
     PaperExporter::export(&paper, &sources, &options)
+}
+
+/// Export paper to LaTeX with companion .bib file
+#[tauri::command]
+pub async fn paper_export_latex(
+    paper_id: String,
+    preset: Option<String>,
+    search: State<'_, Arc<SemanticSearch>>,
+    ref_store: State<'_, ReferenceStore>,
+) -> Result<crate::paper_generator::latex_export::LaTeXOutput, String> {
+    let store = PaperStore::new(search.inner().clone());
+    let paper = store.get(&paper_id).await?
+        .ok_or_else(|| format!("Paper not found: {}", paper_id))?;
+
+    // Load sources for citation processing
+    let mut sources = Vec::new();
+    for source_id in &paper.source_ids {
+        if let Ok(source) = get_source_by_id(source_id, &search).await {
+            sources.push(source);
+        }
+    }
+
+    // Load references from the reference library
+    let references = ref_store.list(None, None).unwrap_or_default();
+
+    let options = match preset.as_deref() {
+        Some("ieee") => crate::paper_generator::latex_export::LaTeXExportOptions::ieee(),
+        Some("apa") => crate::paper_generator::latex_export::LaTeXExportOptions::apa(),
+        Some("thesis") => crate::paper_generator::latex_export::LaTeXExportOptions::thesis(),
+        _ => crate::paper_generator::latex_export::LaTeXExportOptions::default(),
+    };
+
+    crate::paper_generator::latex_export::export_latex(&paper, &sources, &references, &options)
 }
 
 /// Get paper sections
@@ -3189,6 +3324,296 @@ pub async fn paper_get_findings(
         .ok_or_else(|| format!("Paper not found: {}", paper_id))?;
 
     Ok(paper.findings)
+}
+
+// ============================================================================
+// Autonomous Research Agent Commands
+// ============================================================================
+
+use crate::research_agent::{AutonomousResearchAgent, Interest, Article, ArticleCluster};
+
+/// Interest view for frontend
+#[derive(Serialize)]
+pub struct InterestView {
+    pub id: String,
+    pub topic: String,
+    pub queries: Vec<String>,
+    pub sources: Vec<String>,
+    pub priority: u8,
+    pub max_articles: usize,
+    pub created_at: String,
+    pub last_sweep: Option<String>,
+    pub active: bool,
+}
+
+impl From<&Interest> for InterestView {
+    fn from(i: &Interest) -> Self {
+        Self {
+            id: i.id.clone(),
+            topic: i.topic.clone(),
+            queries: i.queries.clone(),
+            sources: i.sources.clone(),
+            priority: i.priority,
+            max_articles: i.max_articles,
+            created_at: i.created_at.to_rfc3339(),
+            last_sweep: i.last_sweep.map(|d| d.to_rfc3339()),
+            active: i.active,
+        }
+    }
+}
+
+/// Article view for frontend
+#[derive(Serialize)]
+pub struct ArticleView {
+    pub id: String,
+    pub title: String,
+    pub url: String,
+    pub findings: Vec<String>,
+    pub interest_id: String,
+    pub interest_topic: Option<String>,
+    pub relevance: f32,
+    pub discovered_at: String,
+    pub source_type: String,
+    pub suid: Option<String>,
+    pub cluster_id: Option<String>,
+    pub cluster_theme: Option<String>,
+}
+
+/// Article cluster view for frontend
+#[derive(Serialize)]
+pub struct ArticleClusterView {
+    pub id: String,
+    pub theme: String,
+    pub article_ids: Vec<String>,
+    pub article_count: usize,
+    pub cohesion: f32,
+    pub key_findings: Vec<String>,
+    pub created_at: String,
+}
+
+/// Research digest view for frontend
+#[derive(Serialize)]
+pub struct ResearchDigestView {
+    pub sweep_time: String,
+    pub interests_searched: usize,
+    pub new_articles: usize,
+    pub articles_clustered: usize,
+    pub clusters_created: usize,
+    pub summary: String,
+    pub articles_by_interest: Vec<(String, String)>, // (topic, count)
+}
+
+/// Add a research interest to track
+#[tauri::command]
+pub async fn research_add_interest(
+    topic: String,
+    queries: Vec<String>,
+    sources: Option<Vec<String>>,
+    priority: Option<u8>,
+    max_articles: Option<usize>,
+    agent: State<'_, std::sync::Arc<tokio::sync::RwLock<AutonomousResearchAgent>>>,
+) -> Result<String, String> {
+    let mut interest = Interest::new(&topic, queries);
+
+    if let Some(srcs) = sources {
+        interest = interest.with_sources(srcs);
+    }
+    if let Some(p) = priority {
+        interest = interest.with_priority(p);
+    }
+    if let Some(m) = max_articles {
+        interest.max_articles = m;
+    }
+
+    let agent_ref = agent.read().await;
+    agent_ref.add_interest(interest.clone()).await?;
+
+    Ok(interest.id)
+}
+
+/// Remove a research interest
+#[tauri::command]
+pub async fn research_remove_interest(
+    interest_id: String,
+    agent: State<'_, std::sync::Arc<tokio::sync::RwLock<AutonomousResearchAgent>>>,
+) -> Result<(), String> {
+    let agent_ref = agent.read().await;
+    agent_ref.remove_interest(&interest_id).await
+}
+
+/// List all research interests
+#[tauri::command]
+pub async fn research_list_interests(
+    agent: State<'_, std::sync::Arc<tokio::sync::RwLock<AutonomousResearchAgent>>>,
+) -> Result<Vec<InterestView>, String> {
+    let agent_ref = agent.read().await;
+    let interests = agent_ref.get_interests().await;
+    Ok(interests.iter().map(InterestView::from).collect())
+}
+
+/// Run a research sweep
+#[tauri::command]
+pub async fn research_run_sweep(
+    agent: State<'_, std::sync::Arc<tokio::sync::RwLock<AutonomousResearchAgent>>>,
+) -> Result<ResearchDigestView, String> {
+    let agent_ref = agent.read().await;
+    let digest = agent_ref.run_sweep().await?;
+
+    // Convert articles_by_interest to a simpler format
+    let articles_by_interest: Vec<(String, String)> = digest.articles_by_interest
+        .into_iter()
+        .map(|(interest_id, article_ids)| (interest_id, article_ids.len().to_string()))
+        .collect();
+
+    Ok(ResearchDigestView {
+        sweep_time: digest.sweep_time.to_rfc3339(),
+        interests_searched: digest.interests_searched,
+        new_articles: digest.new_articles,
+        articles_clustered: digest.articles_clustered,
+        clusters_created: digest.clusters_created,
+        summary: digest.summary,
+        articles_by_interest,
+    })
+}
+
+/// Discover papers based on user's reading preferences from the reference library.
+/// Mines keywords, authors, tags, and reading history to auto-generate search interests,
+/// then runs a sweep to find new relevant papers.
+#[tauri::command]
+pub async fn research_discover_from_library(
+    agent: State<'_, std::sync::Arc<tokio::sync::RwLock<AutonomousResearchAgent>>>,
+    ref_store: State<'_, ReferenceStore>,
+) -> Result<ResearchDigestView, String> {
+    let references = ref_store.list(None, None).map_err(|e| e.to_string())?;
+
+    let agent_ref = agent.read().await;
+    let digest = agent_ref.discover_from_preferences(&references).await?;
+
+    let articles_by_interest: Vec<(String, String)> = digest.articles_by_interest
+        .into_iter()
+        .map(|(interest_id, article_ids)| (interest_id, article_ids.len().to_string()))
+        .collect();
+
+    Ok(ResearchDigestView {
+        sweep_time: digest.sweep_time.to_rfc3339(),
+        interests_searched: digest.interests_searched,
+        new_articles: digest.new_articles,
+        articles_clustered: digest.articles_clustered,
+        clusters_created: digest.clusters_created,
+        summary: digest.summary,
+        articles_by_interest,
+    })
+}
+
+/// Get all article clusters
+#[tauri::command]
+pub async fn research_get_clusters(
+    agent: State<'_, std::sync::Arc<tokio::sync::RwLock<AutonomousResearchAgent>>>,
+) -> Result<Vec<ArticleClusterView>, String> {
+    let agent_ref = agent.read().await;
+    let clusters = agent_ref.get_clusters().await;
+
+    Ok(clusters.into_iter().map(|c| {
+        let article_count = c.article_ids.len();
+        ArticleClusterView {
+            id: c.id,
+            theme: c.theme,
+            article_ids: c.article_ids,
+            article_count,
+            cohesion: c.cohesion,
+            key_findings: c.key_findings,
+            created_at: c.created_at.to_rfc3339(),
+        }
+    }).collect())
+}
+
+/// Get articles in a cluster
+#[tauri::command]
+pub async fn research_get_cluster_articles(
+    cluster_id: String,
+    agent: State<'_, std::sync::Arc<tokio::sync::RwLock<AutonomousResearchAgent>>>,
+) -> Result<Vec<ArticleView>, String> {
+    let agent_ref = agent.read().await;
+    let articles = agent_ref.get_cluster_articles(&cluster_id).await;
+
+    // Get interests for topic lookup
+    let interests = agent_ref.get_interests().await;
+    let interest_topics: std::collections::HashMap<String, String> = interests
+        .into_iter()
+        .map(|i| (i.id, i.topic))
+        .collect();
+
+    Ok(articles.into_iter().map(|a| ArticleView {
+        id: a.id,
+        title: a.title,
+        url: a.url,
+        findings: a.findings,
+        interest_id: a.interest_id.clone(),
+        interest_topic: interest_topics.get(&a.interest_id).cloned(),
+        relevance: a.relevance,
+        discovered_at: a.discovered_at.to_rfc3339(),
+        source_type: a.source_type,
+        suid: a.suid.map(|s| s.to_string()),
+        cluster_id: a.cluster_id,
+        cluster_theme: None, // Would populate from cluster lookup
+    }).collect())
+}
+
+/// Get articles by interest
+#[tauri::command]
+pub async fn research_get_articles_by_interest(
+    interest_id: String,
+    agent: State<'_, std::sync::Arc<tokio::sync::RwLock<AutonomousResearchAgent>>>,
+) -> Result<Vec<ArticleView>, String> {
+    let agent_ref = agent.read().await;
+    let articles = agent_ref.get_articles_by_interest(&interest_id).await;
+
+    // Get interest for topic lookup
+    let interests = agent_ref.get_interests().await;
+    let interest_topic = interests.iter()
+        .find(|i| i.id == interest_id)
+        .map(|i| i.topic.clone());
+
+    Ok(articles.into_iter().map(|a| ArticleView {
+        id: a.id,
+        title: a.title,
+        url: a.url,
+        findings: a.findings,
+        interest_id: a.interest_id,
+        interest_topic: interest_topic.clone(),
+        relevance: a.relevance,
+        discovered_at: a.discovered_at.to_rfc3339(),
+        source_type: a.source_type,
+        suid: a.suid.map(|s| s.to_string()),
+        cluster_id: a.cluster_id,
+        cluster_theme: None,
+    }).collect())
+}
+
+/// Find similar articles using waveform similarity
+#[tauri::command]
+pub async fn research_find_similar_articles(
+    article_id: String,
+    limit: Option<usize>,
+    agent: State<'_, std::sync::Arc<tokio::sync::RwLock<AutonomousResearchAgent>>>,
+) -> Result<Vec<ArticleView>, String> {
+    let agent_ref = agent.read().await;
+    let articles = agent_ref.find_similar_articles(&article_id, limit.unwrap_or(10)).await?;
+
+    Ok(articles.into_iter().map(|a| ArticleView {
+        id: a.id,
+        title: a.title,
+        url: a.url,
+        findings: a.findings,
+        interest_id: a.interest_id,
+        interest_topic: None,
+        relevance: 0.0, // Would calculate
+        discovered_at: a.discovered_at.to_rfc3339(),
+        source_type: a.source_type,
+        suid: a.suid.map(|s| s.to_string()),
+        cluster_id: a.cluster_id,
+        cluster_theme: None,
+    }).collect())
 }
 
 // ============================================================================
@@ -8871,4 +9296,821 @@ pub async fn pick_file() -> Result<Option<String>, String> {
         Some(f) => Ok(f.path().to_str().map(|s| s.to_string())),
         None => Ok(None),
     }
+}
+
+// ========== Document Version History commands ==========
+
+#[tauri::command]
+pub fn version_save(
+    store: State<'_, VersionStore>,
+    document_path: String,
+    content: String,
+    label: Option<String>,
+) -> Result<DocumentVersion, String> {
+    store.save_version(&document_path, &content, label.as_deref())
+}
+
+#[tauri::command]
+pub fn version_list(
+    store: State<'_, VersionStore>,
+    document_path: String,
+) -> Result<Vec<VersionSummary>, String> {
+    store.list_versions(&document_path)
+}
+
+#[tauri::command]
+pub fn version_get(
+    store: State<'_, VersionStore>,
+    version_id: String,
+) -> Result<DocumentVersion, String> {
+    store.get_version(&version_id)
+}
+
+#[tauri::command]
+pub fn version_diff(
+    store: State<'_, VersionStore>,
+    old_id: String,
+    new_id: String,
+) -> Result<VersionDiff, String> {
+    store.diff_versions(&old_id, &new_id)
+}
+
+#[tauri::command]
+pub fn version_diff_current(
+    store: State<'_, VersionStore>,
+    version_id: String,
+    current_content: String,
+) -> Result<VersionDiff, String> {
+    store.diff_with_current(&version_id, &current_content)
+}
+
+#[tauri::command]
+pub fn version_label(
+    store: State<'_, VersionStore>,
+    version_id: String,
+    label: String,
+) -> Result<(), String> {
+    store.label_version(&version_id, &label)
+}
+
+// ========== Reference Library commands ==========
+
+#[tauri::command]
+pub fn ref_add(
+    store: State<'_, ReferenceStore>,
+    reference: Reference,
+) -> Result<(), String> {
+    store.add(&reference)
+}
+
+#[tauri::command]
+pub async fn ref_add_from_doi(
+    store: State<'_, ReferenceStore>,
+    doi: String,
+) -> Result<Reference, String> {
+    // Check for existing
+    if let Ok(Some(_)) = store.get_by_doi(&doi) {
+        return Err("Reference with this DOI already exists".to_string());
+    }
+    let reference = crate::reference_library::doi_lookup::resolve_doi(&doi).await?;
+    store.add(&reference)?;
+    Ok(reference)
+}
+
+#[tauri::command]
+pub async fn ref_add_from_isbn(
+    store: State<'_, ReferenceStore>,
+    isbn: String,
+) -> Result<Reference, String> {
+    let reference = crate::reference_library::doi_lookup::resolve_isbn(&isbn).await?;
+    store.add(&reference)?;
+    Ok(reference)
+}
+
+#[tauri::command]
+pub fn ref_get(
+    store: State<'_, ReferenceStore>,
+    id: String,
+) -> Result<Reference, String> {
+    store.get(&id)
+}
+
+#[tauri::command]
+pub fn ref_list(
+    store: State<'_, ReferenceStore>,
+    collection: Option<String>,
+    status: Option<String>,
+) -> Result<Vec<Reference>, String> {
+    store.list(collection.as_deref(), status.as_deref())
+}
+
+#[tauri::command]
+pub fn ref_search(
+    store: State<'_, ReferenceStore>,
+    query: String,
+) -> Result<Vec<Reference>, String> {
+    store.search(&query)
+}
+
+#[tauri::command]
+pub fn ref_update(
+    store: State<'_, ReferenceStore>,
+    reference: Reference,
+) -> Result<(), String> {
+    store.update(&reference)
+}
+
+#[tauri::command]
+pub fn ref_delete(
+    store: State<'_, ReferenceStore>,
+    id: String,
+) -> Result<(), String> {
+    store.delete(&id)
+}
+
+#[tauri::command]
+pub fn ref_set_reading_status(
+    store: State<'_, ReferenceStore>,
+    id: String,
+    status: String,
+) -> Result<(), String> {
+    store.set_reading_status(&id, &status)
+}
+
+#[tauri::command]
+pub fn ref_add_to_collection(
+    store: State<'_, ReferenceStore>,
+    id: String,
+    collection: String,
+) -> Result<(), String> {
+    store.add_to_collection(&id, &collection)
+}
+
+#[tauri::command]
+pub fn ref_list_collections(
+    store: State<'_, ReferenceStore>,
+) -> Result<Vec<String>, String> {
+    store.list_collections()
+}
+
+#[tauri::command]
+pub fn ref_import_bibtex(
+    store: State<'_, ReferenceStore>,
+    bibtex: String,
+) -> Result<Vec<Reference>, String> {
+    let references = crate::reference_library::bibtex::parse_bibtex(&bibtex)?;
+    for r in &references {
+        store.add(r)?;
+    }
+    Ok(references)
+}
+
+#[tauri::command]
+pub fn ref_export_bibtex(
+    store: State<'_, ReferenceStore>,
+    ids: Option<Vec<String>>,
+) -> Result<String, String> {
+    let references = match ids {
+        Some(ids) => {
+            let mut refs = Vec::new();
+            for id in ids {
+                refs.push(store.get(&id)?);
+            }
+            refs
+        }
+        None => store.list(None, None)?,
+    };
+    Ok(crate::reference_library::bibtex::export_bibtex(&references))
+}
+
+#[tauri::command]
+pub fn ref_check_duplicates(
+    store: State<'_, ReferenceStore>,
+    reference: Reference,
+) -> Result<Vec<DuplicateMatch>, String> {
+    let existing = store.list(None, None)?;
+    Ok(crate::reference_library::dedup::find_duplicates(&reference, &existing))
+}
+
+#[tauri::command]
+pub fn ref_attach_pdf(
+    store: State<'_, ReferenceStore>,
+    id: String,
+    pdf_path: String,
+) -> Result<(), String> {
+    let mut reference = store.get(&id)?;
+    reference.pdf_path = Some(pdf_path);
+    store.update(&reference)
+}
+
+#[tauri::command]
+pub fn ref_count(
+    store: State<'_, ReferenceStore>,
+) -> Result<usize, String> {
+    store.count()
+}
+
+// ========== CSL Citation Style commands ==========
+
+#[tauri::command]
+pub fn csl_list_styles() -> Vec<crate::reference_library::csl::CslStyle> {
+    crate::reference_library::csl::available_styles()
+}
+
+#[tauri::command]
+pub fn csl_render_bibliography(
+    store: State<'_, ReferenceStore>,
+    style_id: String,
+    cite_keys: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let style = crate::reference_library::csl::get_style(&style_id)
+        .ok_or_else(|| format!("Unknown style: {}", style_id))?;
+
+    let mut entries = Vec::new();
+    for (i, key) in cite_keys.iter().enumerate() {
+        if let Ok(Some(reference)) = store.get_by_cite_key(key) {
+            let number = if style.numbered { Some(i + 1) } else { None };
+            entries.push(crate::reference_library::csl::render_bibliography(&style, &reference, number));
+        }
+    }
+    Ok(entries)
+}
+
+#[tauri::command]
+pub fn csl_render_inline(
+    store: State<'_, ReferenceStore>,
+    style_id: String,
+    cite_key: String,
+    number: Option<usize>,
+    page: Option<String>,
+) -> Result<String, String> {
+    let style = crate::reference_library::csl::get_style(&style_id)
+        .ok_or_else(|| format!("Unknown style: {}", style_id))?;
+
+    let reference = store.get_by_cite_key(&cite_key)?
+        .ok_or_else(|| format!("Reference not found: {}", cite_key))?;
+
+    Ok(crate::reference_library::csl::render_inline(&style, &reference, number, page.as_deref()))
+}
+
+/// Generate a full bibliography from [[cite_key]] markers in content
+#[tauri::command]
+pub fn ref_generate_bibliography(
+    store: State<'_, ReferenceStore>,
+    content: String,
+    style_id: String,
+) -> Result<String, String> {
+    let style = crate::reference_library::csl::get_style(&style_id)
+        .ok_or_else(|| format!("Unknown style: {}", style_id))?;
+
+    // Extract all [[cite_key]] markers in order of appearance
+    let re = regex::Regex::new(r"\[\[([a-zA-Z][\w-]*)\]\]").unwrap();
+    let mut seen = std::collections::HashSet::new();
+    let mut ordered_keys = Vec::new();
+
+    for cap in re.captures_iter(&content) {
+        let key = cap.get(1).unwrap().as_str().to_string();
+        if seen.insert(key.clone()) {
+            ordered_keys.push(key);
+        }
+    }
+
+    if ordered_keys.is_empty() {
+        return Ok("No citations found.".to_string());
+    }
+
+    let mut bibliography = String::new();
+    bibliography.push_str("## References\n\n");
+
+    for (i, key) in ordered_keys.iter().enumerate() {
+        if let Ok(Some(reference)) = store.get_by_cite_key(key) {
+            let number = if style.numbered { Some(i + 1) } else { None };
+            let entry = crate::reference_library::csl::render_bibliography(&style, &reference, number);
+            bibliography.push_str(&format!("{}. {}\n\n", i + 1, entry));
+        }
+    }
+
+    Ok(bibliography)
+}
+
+// ============================================================================
+// Research Project Commands
+// ============================================================================
+
+/// Create a new research project
+#[tauri::command]
+pub fn project_create(
+    name: String,
+    description: String,
+    store: State<'_, ProjectStore>,
+) -> Result<ProjectView, String> {
+    let project = store.create(&name, &description)?;
+    Ok(ProjectView::from(&project))
+}
+
+/// List all projects
+#[tauri::command]
+pub fn project_list(
+    store: State<'_, ProjectStore>,
+) -> Result<Vec<ProjectView>, String> {
+    store.list()
+}
+
+/// Get a project by ID
+#[tauri::command]
+pub fn project_get(
+    project_id: String,
+    store: State<'_, ProjectStore>,
+) -> Result<crate::research_project::ResearchProject, String> {
+    store.get(&project_id)?
+        .ok_or_else(|| format!("Project not found: {}", project_id))
+}
+
+/// Delete a project
+#[tauri::command]
+pub fn project_delete(
+    project_id: String,
+    store: State<'_, ProjectStore>,
+) -> Result<(), String> {
+    store.delete(&project_id)
+}
+
+/// Update project status
+#[tauri::command]
+pub fn project_set_status(
+    project_id: String,
+    status: ProjectStatus,
+    store: State<'_, ProjectStore>,
+) -> Result<(), String> {
+    store.set_status(&project_id, status)
+}
+
+/// Add a paper to a project
+#[tauri::command]
+pub fn project_add_paper(
+    project_id: String,
+    paper_id: String,
+    store: State<'_, ProjectStore>,
+) -> Result<(), String> {
+    store.add_paper(&project_id, &paper_id)
+}
+
+/// Add a reference to a project
+#[tauri::command]
+pub fn project_add_reference(
+    project_id: String,
+    reference_id: String,
+    store: State<'_, ProjectStore>,
+) -> Result<(), String> {
+    store.add_reference(&project_id, &reference_id)
+}
+
+/// Add a document to a project
+#[tauri::command]
+pub fn project_add_document(
+    project_id: String,
+    path: String,
+    store: State<'_, ProjectStore>,
+) -> Result<(), String> {
+    store.add_document(&project_id, &path)
+}
+
+// ============================================================================
+// Paper Template Commands
+// ============================================================================
+
+/// List available paper templates
+#[tauri::command]
+pub fn template_list() -> Vec<crate::paper_generator::templates::PaperTemplate> {
+    crate::paper_generator::templates::available_templates()
+}
+
+/// Get a specific template by ID
+#[tauri::command]
+pub fn template_get(template_id: String) -> Result<crate::paper_generator::templates::PaperTemplate, String> {
+    crate::paper_generator::templates::get_template(&template_id)
+        .ok_or_else(|| format!("Template not found: {}", template_id))
+}
+
+/// Resolve cross-references in content
+#[tauri::command]
+pub fn resolve_cross_refs(content: String) -> String {
+    let (resolved, _) = crate::paper_generator::cross_ref::auto_number_content(&content);
+    resolved
+}
+
+// ============================================================================
+// Research Intelligence Commands
+// ============================================================================
+
+/// Find related references based on keywords
+#[tauri::command]
+pub fn ref_find_related(
+    keywords: Vec<String>,
+    cited_ids: Vec<String>,
+    max_results: Option<usize>,
+    store: State<'_, ReferenceStore>,
+) -> Result<Vec<crate::reference_library::suggestions::RelatedSuggestion>, String> {
+    let references = store.list(None, None)?;
+    Ok(crate::reference_library::suggestions::find_related_by_keywords(
+        &keywords,
+        &references,
+        &cited_ids,
+        max_results.unwrap_or(10),
+    ))
+}
+
+/// Extract keywords from text for research matching
+#[tauri::command]
+pub fn ref_extract_keywords(text: String) -> Vec<String> {
+    crate::reference_library::suggestions::extract_keywords(&text)
+}
+
+/// Perform gap analysis on the reference library
+#[tauri::command]
+pub fn ref_gap_analysis(
+    topic_keywords: Vec<String>,
+    store: State<'_, ReferenceStore>,
+) -> Result<crate::reference_library::gap_analysis::GapAnalysisResult, String> {
+    let references = store.list(None, None)?;
+    Ok(crate::reference_library::gap_analysis::analyze_gaps(&references, &topic_keywords))
+}
+
+// ============================================================================
+// Voice TTS (F5-TTS sidecar) commands
+// ============================================================================
+
+use crate::voice_tts::{VoiceTtsManager, VoiceTtsStatus, SynthesizeResult};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+#[tauri::command]
+pub async fn voice_tts_status(
+    manager: State<'_, Arc<VoiceTtsManager>>,
+) -> Result<VoiceTtsStatus, String> {
+    Ok(manager.status().await)
+}
+
+#[tauri::command]
+pub async fn voice_tts_set_reference(
+    audio_b64: String,
+    transcript: String,
+    manager: State<'_, Arc<VoiceTtsManager>>,
+) -> Result<(), String> {
+    let bytes = BASE64.decode(audio_b64.as_bytes()).map_err(|e| e.to_string())?;
+    manager
+        .set_reference(&bytes, transcript)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn voice_tts_clear_reference(
+    manager: State<'_, Arc<VoiceTtsManager>>,
+) -> Result<(), String> {
+    manager.clear_reference().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn voice_tts_synthesize(
+    text: String,
+    speed: Option<f32>,
+    nfe: Option<u32>,
+    manager: State<'_, Arc<VoiceTtsManager>>,
+) -> Result<SynthesizeResult, String> {
+    manager
+        .synthesize(text, speed, nfe)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn voice_tts_shutdown(
+    manager: State<'_, Arc<VoiceTtsManager>>,
+) -> Result<(), String> {
+    manager.shutdown().await;
+    Ok(())
+}
+
+// ============================================================================
+// Book typesetter (Phase A — pandoc bridge) commands
+// ============================================================================
+
+use crate::typesetter::pandoc::{
+    PandocConvertOptions, PandocConvertResult, PandocConverter, PandocProbe,
+};
+
+#[tauri::command]
+pub async fn typesetter_pandoc_probe() -> PandocProbe {
+    PandocConverter::probe().await
+}
+
+#[tauri::command]
+pub async fn typesetter_pandoc_convert_file(
+    path: String,
+    options: Option<PandocConvertOptions>,
+) -> Result<PandocConvertResult, String> {
+    let opts = options.unwrap_or_default();
+    PandocConverter::convert_file(std::path::Path::new(&path), &opts)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn typesetter_pandoc_convert_str(
+    markdown: String,
+    options: Option<PandocConvertOptions>,
+) -> Result<PandocConvertResult, String> {
+    let opts = options.unwrap_or_default();
+    PandocConverter::convert_str(&markdown, &opts)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ---- Phase B: book.toml + structured book ---------------------------------
+
+use crate::typesetter::{
+    analyze_structure, BookConfig, BookStructure, StructuredHtml,
+};
+
+#[derive(Serialize)]
+pub struct LoadedBook {
+    pub config: BookConfig,
+    pub structure: BookStructure,
+    pub enriched_html: String,
+    pub stderr_warnings: String,
+    pub pandoc_version: String,
+    /// Absolute path to the front cover image, if set in config and the
+    /// file exists. The frontend converts this via `convertFileSrc` for
+    /// use in `<img src=...>`.
+    pub front_cover_path: Option<String>,
+    pub back_cover_path: Option<String>,
+}
+
+#[tauri::command]
+pub async fn typesetter_book_load(book_path: String) -> Result<LoadedBook, String> {
+    let path = std::path::PathBuf::from(&book_path);
+    let mut config = BookConfig::load(&path).map_err(|e| e.to_string())?;
+
+    // If the user opened a .md file directly and it's not in book.toml's
+    // files array, rewrite the array to that single file. Intent: "the
+    // file I open is the manuscript", regardless of what an older
+    // book.toml says. Saves the writer from manually editing book.toml
+    // every time they bump to v9 → v10 → v11.
+    if path.is_file()
+        && path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|e| matches!(e.to_ascii_lowercase().as_str(), "md" | "markdown" | "txt"))
+            .unwrap_or(false)
+    {
+        let opened_abs = std::fs::canonicalize(&path).unwrap_or(path.clone());
+        let already_listed = config.resolved_files().iter().any(|p| {
+            std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()) == opened_abs
+        });
+        if !already_listed {
+            // Make path relative to book.toml's root_dir if possible —
+            // strips the common prefix so book.toml stays portable.
+            // Falls back to the absolute path if they're on different
+            // volumes (Windows) or otherwise don't share a prefix.
+            let root_abs = std::fs::canonicalize(&config.root_dir)
+                .unwrap_or_else(|_| config.root_dir.clone());
+            let rel_str = opened_abs
+                .strip_prefix(&root_abs)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| opened_abs.to_string_lossy().to_string());
+            config.files = vec![rel_str];
+            config.save().map_err(|e| e.to_string())?;
+        }
+    }
+
+    // Run the citation transformer over the concatenated markdown
+    // before pandoc sees it. This both replaces [CITE:] markers with
+    // numbered superscript references and appends the per-chapter
+    // # Notes back-matter section.
+    let (temp_md, citation_result) =
+        crate::typesetter::prepare_book_markdown(&config).map_err(|e| e.to_string())?;
+
+    let opts = crate::typesetter::pandoc::PandocConvertOptions::default();
+    let pandoc_result = crate::typesetter::pandoc::PandocConverter::convert_file(&temp_md, &opts)
+        .await
+        .map_err(|e| format!("pandoc failed: {}", e));
+    crate::typesetter::cleanup_temp_markdown(&temp_md);
+    let pandoc_result = pandoc_result?;
+
+    let combined_html = pandoc_result.html;
+    let pandoc_version = pandoc_result.pandoc_version;
+
+    // Surface citation warnings + pandoc stderr together so the writer
+    // sees both in the same place.
+    let mut combined_warnings = String::new();
+    if !citation_result.warnings.is_empty() {
+        combined_warnings.push_str("--- citation warnings ---\n");
+        for w in &citation_result.warnings {
+            combined_warnings.push_str(w);
+            combined_warnings.push('\n');
+        }
+    }
+    if !pandoc_result.stderr_warnings.trim().is_empty() {
+        combined_warnings.push_str("\n--- pandoc warnings ---\n");
+        combined_warnings.push_str(&pandoc_result.stderr_warnings);
+    }
+    if citation_result.note_count > 0 {
+        combined_warnings.push_str(&format!(
+            "\n--- citations: {} notes across {} chapter(s) ---\n",
+            citation_result.note_count, citation_result.chapters_with_notes,
+        ));
+    }
+
+    let StructuredHtml {
+        structure,
+        enriched_html,
+    } = analyze_structure(&combined_html).map_err(|e| e.to_string())?;
+
+    let resolve_cover = |rel: &Option<String>| -> Option<String> {
+        let r = rel.as_ref()?;
+        let p = std::path::Path::new(r);
+        let abs = if p.is_absolute() { p.to_path_buf() } else { config.root_dir.join(p) };
+        if abs.is_file() {
+            Some(abs.to_string_lossy().to_string())
+        } else {
+            None
+        }
+    };
+    let front_cover_path = resolve_cover(&config.book.cover_image);
+    let back_cover_path = resolve_cover(&config.book.back_cover_image);
+
+    Ok(LoadedBook {
+        config,
+        structure,
+        enriched_html,
+        stderr_warnings: combined_warnings,
+        pandoc_version,
+        front_cover_path,
+        back_cover_path,
+    })
+}
+
+#[tauri::command]
+pub fn typesetter_book_init(markdown_path: String) -> Result<String, String> {
+    let path = std::path::PathBuf::from(&markdown_path);
+    let written = BookConfig::init_from_markdown(&path).map_err(|e| e.to_string())?;
+    Ok(written.display().to_string())
+}
+
+#[tauri::command]
+pub fn typesetter_analyze_html(html: String) -> Result<StructuredHtml, String> {
+    analyze_structure(&html).map_err(|e| e.to_string())
+}
+
+/// Save an edited BookConfig back to disk. Resolves the target path the
+/// same way `typesetter_book_load` does (the user passes the original
+/// path they used to load — file or directory). The frontend BookConfig
+/// payload omits the path fields (`#[serde(skip)]`), so we re-resolve.
+#[tauri::command]
+pub fn typesetter_book_save(book_path: String, config: BookConfig) -> Result<String, String> {
+    let toml_path =
+        BookConfig::locate(std::path::Path::new(&book_path)).map_err(|e| e.to_string())?;
+    let mut to_write = config;
+    to_write.config_path = toml_path.clone();
+    to_write.root_dir = toml_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    to_write.save().map_err(|e| e.to_string())?;
+    Ok(toml_path.display().to_string())
+}
+
+/// Read the contents of a manuscript file by index in book.toml's
+/// files array. Used by Book Mode's Source view for in-place editing.
+#[tauri::command]
+pub fn typesetter_read_book_file(book_path: String, file_index: usize) -> Result<String, String> {
+    let config = BookConfig::load(std::path::Path::new(&book_path)).map_err(|e| e.to_string())?;
+    let paths = config.resolved_files();
+    let target = paths
+        .get(file_index)
+        .ok_or_else(|| format!("file index {} out of range (have {})", file_index, paths.len()))?;
+    std::fs::read_to_string(target).map_err(|e| e.to_string())
+}
+
+/// Write to a manuscript file by index. Used by Book Mode's Source
+/// view's auto-save. Caller is expected to follow up with
+/// typesetter_book_load to refresh structure + paginated preview.
+#[tauri::command]
+pub fn typesetter_write_book_file(
+    book_path: String,
+    file_index: usize,
+    content: String,
+) -> Result<(), String> {
+    let config = BookConfig::load(std::path::Path::new(&book_path)).map_err(|e| e.to_string())?;
+    let paths = config.resolved_files();
+    let target = paths
+        .get(file_index)
+        .ok_or_else(|| format!("file index {} out of range (have {})", file_index, paths.len()))?;
+    std::fs::write(target, content).map_err(|e| e.to_string())
+}
+
+/// Render the loaded book to an EPUB3 via pandoc.
+#[tauri::command]
+pub async fn typesetter_export_epub(
+    book_path: String,
+    output_path: String,
+) -> Result<String, String> {
+    use crate::typesetter::{export_epub, BookConfig};
+    use std::path::Path;
+
+    let config = BookConfig::load(Path::new(&book_path)).map_err(|e| e.to_string())?;
+    let output = std::path::PathBuf::from(&output_path);
+    export_epub(&config, &output)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(output.display().to_string())
+}
+
+/// Render the loaded book to a PDF via headless Chromium. Uses the
+/// "export-grade" CSS (Phase D in full) which Chromium's native print
+/// engine handles correctly, including string-set/string() running
+/// headers, named-page roman/arabic page numbering, drop caps, and
+/// forced-recto chapter starts — features Paged.js v0.4 chokes on but
+/// Chromium native does not.
+#[tauri::command]
+pub async fn typesetter_export_pdf(
+    book_path: String,
+    output_path: String,
+) -> Result<String, String> {
+    use crate::typesetter::{
+        build_export_html, html_to_pdf, paper_size_from_trim, BookConfig,
+        PandocConverter,
+    };
+    use crate::typesetter::pandoc::PandocConvertOptions;
+    use std::path::Path;
+
+    let config = BookConfig::load(Path::new(&book_path)).map_err(|e| e.to_string())?;
+
+    // Run the citation transform first, then a single pandoc pass over
+    // the combined+transformed markdown. Same path the on-screen
+    // preview uses, so the PDF and Pages preview always agree.
+    let (temp_md, _citation_result) =
+        crate::typesetter::prepare_book_markdown(&config).map_err(|e| e.to_string())?;
+
+    // PDF-specific post-process: strip the <a> link wrapper from each
+    // superscript reference. Print pages can't be clicked, and
+    // Chromium's link annotations have been observed to change how
+    // the underlying digit glyphs are embedded — KDP then flags those
+    // specific digits as not printable while leaving non-link digits
+    // alone. The EPUB pipeline keeps the links intact for tap-back
+    // navigation in e-readers.
+    {
+        let original = std::fs::read_to_string(&temp_md).map_err(|e| e.to_string())?;
+        let re = regex::Regex::new(
+            r##"<sup class="note-ref"([^>]*)><a href="#[^"]*">(\d+)</a></sup>"##,
+        )
+        .map_err(|e| e.to_string())?;
+        let stripped = re.replace_all(&original, r##"<sup class="note-ref"$1>$2</sup>"##);
+        std::fs::write(&temp_md, stripped.as_bytes()).map_err(|e| e.to_string())?;
+    }
+
+    // PDF export: emit native MathML so Chromium renders math without
+    // JS. The on-screen preview path keeps the default --katex (which
+    // we render via katex.js after Paged.js paginates).
+    let opts = PandocConvertOptions {
+        math_format: Some("mathml".to_string()),
+        ..Default::default()
+    };
+    let pandoc_outcome = PandocConverter::convert_file(&temp_md, &opts).await;
+    crate::typesetter::cleanup_temp_markdown(&temp_md);
+    let combined_html = pandoc_outcome
+        .map_err(|e| format!("pandoc failed: {}", e))?
+        .html;
+    let structured = analyze_structure(&combined_html).map_err(|e| e.to_string())?;
+
+    // Resolve cover paths
+    let resolve_cover = |rel: &Option<String>| -> Option<std::path::PathBuf> {
+        let r = rel.as_ref()?;
+        let p = Path::new(r);
+        let abs = if p.is_absolute() { p.to_path_buf() } else { config.root_dir.join(p) };
+        if abs.is_file() { Some(abs) } else { None }
+    };
+    let front = resolve_cover(&config.book.cover_image);
+    let back = resolve_cover(&config.book.back_cover_image);
+
+    let html = build_export_html(
+        &config,
+        &structured.enriched_html,
+        &structured.structure,
+        front.as_deref(),
+        back.as_deref(),
+    );
+
+    let paper = paper_size_from_trim(&config.trim.size);
+    let output = std::path::PathBuf::from(&output_path);
+
+    // Headless Chromium is blocking; spawn on a blocking task.
+    let html_owned = html;
+    let output_for_thread = output.clone();
+    tokio::task::spawn_blocking(move || html_to_pdf(&html_owned, &output_for_thread, paper))
+        .await
+        .map_err(|e| format!("export task join error: {}", e))?
+        .map_err(|e| e.to_string())?;
+
+    Ok(output.display().to_string())
 }

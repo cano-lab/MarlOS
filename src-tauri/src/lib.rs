@@ -20,6 +20,7 @@ pub mod semantic_object;
 pub mod object_store;
 pub mod embeddings;
 pub mod semantic_search;
+pub mod waveform_similarity;
 pub mod andor_client;
 pub mod llm_tasks;
 pub mod mcp;
@@ -35,6 +36,13 @@ pub mod pca_cache;
 pub mod repo_tracker;
 pub mod chunking;
 pub mod epub_notes;
+pub mod finetuning;
+pub mod research_agent;
+pub mod document_versions;
+pub mod reference_library;
+pub mod research_project;
+pub mod typesetter;
+pub mod voice_tts;
 
 #[cfg(feature = "tauri-app")]
 use std::sync::Arc;
@@ -84,7 +92,7 @@ pub fn run() {
             // Initialize AI manager (wrapped in Arc for shared ownership)
             let ai_manager = std::sync::Arc::new(ai::AiManager::new());
             log::info!("AI support enabled");
-            app.manage(ai_manager);
+            app.manage(ai_manager.clone());
 
             // Initialize Provider registry
             let provider_registry = providers::ProviderRegistry::new();
@@ -140,13 +148,52 @@ pub fn run() {
             log::info!("PCA cache initialized");
             app.manage(pca_cache);
 
+            // Initialize Document Version Store
+            let version_store = document_versions::VersionStore::new(app_data_dir.clone())
+                .map_err(|e| format!("Failed to create version store: {}", e))?;
+            log::info!("Document version history initialized");
+            app.manage(version_store);
+
+            // Initialize Reference Library
+            let reference_store = reference_library::ReferenceStore::new(app_data_dir.clone())
+                .map_err(|e| format!("Failed to create reference store: {}", e))?;
+            log::info!("Reference library initialized");
+            app.manage(reference_store);
+
+            // Initialize Project Store
+            let project_store = research_project::ProjectStore::new(app_data_dir.clone());
+            log::info!("Project store initialized");
+            app.manage(project_store);
+
             // Initialize RepoTracker for watched repositories
             let repo_tracker = repo_tracker::RepoTracker::new();
             log::info!("Repository tracker initialized with {} repos", repo_tracker.list_repos().len());
             app.manage(repo_tracker);
 
-            // Wrap in Arc for shared access across commands
-            app.manage(Arc::new(semantic_search));
+            // Wrap semantic_search in Arc for shared access across commands
+            let semantic_search = Arc::new(semantic_search);
+            app.manage(semantic_search.clone());
+
+            // Initialize Autonomous Research Agent for autonomous research
+            let research_agent = Arc::new(tokio::sync::RwLock::new(
+                research_agent::AutonomousResearchAgent::new(ai_manager.clone(), semantic_search.clone())
+            ));
+            log::info!("Autonomous Research Agent initialized");
+            app.manage(research_agent);
+
+            // Initialize Voice TTS sidecar manager (lazy — sidecar starts on first call)
+            let script_candidates = [
+                std::path::PathBuf::from("../python/tts_sidecar.py"),
+                std::path::PathBuf::from("python/tts_sidecar.py"),
+            ];
+            let script_path = script_candidates
+                .iter()
+                .find(|p| p.exists())
+                .cloned()
+                .unwrap_or_else(|| std::path::PathBuf::from("../python/tts_sidecar.py"));
+            let voice_tts_manager = voice_tts::VoiceTtsManager::new(app_data_dir.clone(), script_path);
+            log::info!("Voice TTS sidecar manager initialized");
+            app.manage(voice_tts_manager);
 
             Ok(())
         })
@@ -182,6 +229,7 @@ pub fn run() {
             commands::ai_check_status,
             commands::ai_get_config,
             commands::ai_set_config,
+            commands::ai_list_models,
             commands::ai_chat,
             commands::ai_run_task,
             commands::ai_generate,
@@ -217,6 +265,8 @@ pub fn run() {
             commands::object_delete,
             commands::object_search,
             commands::object_find_similar,
+            commands::object_search_waveform,
+            commands::object_find_similar_waveform,
             commands::object_import_file,
             commands::import_repository,
             commands::object_export_file,
@@ -266,8 +316,19 @@ pub fn run() {
             commands::paper_review_section,
             commands::paper_update_section,
             commands::paper_export,
+            commands::paper_export_latex,
             commands::paper_get_sections,
             commands::paper_get_findings,
+            // Autonomous Research Agent commands
+            commands::research_add_interest,
+            commands::research_remove_interest,
+            commands::research_list_interests,
+            commands::research_run_sweep,
+            commands::research_discover_from_library,
+            commands::research_get_clusters,
+            commands::research_get_cluster_articles,
+            commands::research_get_articles_by_interest,
+            commands::research_find_similar_articles,
             // Proactive Intelligence commands
             commands::proactive_on_file_opened,
             commands::proactive_on_query,
@@ -389,6 +450,77 @@ pub fn run() {
             commands::plan_save_canvas_widgets,
             commands::open_file_path,
             commands::pick_file,
+            // Fine-tuning commands
+            finetuning::export_conversations_for_finetuning,
+            finetuning::get_export_stats,
+            // Document version history commands
+            commands::version_save,
+            commands::version_list,
+            commands::version_get,
+            commands::version_diff,
+            commands::version_diff_current,
+            commands::version_label,
+            // Reference library commands
+            commands::ref_add,
+            commands::ref_add_from_doi,
+            commands::ref_add_from_isbn,
+            commands::ref_get,
+            commands::ref_list,
+            commands::ref_search,
+            commands::ref_update,
+            commands::ref_delete,
+            commands::ref_set_reading_status,
+            commands::ref_add_to_collection,
+            commands::ref_list_collections,
+            commands::ref_import_bibtex,
+            commands::ref_export_bibtex,
+            commands::ref_check_duplicates,
+            commands::ref_attach_pdf,
+            commands::ref_count,
+            // CSL citation style commands
+            commands::csl_list_styles,
+            commands::csl_render_bibliography,
+            commands::csl_render_inline,
+            commands::ref_generate_bibliography,
+            // Research Project commands
+            commands::project_create,
+            commands::project_list,
+            commands::project_get,
+            commands::project_delete,
+            commands::project_set_status,
+            commands::project_add_paper,
+            commands::project_add_reference,
+            commands::project_add_document,
+            // Paper template & cross-ref commands
+            commands::template_list,
+            commands::template_get,
+            commands::resolve_cross_refs,
+            // Research intelligence commands
+            commands::ref_find_related,
+            commands::ref_extract_keywords,
+            commands::ref_gap_analysis,
+            // Voice TTS (F5-TTS sidecar) commands
+            commands::voice_tts_status,
+            commands::voice_tts_set_reference,
+            commands::voice_tts_clear_reference,
+            commands::voice_tts_synthesize,
+            commands::voice_tts_shutdown,
+            // Book typesetter (Phase A — pandoc bridge) commands
+            commands::typesetter_pandoc_probe,
+            commands::typesetter_pandoc_convert_file,
+            commands::typesetter_pandoc_convert_str,
+            // Book typesetter (Phase B — book.toml + structure) commands
+            commands::typesetter_book_load,
+            commands::typesetter_book_init,
+            commands::typesetter_book_save,
+            commands::typesetter_analyze_html,
+            // Book typesetter (Phase E — headless Chromium PDF export)
+            commands::typesetter_export_pdf,
+            // Book typesetter (Phase F — EPUB export)
+            commands::typesetter_export_epub,
+            // Book typesetter — Source-view live edits
+            commands::typesetter_read_book_file,
+            commands::typesetter_write_book_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

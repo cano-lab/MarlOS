@@ -1,0 +1,176 @@
+.book-paged {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: #2a2a2a;
+}
+
+.book-paged-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.book-paged-status {
+  flex: 1;
+}
+
+.book-paged-error {
+  color: #ff8a80;
+}
+
+.book-paged-error-banner {
+  margin: 8px 16px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(244, 67, 54, 0.12);
+  border: 1px solid rgba(244, 67, 54, 0.4);
+  color: #ff8a80;
+  font-size: 12px;
+}
+
+.book-paged-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--text-secondary);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: book-paged-spin 0.8s linear infinite;
+}
+
+@keyframes book-paged-spin {
+  to { transform: rotate(360deg); }
+}
+
+.book-paged-btn {
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.book-paged-stage {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: auto;
+  padding: 24px;
+  background: #2a2a2a;
+}
+
+/* Paged.js DOM is .pagedjs_pages > .pagedjs_page > .pagedjs_sheet.
+   Pure block layout — pages stack via their own margin, no flex
+   fighting Paged.js's inline width/height styling. */
+.book-paged-stage .pagedjs_pages {
+  display: block;
+}
+
+.book-paged-stage .pagedjs_page {
+  display: block;
+  margin: 0 auto 18px;
+  background: #fff;
+  color: #000;
+  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.45);
+}
+
+/* Print path: hide every other UI chrome, let .pagedjs_pages flow
+   normally so the OS print engine paginates one .pagedjs_page per
+   physical sheet. The visibility-hidden + absolute approach was
+   fragile (collapsed all pages onto the same coords); display:none
+   on chrome is the clean way. */
+@media print {
+  /* Hide all of MarlOS's own chrome */
+  .titlebar,
+  .sidebar,
+  .book-mode-header,
+  .book-mode-status,
+  .book-mode-controls,
+  .book-mode-meta-bar,
+  .book-mode-stats,
+  .book-mode-warnings,
+  .book-mode-tree,
+  .book-paged-toolbar,
+  .book-config-editor,
+  .book-mode-error,
+  .book-mode-info,
+  .voice-progress,
+  .chat-panel-container,
+  .voice-settings-overlay {
+    display: none !important;
+  }
+  html, body {
+    background: #fff !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  .book-mode,
+  .book-mode-view,
+  .book-mode-main-area,
+  .book-mode-content,
+  .book-paged,
+  .book-paged-stage {
+    background: #fff !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    height: auto !important;
+    min-height: 0 !important;
+  }
+  .book-paged-stage .pagedjs_page {
+    margin: 0 !important;
+    box-shadow: none !important;
+    page-break-after: always;
+    break-after: page;
+  }
+  /* Verso/recto labels are screen-only diagnostics */
+  .book-paged-stage .pagedjs_left_page::after,
+  .book-paged-stage .pagedjs_right_page::after {
+    content: none !important;
+  }
+}
+
+/* Tag each page with recto/verso under the corner so asymmetric margins
+   are visually obvious. */
+.book-paged-stage .pagedjs_left_page::after,
+.book-paged-stage .pagedjs_right_page::after {
+  content: "verso";
+  position: absolute;
+  bottom: -18px;
+  left: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.book-paged-stage .pagedjs_right_page::after {
+  content: "recto";
+  left: auto;
+  right: 0;
+}
+
+/* Live-edit flash — paragraph the writer's cursor is in lights up
+   briefly so they can confirm where the edit landed in pages. */
+.book-paged-flash {
+  animation: book-paged-flash 1.4s ease-out;
+  background-color: rgba(255, 224, 130, 0.55);
+  outline: 1px solid rgba(255, 193, 7, 0.6);
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+
+@keyframes book-paged-flash {
+  0%   { background-color: rgba(255, 224, 130, 0.55); }
+  100% { background-color: transparent; }
+}
