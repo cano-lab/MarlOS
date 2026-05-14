@@ -41,10 +41,30 @@ impl From<anyhow::Error> for PdfExportError {
 /// literal content. The on-screen Paged.js preview uses a simpler CSS
 /// (`buildBookCss` in TS).
 pub fn build_export_css(config: &BookConfig, structure: &BookStructure) -> String {
-    let trim = match config.trim.size.as_str() {
-        "5x8" => ("5in", "8in"),
-        "5.5x8.5" => ("5.5in", "8.5in"),
-        _ => ("6in", "9in"),
+    // Trim size accepts three named presets plus any free-form
+    // "WxH" string parsed as floats in inches (e.g. "5.25x8.0" for a
+    // custom trim). Falls back to 6x9 on malformed input.
+    let trim: (String, String) = match config.trim.size.as_str() {
+        "5x8" => ("5in".into(), "8in".into()),
+        "5.5x8.5" => ("5.5in".into(), "8.5in".into()),
+        "6x9" => ("6in".into(), "9in".into()),
+        other => {
+            let mut parsed: Option<(f64, f64)> = None;
+            if let Some((w_str, h_str)) = other.split_once('x') {
+                if let (Ok(w), Ok(h)) = (
+                    w_str.trim().parse::<f64>(),
+                    h_str.trim().parse::<f64>(),
+                ) {
+                    if w > 0.0 && h > 0.0 {
+                        parsed = Some((w, h));
+                    }
+                }
+            }
+            match parsed {
+                Some((w, h)) => (format!("{}in", w), format!("{}in", h)),
+                None => ("6in".into(), "9in".into()),
+            }
+        }
     };
     let m = &config.trim.margins_in;
     // Treat empty / whitespace body_font as "EB Garamond" so the
@@ -71,6 +91,8 @@ pub fn build_export_css(config: &BookConfig, structure: &BookStructure) -> Strin
     // a system font that wasn't embedded.
     let font_face_block = build_font_face_block();
 
+    let running_header_style = config.typography.running_header_style.as_str();
+
     // Per-chapter @page rules with literal headers. Chromium's native
     // string()/string-set has been unreliable across versions; literal
     // content in named pages always works.
@@ -84,15 +106,47 @@ pub fn build_export_css(config: &BookConfig, structure: &BookStructure) -> Strin
             Some(n) => n,
             None => continue,
         };
-        // Header text: just the chapter title (no "Chapter N:" prefix).
-        // Long full titles like "Chapter 3: The Equation That Describes
-        // Everything and Explains Nothing" overflow the running header
-        // box; the title alone reads cleanly at typical book widths,
-        // and the per-page chapter context is already obvious.
-        let header_text = if section.title.is_empty() {
-            format!("Chapter {}", n)
+        // Running header text — formatted per running_header_style.
+        // "title" is the historic default (chapter title only); the
+        // other styles add a chapter number prefix so the reader can
+        // locate themselves without remembering the title.
+        let title = if section.title.is_empty() {
+            String::new()
         } else {
             section.title.clone()
+        };
+        let header_text = match running_header_style {
+            "chapter-number" => format!("Chapter {}", n),
+            "chapter-number-title" => {
+                if title.is_empty() {
+                    format!("Chapter {}", n)
+                } else {
+                    format!("Chapter {} \u{00B7} {}", n, title)
+                }
+            }
+            "compact-arabic" => {
+                if title.is_empty() {
+                    n.to_string()
+                } else {
+                    format!("{} \u{00B7} {}", n, title)
+                }
+            }
+            "compact-roman" => {
+                let r = to_upper_roman(n);
+                if title.is_empty() {
+                    r
+                } else {
+                    format!("{} \u{00B7} {}", r, title)
+                }
+            }
+            // "title" or anything unrecognized
+            _ => {
+                if title.is_empty() {
+                    format!("Chapter {}", n)
+                } else {
+                    title
+                }
+            }
         };
         let header_lit = css_string_literal(&header_text);
         per_chapter_css.push_str(&format!(
@@ -179,7 +233,12 @@ section[data-section-type="chapter"][data-section-number="{n}"] {{
 
 html, body {{
   margin: 0;
-  padding: 0;
+  /* Right-side buffer so glyph bearings (italic descender slopes, the
+     right edge of "y"/"f"/"j", trailing kern on small-caps) stay
+     visible inside the printable area. Without it Chromium clips
+     them at the @page margin even though the advance-width-based
+     line layout fit. 2pt is the minimal cushion for EB Garamond. */
+  padding: 0 2pt 0 0;
   background: #fff;
   color: #000;
   font-family: {bf};
@@ -190,11 +249,20 @@ html, body {{
 p {{
   margin: 0;
   text-align: justify;
+  /* Justify spaces only — never stretch letters apart. Without this,
+     Chromium can spread inter-character spacing on tight lines and
+     push the last character past the body width into the margin
+     (visible as the right-edge "cutoff" some letters get). */
+  text-justify: inter-word;
   hyphens: auto;
   -webkit-hyphens: auto;
   text-indent: 1em;
   widows: 2;
   orphans: 2;
+  /* Long unbreakable tokens (URLs, hex strings, citations with no
+     spaces) wrap mid-character instead of overflowing the body. */
+  overflow-wrap: break-word;
+  word-wrap: break-word;
 }}
 
 h1 + p, h2 + p, h3 + p,
@@ -302,8 +370,15 @@ li {{ margin: 0.2em 0; }}
 em, i {{ font-style: italic; }}
 strong, b {{ font-weight: 600; }}
 
-hr {{ border: 0; text-align: center; margin: 2em 0; }}
-hr::before {{ content: "* * *"; letter-spacing: 0.4em; color: #555; }}
+/* Section dividers in source (`---` / `***`) become <hr> elements.
+   We keep the vertical breathing room the writer expected (~1em) but
+   suppress the visual marker — no star ornament, no rule. */
+hr {{
+  border: 0;
+  height: 0;
+  margin: 1em 0;
+  visibility: hidden;
+}}
 
 a {{ color: inherit; text-decoration: none; }}
 
@@ -351,8 +426,12 @@ sup.note-ref {{
   font-size: 0.75em;
   vertical-align: super;
   line-height: 0;
-  font-feature-settings: "lnum" 1, "tnum" 1;
-  font-variant-numeric: lining-nums tabular-nums;
+  /* lining-nums forces the embedded digit subset (KDP rejects glyphs
+     from unembedded fallbacks). NO tabular-nums — its fixed-width
+     slot center-pads narrow digits like 1, which reads as an extra
+     space before the numeral. */
+  font-feature-settings: "lnum" 1;
+  font-variant-numeric: lining-nums;
   font-variant-position: normal;
   font-weight: 400;
 }}
@@ -408,6 +487,29 @@ sup.note-ref a {{
         per_chapter = per_chapter_css,
         font_faces = font_face_block,
     )
+}
+
+/// Render an integer as upper-roman ("I", "II", "IV", ...). Saturates
+/// at 3999 (largest classical roman numeral); 0 / negatives return
+/// the arabic form so the running header doesn't go blank.
+fn to_upper_roman(n: u32) -> String {
+    if n == 0 || n > 3999 {
+        return n.to_string();
+    }
+    let pairs: [(u32, &str); 13] = [
+        (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"),
+        (100, "C"), (90, "XC"), (50, "L"), (40, "XL"),
+        (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"),
+    ];
+    let mut remaining = n;
+    let mut out = String::new();
+    for (value, sym) in pairs {
+        while remaining >= value {
+            out.push_str(sym);
+            remaining -= value;
+        }
+    }
+    out
 }
 
 /// EB Garamond WOFF2 files embedded at compile time. We bundle three

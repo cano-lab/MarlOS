@@ -96,6 +96,10 @@ export interface BookConfig {
     body_size_pt: number;
     body_leading_pt: number;
     heading_space_em: number;
+    /** Format of the running header at the top of each in-chapter page.
+     *  One of: "title" | "chapter-number" | "chapter-number-title" |
+     *  "compact-arabic" | "compact-roman". */
+    running_header_style: string;
   };
   export: { color_mode: string };
   files: string[];

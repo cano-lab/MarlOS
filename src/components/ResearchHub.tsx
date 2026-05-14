@@ -2,6 +2,7 @@ import { Component, createSignal, createEffect, onMount, Show, For } from "solid
 import { invoke } from "@tauri-apps/api/core";
 import "./ResearchHub.css";
 import PaperGenerator from "./PaperGenerator";
+import ResearchFeed from "./ResearchFeed";
 
 // Types matching the Rust backend
 interface SourceView {
@@ -31,7 +32,7 @@ interface FactCheckResult {
   explanation: string;
 }
 
-type ViewMode = "list" | "add" | "detail" | "citations" | "fact-check" | "connections" | "discover" | "paper-generator";
+type ViewMode = "list" | "add" | "detail" | "citations" | "fact-check" | "connections" | "discover" | "agent" | "paper-generator" | "feed";
 type AddMode = "url" | "manual";
 
 interface DiscoveredSource {
@@ -95,6 +96,299 @@ interface PaperInfo {
   title: string;
   source_ids: string[];
 }
+
+// =============================================================================
+// Research Agent Types
+// =============================================================================
+
+interface InterestView {
+  id: string;
+  topic: string;
+  queries: string[];
+  sources: string[];
+  priority: number;
+  max_articles: number;
+  active: boolean;
+  last_sweep: string | null;
+}
+
+interface ResearchDigestView {
+  sweep_time: string;
+  interests_searched: number;
+  new_articles: number;
+  articles_clustered: number;
+  clusters_created: number;
+  summary: string;
+  articles_by_interest: [string, string][];
+}
+
+interface ArticleView {
+  id: string;
+  title: string;
+  url: string;
+  findings: string[];
+  interest_id: string;
+  interest_topic: string | null;
+  relevance: number;
+  discovered_at: string;
+  source_type: string;
+}
+
+// =============================================================================
+// Research Agent View
+// =============================================================================
+
+const ResearchAgentView: Component = () => {
+  const [interests, setInterests] = createSignal<InterestView[]>([]);
+  const [articles, setArticles] = createSignal<ArticleView[]>([]);
+  const [lastDigest, setLastDigest] = createSignal<ResearchDigestView | null>(null);
+  const [isRunning, setIsRunning] = createSignal(false);
+  const [error, setError] = createSignal<string | null>(null);
+  const [newTopic, setNewTopic] = createSignal("");
+  const [newQueries, setNewQueries] = createSignal("");
+  const [showAddForm, setShowAddForm] = createSignal(false);
+
+  const loadInterests = async () => {
+    try {
+      const list = await invoke<InterestView[]>("research_list_interests");
+      setInterests(list);
+    } catch (e: any) {
+      console.error("Failed to load interests:", e);
+    }
+  };
+
+  const loadArticles = async () => {
+    // Load articles for each interest
+    const allArticles: ArticleView[] = [];
+    for (const interest of interests()) {
+      try {
+        const arts = await invoke<ArticleView[]>("research_get_articles_by_interest", {
+          interestId: interest.id,
+        });
+        allArticles.push(...arts);
+      } catch (e) {
+        // ignore
+      }
+    }
+    setArticles(allArticles);
+  };
+
+  createEffect(() => { loadInterests(); });
+  createEffect(() => { if (interests().length > 0) loadArticles(); });
+
+  const addInterest = async () => {
+    if (!newTopic().trim()) return;
+    const queries = newQueries().split(",").map(q => q.trim()).filter(q => q.length > 0);
+    if (queries.length === 0) queries.push(newTopic());
+
+    try {
+      setError(null);
+      await invoke("research_add_interest", {
+        topic: newTopic(),
+        queries,
+        sources: ["arxiv", "scholar", "web"],
+        priority: 7,
+        maxArticles: 10,
+      });
+      setNewTopic("");
+      setNewQueries("");
+      setShowAddForm(false);
+      loadInterests();
+    } catch (e: any) {
+      setError(e.toString());
+    }
+  };
+
+  const removeInterest = async (id: string) => {
+    try {
+      await invoke("research_remove_interest", { interestId: id });
+      loadInterests();
+    } catch (e: any) {
+      setError(e.toString());
+    }
+  };
+
+  const runSweep = async () => {
+    setIsRunning(true);
+    setError(null);
+    try {
+      const digest = await invoke<ResearchDigestView>("research_run_sweep");
+      setLastDigest(digest);
+      loadInterests();
+      loadArticles();
+    } catch (e: any) {
+      setError(e.toString());
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  const discoverFromLibrary = async () => {
+    setIsRunning(true);
+    setError(null);
+    try {
+      const digest = await invoke<ResearchDigestView>("research_discover_from_library");
+      setLastDigest(digest);
+      loadInterests();
+      loadArticles();
+    } catch (e: any) {
+      setError(e.toString());
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  return (
+    <div class="agent-view">
+      <div class="agent-header">
+        <h3>Research Agent</h3>
+        <p class="agent-subtitle">
+          Autonomous paper discovery based on your interests and reading patterns
+        </p>
+      </div>
+
+      <Show when={error()}>
+        <div class="agent-error">{error()}</div>
+      </Show>
+
+      {/* Action Buttons */}
+      <div class="agent-actions">
+        <button
+          class="agent-btn agent-btn-primary"
+          onClick={discoverFromLibrary}
+          disabled={isRunning()}
+        >
+          {isRunning() ? "Searching..." : "Discover from My Library"}
+        </button>
+        <button
+          class="agent-btn"
+          onClick={runSweep}
+          disabled={isRunning() || interests().length === 0}
+          title={interests().length === 0 ? "Add interests first" : "Search based on your interests"}
+        >
+          {isRunning() ? "Searching..." : "Run Sweep"}
+        </button>
+        <button
+          class="agent-btn"
+          onClick={() => setShowAddForm(!showAddForm())}
+        >
+          + Add Interest
+        </button>
+      </div>
+
+      {/* Add Interest Form */}
+      <Show when={showAddForm()}>
+        <div class="agent-form">
+          <input
+            type="text"
+            placeholder="Topic (e.g., reinforcement learning)"
+            value={newTopic()}
+            onInput={(e) => setNewTopic(e.currentTarget.value)}
+          />
+          <input
+            type="text"
+            placeholder="Search queries, comma-separated (e.g., deep RL, policy gradient, Q-learning)"
+            value={newQueries()}
+            onInput={(e) => setNewQueries(e.currentTarget.value)}
+          />
+          <div class="agent-form-actions">
+            <button class="agent-btn agent-btn-primary" onClick={addInterest}>Add</button>
+            <button class="agent-btn" onClick={() => setShowAddForm(false)}>Cancel</button>
+          </div>
+        </div>
+      </Show>
+
+      {/* Last Sweep Results */}
+      <Show when={lastDigest()}>
+        <div class="agent-digest">
+          <h4>Last Sweep Results</h4>
+          <div class="digest-stats">
+            <span>{lastDigest()!.interests_searched} interests searched</span>
+            <span>{lastDigest()!.new_articles} new articles</span>
+            <span>{lastDigest()!.clusters_created} clusters</span>
+          </div>
+          <p class="digest-summary">{lastDigest()!.summary}</p>
+        </div>
+      </Show>
+
+      {/* Interests */}
+      <div class="agent-section">
+        <h4>Active Interests ({interests().length})</h4>
+        <div class="interest-list">
+          <For each={interests()} fallback={
+            <p class="agent-empty">No interests yet. Click "Discover from My Library" to auto-generate interests from your reading history, or add one manually.</p>
+          }>
+            {(interest) => (
+              <div class="interest-card">
+                <div class="interest-header">
+                  <span class="interest-topic">{interest.topic}</span>
+                  <span class="interest-priority">P{interest.priority}</span>
+                  <button
+                    class="interest-remove"
+                    onClick={() => removeInterest(interest.id)}
+                    title="Remove"
+                  >&times;</button>
+                </div>
+                <div class="interest-queries">
+                  <For each={interest.queries}>
+                    {(q) => <span class="interest-query">{q}</span>}
+                  </For>
+                </div>
+                <Show when={interest.last_sweep}>
+                  <span class="interest-last-sweep">
+                    Last sweep: {new Date(interest.last_sweep!).toLocaleDateString()}
+                  </span>
+                </Show>
+              </div>
+            )}
+          </For>
+        </div>
+      </div>
+
+      {/* Discovered Articles */}
+      <Show when={articles().length > 0}>
+        <div class="agent-section">
+          <h4>Discovered Articles ({articles().length})</h4>
+          <div class="article-list">
+            <For each={articles()}>
+              {(article) => (
+                <div class="article-card">
+                  <a
+                    class="article-title"
+                    href={article.url}
+                    target="_blank"
+                    rel="noopener"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {article.title}
+                  </a>
+                  <div class="article-meta">
+                    <span class="article-source">{article.source_type}</span>
+                    <span class="article-relevance">{Math.round(article.relevance * 100)}% relevant</span>
+                    <Show when={article.interest_topic}>
+                      <span class="article-interest">{article.interest_topic}</span>
+                    </Show>
+                  </div>
+                  <Show when={article.findings.length > 0}>
+                    <ul class="article-findings">
+                      <For each={article.findings.slice(0, 3)}>
+                        {(finding) => <li>{finding}</li>}
+                      </For>
+                    </ul>
+                  </Show>
+                </div>
+              )}
+            </For>
+          </div>
+        </div>
+      </Show>
+    </div>
+  );
+};
+
+// =============================================================================
+// Research Hub
+// =============================================================================
 
 interface ResearchHubProps {
   onClose?: () => void;
@@ -303,12 +597,6 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
   const handlePreviousPage = async () => {
     if (currentPage() > 1) {
       await loadSources(currentPage() - 1);
-    }
-  };
-
-  const handlePageJump = async (page: number) => {
-    if (page >= 1 && page <= totalPages() && page !== currentPage()) {
-      await loadSources(page);
     }
   };
 
@@ -777,10 +1065,23 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
           Discover
         </button>
         <button
+          class={`tab-btn ${viewMode() === "agent" ? "active" : ""}`}
+          onClick={() => setViewMode("agent")}
+        >
+          Agent
+        </button>
+        <button
           class={`tab-btn ${viewMode() === "paper-generator" ? "active" : ""}`}
           onClick={() => setViewMode("paper-generator")}
         >
           Paper
+        </button>
+        <button
+          class={`tab-btn ${viewMode() === "feed" ? "active" : ""}`}
+          onClick={() => setViewMode("feed")}
+          title="Swipe-through feed of stored research summaries"
+        >
+          Feed
         </button>
       </div>
 
@@ -815,7 +1116,7 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
               <button class="btn-secondary" onClick={searchSources}>
                 Search
               </button>
-              <button class="btn-secondary" onClick={loadSources}>
+              <button class="btn-secondary" onClick={() => loadSources()}>
                 Refresh
               </button>
             </div>
@@ -1732,9 +2033,19 @@ const ResearchHub: Component<ResearchHubProps> = (props) => {
           </div>
         </Show>
 
+        {/* Research Agent View */}
+        <Show when={viewMode() === "agent"}>
+          <ResearchAgentView />
+        </Show>
+
         {/* Paper Generator View */}
         <Show when={viewMode() === "paper-generator"}>
           <PaperGenerator onClose={() => setViewMode("list")} />
+        </Show>
+
+        {/* Research Feed — swipe-through cards for stored summaries */}
+        <Show when={viewMode() === "feed"}>
+          <ResearchFeed />
         </Show>
       </div>
     </div>

@@ -117,7 +117,10 @@ static APPENDIX_RE: OnceLock<Regex> = OnceLock::new();
 fn cite_re() -> &'static Regex {
     // (?s) so . matches newlines — citations occasionally wrap.
     // Lazy `.+?` so adjacent markers don't merge.
-    CITE_RE.get_or_init(|| Regex::new(r"(?s)\[CITE:\s*(.+?)\]").unwrap())
+    // Optional leading whitespace is consumed so the superscript
+    // typeset hugs the preceding word ("text¹" rather than "text ¹"),
+    // matching standard typographic convention for endnote markers.
+    CITE_RE.get_or_init(|| Regex::new(r"(?s)\s?\[CITE:\s*(.+?)\]").unwrap())
 }
 
 fn verify_re() -> &'static Regex {

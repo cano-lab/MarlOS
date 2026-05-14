@@ -105,6 +105,15 @@ pub struct TypographyConfig {
     /// 1.0 = current "tight" defaults. 1.5–2.0 gives chapter and
     /// subsection headings more breathing room above them.
     pub heading_space_em: f32,
+    /// Format of the running header (the strip at the top of each page
+    /// within a chapter). Helps the reader locate themselves without
+    /// having to remember the chapter title. One of:
+    ///   "title"                — just the chapter title (current default)
+    ///   "chapter-number"       — "Chapter 3"
+    ///   "chapter-number-title" — "Chapter 3 · The Title"
+    ///   "compact-arabic"       — "3 · The Title"
+    ///   "compact-roman"        — "III · The Title"
+    pub running_header_style: String,
 }
 
 impl Default for TypographyConfig {
@@ -114,6 +123,7 @@ impl Default for TypographyConfig {
             body_size_pt: 11.0,
             body_leading_pt: 14.0,
             heading_space_em: 1.0,
+            running_header_style: "title".to_string(),
         }
     }
 }
@@ -292,6 +302,10 @@ impl BookConfig {
         out.push_str(&format!(
             "heading_space_em = {}\n",
             fmt_float(self.typography.heading_space_em)
+        ));
+        out.push_str(&format!(
+            "running_header_style = {}\n",
+            toml_string_literal(&self.typography.running_header_style)
         ));
         out.push('\n');
 

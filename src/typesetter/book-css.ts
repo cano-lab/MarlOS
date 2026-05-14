@@ -31,7 +31,17 @@ const TRIM_PRESETS: Record<string, TrimDimensions> = {
 };
 
 export function trimDimensions(size: string): TrimDimensions {
-  return TRIM_PRESETS[size] ?? TRIM_PRESETS["6x9"];
+  const preset = TRIM_PRESETS[size];
+  if (preset) return preset;
+  // Free-form "WxH" parsed as floats in inches (e.g. "5.25x8.0" for a
+  // custom trim entered through the BookConfigEditor's Custom panel).
+  const m = /^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/.exec(size);
+  if (m) {
+    const w = parseFloat(m[1]);
+    const h = parseFloat(m[2]);
+    if (w > 0 && h > 0) return { width: `${w}in`, height: `${h}in` };
+  }
+  return TRIM_PRESETS["6x9"];
 }
 
 /**
@@ -56,8 +66,39 @@ export function buildBookCss(config: BookConfig): string {
   const mIn = `${margins.inside}in`;
   const mOut = `${margins.outside}in`;
 
-  // Suppress unused-variable warnings while bisecting.
-  void mIn; void bodyFont; void fontSize; void lineHeight;
+  // mIn used in asymmetric verso/recto margin rules below.
+  void mIn;
+
+  // Running header style — the chapter strip at the top of each page.
+  // The H1's string-set captures the running header text; @top-center
+  // pulls it via string(). Counter increments per chapter so we can
+  // bake an arabic or roman number into the captured string.
+  const headerStyle = config.typography.running_header_style ?? "title";
+  let stringSetExpr: string;
+  switch (headerStyle) {
+    case "chapter-number":
+      stringSetExpr = `"Chapter " counter(chapter-num)`;
+      break;
+    case "chapter-number-title":
+      stringSetExpr = `"Chapter " counter(chapter-num) " \\00B7 " content()`;
+      break;
+    case "compact-arabic":
+      stringSetExpr = `counter(chapter-num) " \\00B7 " content()`;
+      break;
+    case "compact-roman":
+      stringSetExpr = `counter(chapter-num, upper-roman) " \\00B7 " content()`;
+      break;
+    default:
+      // "title" — historic behavior
+      stringSetExpr = `content()`;
+      break;
+  }
+  const chapterCounterCss =
+    headerStyle === "title"
+      ? ""
+      : `
+body { counter-reset: chapter-num; }
+section[data-section-type="chapter"] { counter-increment: chapter-num; }`;
 
   // Rebuild step 4: asymmetric verso/recto margins via @page :left/:right
   // (standalone pseudo-classes work in Paged.js v0.4 — only the named+
@@ -152,7 +193,7 @@ section[data-section-type="interlude"] {
 
 section[data-section-type="chapter"] > h1 {
   page: chapter-opener;
-  string-set: chapter-name content();
+  string-set: chapter-name ${stringSetExpr};
   font-size: 2em;
   text-align: center;
   margin: 4em 0 2em;
@@ -162,6 +203,55 @@ section[data-section-type="chapter"] > h1 {
   text-wrap: balance;
   line-height: 1.2;
 }
+
+/* Body-level font/size/leading — pulled from book.toml typography so
+   preview density matches PDF body. */
+html, body {
+  font-family: ${bodyFont};
+  font-size: ${fontSize};
+  line-height: ${lineHeight};
+}
+
+p {
+  margin: 0;
+  text-indent: 1em;
+}
+
+/* Several rules from pdf_export.rs::build_export_css are intentionally
+   PDF-only because Paged.js v0.4's chunker throws
+   "item doesn't belong to list" when it encounters them mid-split:
+     - text-align: justify
+     - hyphens: auto
+     - widows / orphans
+     - h1, h2, h3, h4 { break-after: avoid }
+     - h1 + p, h2 + p, h3 + p, section > p:first-of-type { text-indent: 0 }
+     - section[chapter] > p:first-of-type::first-letter (drop cap)
+   Chromium native print resolves these against the original DOM and
+   handles them cleanly — preview gets a slightly looser typography
+   but no crashes. */
+
+h2 { font-size: 1.25em; margin: 1.4em 0 0.6em; font-weight: 600; }
+h3 { font-size: 1.05em; margin: 1.2em 0 0.4em; font-style: italic; font-weight: 500; }
+
+section[data-section-type="interlude"] > h1 {
+  font-size: 1.4em;
+  text-align: center;
+  margin: 3em 0 1.5em;
+  font-style: italic;
+  font-weight: 400;
+}
+
+blockquote { margin: 1em 1.5em; font-style: italic; }
+ul, ol { margin: 0.5em 0 0.5em 1.5em; padding: 0; }
+li { margin: 0.2em 0; }
+
+/* Section dividers (markdown --- / ***) — removed from flow entirely
+   so neither the 3-star ornament nor a default rule line shows. Use
+   a <div class="space-medium"> snippet for a visible scene break. */
+hr {
+  display: none;
+}
+
 
 /* Manual paragraph-spacing utility classes — use raw HTML in markdown:
      <div class="space-small"></div>      ~half line
@@ -230,6 +320,8 @@ sup.note-ref a {
   margin-left: 0.3em;
   color: #666;
 }
+
+${chapterCounterCss}
 `.trim();
 }
 

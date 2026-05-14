@@ -68,6 +68,28 @@
   cursor: pointer;
 }
 
+.book-source-zoom {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-left: 4px;
+}
+
+.book-source-zoom-btn {
+  padding: 4px 8px;
+  border-radius: 0;
+  border: none;
+  border-right: 1px solid var(--border);
+  font-family: var(--font-mono, monospace);
+  min-width: 2.6em;
+}
+
+.book-source-zoom-btn:last-child {
+  border-right: none;
+}
+
 .book-source-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
@@ -124,10 +146,110 @@
   color: #cfe6ff;
 }
 
+/* Shell wraps the gutter + textarea side-by-side. Default style is the
+   mono editor pane; .book-source-shell-paged shifts to a centered
+   page-styled column on a gray surround for split-mode editing. */
+.book-source-shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+  background: var(--bg-primary);
+}
+
+.book-source-shell-paged {
+  background: #2a2a2a;
+  padding: 16px 16px 16px 0;
+  /* Center the zoomed page group horizontally so the column sits in
+     the middle of the source pane. overflow:auto lets the writer
+     horizontally scroll if zoom widens the column past the pane. */
+  justify-content: center;
+  overflow: auto;
+}
+
+/* Zoom-area wraps the gutter + textarea so CSS `zoom` scales them
+   as a single unit. Chromium's `zoom` is a true layout zoom (font,
+   padding, width, scrollHeight all scale proportionally), so the
+   writer gets PDF-style page magnification rather than ebook-style
+   font-only scaling. */
+.book-source-zoom-area {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+
+.book-source-shell-paged .book-source-zoom-area {
+  flex: 0 0 auto;
+  align-self: flex-start;
+}
+
+/* Line-number gutter. Numbers are absolute-positioned at their source
+   line's scrollTop, so soft-wrapped lines don't displace numbering and
+   the column always reads "line N = source line N". The gutter scrolls
+   in lockstep with the textarea via handleScroll. */
+.book-source-gutter {
+  flex: 0 0 auto;
+  width: 3.5em;
+  overflow: hidden;
+  position: relative;
+  background: var(--bg-tertiary);
+  border-right: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  line-height: 1.55;
+  user-select: none;
+}
+
+.book-source-shell-paged .book-source-gutter {
+  background: transparent;
+  border-right: none;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.book-source-gutter-spacer {
+  width: 1px;
+}
+
+.book-source-gutter-num {
+  position: absolute;
+  right: 0.6em;
+  padding: 0;
+  text-align: right;
+  width: 2.6em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Snippet-line markers — gutter shows a colored line number plus a
+   small glyph for lines containing a page-break / blank-page /
+   space-* div. The textarea can't render HTML inline, but the
+   gutter lets the writer scroll-find these markers at a glance. */
+.book-source-gutter-num-snippet {
+  color: #88c0d0;
+  font-weight: 600;
+}
+
+.book-source-gutter-num-snippet[data-kind="page-break"] {
+  color: #d08770;
+}
+
+.book-source-gutter-num-snippet[data-kind="blank-page"] {
+  color: #bf616a;
+}
+
+.book-source-gutter-glyph {
+  position: absolute;
+  left: 0.1em;
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  opacity: 0.85;
+}
+
 .book-source-editor {
   flex: 1;
   min-height: 0;
-  width: 100%;
   resize: none;
   border: none;
   outline: none;
@@ -139,4 +261,23 @@
   line-height: 1.55;
   tab-size: 4;
   -moz-tab-size: 4;
+}
+
+/* Page-styled column for split mode. Inline style on the element
+   carries the font-family / font-size / line-height / width pulled
+   from the book.toml typography section, so the visual density and
+   font match whatever the writer chose in Settings.
+   - flex: 0 0 auto so the column doesn't grow horizontally past its
+     inline width.
+   - Dark background — writers find white-on-paper hard to edit in
+     for extended sessions. We keep the page-density typography but
+     not the page-color. */
+.book-source-editor-paged {
+  flex: 0 0 auto;
+  background: #1e1e1e;
+  color: var(--text-primary);
+  padding: 0.6in 0.5in;
+  box-sizing: content-box;
+  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.45);
+  border-radius: 2px;
 }

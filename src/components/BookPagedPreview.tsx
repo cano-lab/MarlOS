@@ -298,6 +298,12 @@ const BookPagedPreview: Component<BookPagedPreviewProps> = (props) => {
         setError(e instanceof Error ? e.message : String(e));
         setStatus("error");
       }
+      // Mark this html as "attempted (failed)" so the drain check at
+      // the end of `finally` doesn't see enrichedHtml !== renderedHtml
+      // and queue another doomed attempt — that was the source of the
+      // pagination loop on persistent errors. A NEW enrichedHtml from
+      // a future edit will still trigger a fresh attempt.
+      renderedHtml = htmlForThisRun;
     } finally {
       setElapsedMs(Math.round(performance.now() - t0));
       pagingActive = false;
@@ -391,36 +397,10 @@ const BookPagedPreview: Component<BookPagedPreviewProps> = (props) => {
     return owned[fa.paraIndex - 1] ?? null;
   };
 
-  // Live edit flash: when the writer types in Source, the parent passes
-  // the (order, paraIndex) of the cursor's paragraph. We find the
-  // matching <p> in the paginated DOM and re-trigger the flash
-  // animation. Re-triggering by remove+reflow+add lets continuous
-  // typing keep the highlight lit without piling up timers.
-  let lastFlashedEl: HTMLElement | null = null;
-  let lastFlashTimer: number | null = null;
-  createEffect(() => {
-    const fa = props.flashAnchor;
-    if (!fa) return;
-    if (status() !== "ready") return;
-    const target = flashTarget(fa);
-    if (!target) return;
-    if (lastFlashedEl && lastFlashedEl !== target) {
-      lastFlashedEl.classList.remove("book-paged-flash");
-    }
-    if (lastFlashTimer !== null) {
-      clearTimeout(lastFlashTimer);
-      lastFlashTimer = null;
-    }
-    target.classList.remove("book-paged-flash");
-    // Force reflow so re-adding the class restarts the animation.
-    void target.offsetWidth;
-    target.classList.add("book-paged-flash");
-    lastFlashedEl = target;
-    lastFlashTimer = window.setTimeout(() => {
-      target?.classList.remove("book-paged-flash");
-      lastFlashTimer = null;
-    }, 1400);
-  });
+  // (Live-typing paragraph flash was removed — kept noisy/distracting
+  // during fast typing. `flashAnchor` is still used by
+  // `restoreScrollAfterPagination` below to bring the user back to
+  // their last edit position after a re-pagination.)
 
   /** Restore the user's view position after a fresh pagination. Pages
    *  re-paginates from scratch (the temp DOM is wiped every time), so

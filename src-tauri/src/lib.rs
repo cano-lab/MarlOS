@@ -521,6 +521,8 @@ pub fn run() {
             // Book typesetter — Source-view live edits
             commands::typesetter_read_book_file,
             commands::typesetter_write_book_file,
+            // Research feed
+            commands::research_feed_list,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

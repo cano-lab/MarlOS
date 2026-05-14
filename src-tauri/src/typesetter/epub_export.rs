@@ -94,14 +94,9 @@ li {{ margin: 0.2em 0; }}
 
 hr {{
   border: 0;
-  text-align: center;
-  margin: 2em 0;
-}}
-
-hr::before {{
-  content: "* * *";
-  letter-spacing: 0.4em;
-  color: #555;
+  height: 0;
+  margin: 1em 0;
+  visibility: hidden;
 }}
 
 .footnote-ref a {{

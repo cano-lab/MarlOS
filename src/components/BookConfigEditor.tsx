@@ -22,6 +22,18 @@ const TRIM_PRESETS = [
   { value: "5x8", label: "5 × 8 in (mass market)" },
 ];
 
+const TRIM_PRESET_VALUES = new Set(TRIM_PRESETS.map((p) => p.value));
+const MM_PER_IN = 25.4;
+
+function parseTrim(size: string): { w: number; h: number } | null {
+  const m = /^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/.exec(size);
+  if (!m) return null;
+  const w = parseFloat(m[1]);
+  const h = parseFloat(m[2]);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+  return { w, h };
+}
+
 const TYPOGRAPHY_PRESETS = [
   {
     label: "Dense (doc default — 11pt / 14pt leading, 6×9 with KDP margins)",
@@ -55,12 +67,54 @@ const BookConfigEditor: Component<BookConfigEditorProps> = (props) => {
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [info, setInfo] = createSignal<string | null>(null);
+  // True when the trim is set to anything other than a named preset.
+  // Drives the custom-trim panel visibility.
+  const [customMode, setCustomMode] = createSignal(
+    !TRIM_PRESET_VALUES.has(props.config.trim.size),
+  );
+  // Unit used by the custom-trim inputs. Stored in book.toml is
+  // always inches; the unit toggle only affects what's displayed.
+  const [customUnit, setCustomUnit] = createSignal<"in" | "mm">("in");
 
   createEffect(() => {
     setDraft(structuredClone(props.config));
+    setCustomMode(!TRIM_PRESET_VALUES.has(props.config.trim.size));
     setInfo(null);
     setError(null);
   });
+
+  // Custom-trim helpers ----------------------------------------------
+  /** Current trim width/height parsed from draft.trim.size, expressed in
+   *  inches. Falls back to 6×9 on malformed strings. */
+  const trimInches = () => parseTrim(draft().trim.size) ?? { w: 6, h: 9 };
+  /** Convert inches → display value for the active unit, rounded to a
+   *  sensible precision (3 decimals for in, 1 for mm). */
+  const toDisplay = (inches: number) =>
+    customUnit() === "mm"
+      ? Math.round(inches * MM_PER_IN * 10) / 10
+      : Math.round(inches * 1000) / 1000;
+  /** Convert a display value back to inches. */
+  const toInches = (v: number) => (customUnit() === "mm" ? v / MM_PER_IN : v);
+
+  const setCustomTrim = (wIn: number, hIn: number) => {
+    if (!Number.isFinite(wIn) || !Number.isFinite(hIn) || wIn <= 0 || hIn <= 0) return;
+    // Cap to 3 decimal places so we don't end up with size strings
+    // like "6.0000000001x9.0" from floating-point round-trips.
+    const w = Math.round(wIn * 1000) / 1000;
+    const h = Math.round(hIn * 1000) / 1000;
+    update((d) => (d.trim.size = `${w}x${h}`));
+  };
+
+  const onTrimSelectChange = (v: string) => {
+    if (v === "custom") {
+      setCustomMode(true);
+      // If we were on a preset, seed the custom inputs with the same
+      // dimensions so the user has a starting point to tweak.
+    } else {
+      setCustomMode(false);
+      update((d) => (d.trim.size = v));
+    }
+  };
 
   const update = (mutator: (d: BookConfig) => void) => {
     setDraft((prev) => {
@@ -275,6 +329,29 @@ const BookConfigEditor: Component<BookConfigEditorProps> = (props) => {
               />
             </label>
           </div>
+          <label class="bce-field">
+            <span>Running header</span>
+            <select
+              value={draft().typography.running_header_style ?? "title"}
+              onChange={(e) =>
+                update(
+                  (d) =>
+                    (d.typography.running_header_style =
+                      e.currentTarget.value),
+                )
+              }
+            >
+              <option value="title">Title only — "The Equation…"</option>
+              <option value="chapter-number">"Chapter 3" — number only</option>
+              <option value="chapter-number-title">"Chapter 3 · Title"</option>
+              <option value="compact-arabic">"3 · Title" — compact arabic</option>
+              <option value="compact-roman">"III · Title" — compact roman</option>
+            </select>
+          </label>
+          <p class="bce-help">
+            Strip at the top of each page within a chapter. Helps the
+            reader locate themselves without remembering the title.
+          </p>
         </section>
 
         <section class="bce-section">
@@ -282,16 +359,64 @@ const BookConfigEditor: Component<BookConfigEditorProps> = (props) => {
           <label class="bce-field">
             <span>Trim size</span>
             <select
-              value={draft().trim.size}
-              onChange={(e) =>
-                update((d) => (d.trim.size = e.currentTarget.value))
-              }
+              value={customMode() ? "custom" : draft().trim.size}
+              onChange={(e) => onTrimSelectChange(e.currentTarget.value)}
             >
               {TRIM_PRESETS.map((p) => (
                 <option value={p.value}>{p.label}</option>
               ))}
+              <option value="custom">Custom…</option>
             </select>
           </label>
+          <Show when={customMode()}>
+            <div class="bce-row">
+              <label class="bce-field bce-field-narrow">
+                <span>Width</span>
+                <input
+                  type="number"
+                  step={customUnit() === "in" ? "0.01" : "0.1"}
+                  value={toDisplay(trimInches().w)}
+                  onInput={(e) => {
+                    const v = parseFloat(e.currentTarget.value);
+                    if (Number.isFinite(v) && v > 0) {
+                      setCustomTrim(toInches(v), trimInches().h);
+                    }
+                  }}
+                />
+              </label>
+              <label class="bce-field bce-field-narrow">
+                <span>Height</span>
+                <input
+                  type="number"
+                  step={customUnit() === "in" ? "0.01" : "0.1"}
+                  value={toDisplay(trimInches().h)}
+                  onInput={(e) => {
+                    const v = parseFloat(e.currentTarget.value);
+                    if (Number.isFinite(v) && v > 0) {
+                      setCustomTrim(trimInches().w, toInches(v));
+                    }
+                  }}
+                />
+              </label>
+              <label class="bce-field bce-field-narrow">
+                <span>Unit</span>
+                <select
+                  value={customUnit()}
+                  onChange={(e) =>
+                    setCustomUnit(e.currentTarget.value as "in" | "mm")
+                  }
+                >
+                  <option value="in">inches</option>
+                  <option value="mm">mm</option>
+                </select>
+              </label>
+            </div>
+            <p class="bce-help">
+              Stored in book.toml as inches regardless of the unit you
+              type. Common metric trims: 148 × 210 mm (A5), 129 × 198 mm
+              (B-format), 152 × 229 mm (Royal).
+            </p>
+          </Show>
           <p class="bce-help">All margins in inches. Inside = spine side; outside = page edge.</p>
           <div class="bce-row">
             <label class="bce-field bce-field-narrow">

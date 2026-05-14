@@ -117,6 +117,12 @@ const BookMode: Component<BookModeProps> = (props) => {
   // Toggle for split-mode scroll sync. Off lets each pane scroll
   // independently — useful when comparing two distant places.
   const [splitScrollSync, setSplitScrollSync] = createSignal(true);
+  // When off, autosaves don't trigger an immediate loadBook +
+  // re-pagination. Edits still save to disk; Pages just stays on
+  // whatever was rendered last. Useful when typing fast and the
+  // re-paginate flicker is distracting. A "Re-paginate" button
+  // surfaces when pages are stale.
+  const [autoPaginate, setAutoPaginate] = createSignal(true);
   // Live-edit flash: incremented every time Source emits onEditAt, so
   // BookPagedPreview's effect re-fires and re-applies the highlight.
   const [flashAnchor, setFlashAnchor] = createSignal<
@@ -307,11 +313,24 @@ const BookMode: Component<BookModeProps> = (props) => {
     });
   });
 
-  // When the user moves out of Source and there are unflushed changes
-  // on disk, refresh the book before showing pages/outline.
+  // When the user moves out of Source and into Outline or Pages, drain
+  // any pending re-pagination so they see the latest content. Split
+  // mode is intentionally NOT in this list — split has its own
+  // auto-paginate toggle and must respect Manual mode (a Manual save
+  // flips pagesStale; we don't want this effect to drain it).
   createEffect(() => {
     const v = viewMode();
-    if (v !== "source" && pagesStale()) {
+    if ((v === "outline" || v === "pages") && pagesStale()) {
+      setPagesStale(false);
+      void loadBook();
+    }
+  });
+
+  // If the user flips auto-paginate back on while pages are stale,
+  // immediately drain the pending reload so they don't have to also
+  // click "Re-paginate".
+  createEffect(() => {
+    if (autoPaginate() && pagesStale() && viewMode() === "split") {
       setPagesStale(false);
       void loadBook();
     }
@@ -422,10 +441,23 @@ const BookMode: Component<BookModeProps> = (props) => {
 
   const isMarkdownPath = (p: string) => /\.(md|markdown|txt)$/i.test(p);
 
+  // Concurrency guard: only one loadBook can run at a time. If a second
+  // call comes in while one is in flight (e.g. autosave fires twice in
+  // rapid succession), set a "pending" flag and re-run once at the end
+  // so the user always sees the latest disk state, without paying for
+  // overlapping pagination work.
+  let loadBookInFlight = false;
+  let loadBookPending = false;
   const loadBook = async () => {
+    if (loadBookInFlight) {
+      loadBookPending = true;
+      return;
+    }
+    loadBookInFlight = true;
     const p = path().trim();
     if (!p) {
       setError("Pick a book.toml or markdown file first");
+      loadBookInFlight = false;
       return;
     }
     setBusy(true);
@@ -448,7 +480,28 @@ const BookMode: Component<BookModeProps> = (props) => {
       }
     } finally {
       setBusy(false);
+      loadBookInFlight = false;
+      if (loadBookPending) {
+        loadBookPending = false;
+        // Tail-call: drain the queued request with whatever disk state
+        // is current now. Doesn't await — caller already returned.
+        void loadBook();
+      }
     }
+  };
+
+  // Debounced auto-paginate trigger. Each autosave queues a loadBook
+  // 800ms later; rapid saves coalesce into one. Combined with the
+  // BookSourceView save debounce (1.5s after typing stops), this means
+  // pages re-paginates ~2.3s after the writer pauses, not on every
+  // 1.5-second autosave burst that fires while they're still typing.
+  let autoPaginateTimer: number | null = null;
+  const scheduleAutoPaginate = () => {
+    if (autoPaginateTimer !== null) clearTimeout(autoPaginateTimer);
+    autoPaginateTimer = window.setTimeout(() => {
+      autoPaginateTimer = null;
+      void loadBook();
+    }, 800);
   };
 
   const initBook = async () => {
@@ -648,6 +701,33 @@ const BookMode: Component<BookModeProps> = (props) => {
             >
               {splitScrollSync() ? "🔗 Sync" : "⛓ Free"}
             </button>
+            <button
+              classList={{
+                "book-mode-btn": true,
+                "book-mode-btn-settings": true,
+                active: autoPaginate(),
+              }}
+              onClick={() => setAutoPaginate(!autoPaginate())}
+              title={
+                autoPaginate()
+                  ? "Auto-paginate ON — Pages refreshes after each save (~1.5s)"
+                  : "Auto-paginate OFF — edits save but Pages stays put until you re-paginate"
+              }
+            >
+              {autoPaginate() ? "⟳ Auto" : "⏸ Manual"}
+            </button>
+            <Show when={!autoPaginate() && pagesStale()}>
+              <button
+                class="book-mode-btn book-mode-btn-primary"
+                onClick={() => {
+                  setPagesStale(false);
+                  void loadBook();
+                }}
+                title="Run pandoc + paginate now to reflect the latest edits"
+              >
+                ✱ Re-paginate
+              </button>
+            </Show>
           </Show>
           <button
             classList={{
@@ -754,17 +834,21 @@ const BookMode: Component<BookModeProps> = (props) => {
             active={viewMode() === "source" || viewMode() === "split"}
             disableSectionScrollSync={viewMode() === "split"}
             onScrollSurfaceReady={setSourceSurface}
+            pageStyled={viewMode() === "split"}
+            config={book()?.config ?? null}
             onEditAt={(order, paraIndex) =>
               setFlashAnchor({ order, paraIndex, ts: performance.now() })
             }
             onSaved={() => {
-              if (viewMode() === "split") {
-                // In split mode the user can see Pages right now, so
-                // refresh immediately instead of deferring.
-                void loadBook();
+              if (viewMode() === "split" && autoPaginate()) {
+                // Split + auto: debounced loadBook so rapid saves
+                // during fast typing don't trigger overlapping
+                // paginations and freeze the UI.
+                scheduleAutoPaginate();
               } else {
-                // Defer the expensive pandoc + structure refresh until
-                // the user actually switches to Pages or Outline.
+                // Either solo Source (defer until view switch), or
+                // split + manual (defer until "Re-paginate" click /
+                // auto toggled back on). Both flag stale.
                 setPagesStale(true);
               }
             }}

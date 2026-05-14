@@ -10114,3 +10114,85 @@ pub async fn typesetter_export_pdf(
 
     Ok(output.display().to_string())
 }
+
+
+// =============================================================================
+// Research feed — flat list of stored research summaries for the swipe-through
+// UI in ResearchHub. Backed by the same MCP-side memory store that
+// list_research_summaries reads.
+// =============================================================================
+
+#[derive(serde::Serialize)]
+pub struct ResearchFeedItem {
+    pub id: String,
+    pub title: String,
+    pub topic: String,
+    pub date: String,
+    pub doi: Option<String>,
+    pub arxiv_id: Option<String>,
+    pub url: Option<String>,
+    pub authors: Option<String>,
+    pub year: Option<String>,
+    pub venue: Option<String>,
+    pub summary: String,
+}
+
+#[tauri::command]
+pub async fn research_feed_list(
+    topic: Option<String>,
+    limit: Option<usize>,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<Vec<ResearchFeedItem>, String> {
+    let limit = limit.unwrap_or(100).min(500);
+    let tag = match &topic {
+        Some(t) => format!("research-topic-name:{}", t),
+        None => "kind:research-summary".to_string(),
+    };
+    let store = search.store.read().await;
+    let objs = store
+        .list_by_tag(&tag, limit.max(200))
+        .map_err(|e| e.to_string())?;
+    let topic_filter = topic.clone();
+    let exact_tag = tag.clone();
+    let mut items: Vec<ResearchFeedItem> = objs
+        .iter()
+        .filter(|o| o.tags.iter().any(|t| t == "kind:research-summary"))
+        .filter(|o| {
+            if topic_filter.is_some() {
+                o.tags.iter().any(|t| t == &exact_tag)
+            } else {
+                true
+            }
+        })
+        .map(|o| {
+            let topic_tag = o
+                .tags
+                .iter()
+                .find(|t| t.starts_with("research-topic-name:"))
+                .map(|t| t.trim_start_matches("research-topic-name:").to_string())
+                .unwrap_or_default();
+            let date = o
+                .tags
+                .iter()
+                .find(|t| t.starts_with("research-date:"))
+                .map(|t| t.trim_start_matches("research-date:").to_string())
+                .unwrap_or_default();
+            ResearchFeedItem {
+                id: o.suid.to_string(),
+                title: o.name.clone().unwrap_or_default(),
+                topic: topic_tag,
+                date,
+                doi: o.metadata.get("doi").and_then(|v| v.as_str()).map(String::from),
+                arxiv_id: o.metadata.get("arxiv_id").and_then(|v| v.as_str()).map(String::from),
+                url: o.metadata.get("source_url").and_then(|v| v.as_str()).map(String::from),
+                authors: o.metadata.get("authors").and_then(|v| v.as_str()).map(String::from),
+                year: o.metadata.get("year").and_then(|v| v.as_str()).map(String::from),
+                venue: o.metadata.get("venue").and_then(|v| v.as_str()).map(String::from),
+                summary: o.content_as_str().unwrap_or("").to_string(),
+            }
+        })
+        .take(limit)
+        .collect();
+    items.sort_by(|a, b| b.date.cmp(&a.date));
+    Ok(items)
+}

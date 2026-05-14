@@ -1,5 +1,10 @@
 import { Component, createEffect, createSignal, For, onCleanup, Show } from "solid-js";
-import { typesetterService, SectionAnchor, ScrollSurface } from "../services/typesetter-service";
+import {
+  typesetterService,
+  SectionAnchor,
+  ScrollSurface,
+  BookConfig,
+} from "../services/typesetter-service";
 import "./BookSourceView.css";
 
 interface BookSourceViewProps {
@@ -21,6 +26,14 @@ interface BookSourceViewProps {
    *  to the parent once mounted, so the parent can mirror scrolling
    *  between Source and Pages in split mode. */
   onScrollSurfaceReady?: (surface: ScrollSurface | null) => void;
+  /** When true, restyle the textarea to match the typeset page body
+   *  (EB Garamond, body-pt/leading-pt, body-width column on a gray
+   *  surround). Source still edits markdown — the styling just makes
+   *  the column read like a page. Used in split mode. */
+  pageStyled?: boolean;
+  /** Required when `pageStyled` is true. Pulls trim + typography to
+   *  size the column to body width and match the leading. */
+  config?: BookConfig | null;
   /** Fires on every input event with the (order, paraIndex) of the
    *  paragraph the cursor is currently inside. Used in split mode so
    *  the parent can flash the matching paragraph on the Pages side as
@@ -32,6 +45,28 @@ interface BookSourceViewProps {
 }
 
 const SAVE_DEBOUNCE_MS = 1500;
+const ZOOM_LS_KEY = "marlos-source-zoom";
+const ZOOM_MIN = 0.6;
+const ZOOM_MAX = 3.0;
+const ZOOM_STEP = 0.1;
+
+function readZoom(): number {
+  try {
+    const v = parseFloat(localStorage.getItem(ZOOM_LS_KEY) ?? "");
+    if (Number.isFinite(v) && v >= ZOOM_MIN && v <= ZOOM_MAX) return v;
+  } catch {
+    // ignore
+  }
+  return 1.0;
+}
+
+function writeZoom(z: number) {
+  try {
+    localStorage.setItem(ZOOM_LS_KEY, String(z));
+  } catch {
+    // ignore quota errors
+  }
+}
 
 /**
  * Live-edit view for Book Mode. Loads each manuscript file via the
@@ -49,6 +84,17 @@ const BookSourceView: Component<BookSourceViewProps> = (props) => {
   const [error, setError] = createSignal<string | null>(null);
   const [savedAt, setSavedAt] = createSignal<Date | null>(null);
   const [dirty, setDirty] = createSignal(false);
+  // Zoom multiplier applied to font-size + line-height. Persisted to
+  // localStorage so the writer's choice survives reloads.
+  const [zoom, setZoomSignal] = createSignal(readZoom());
+  const setZoom = (z: number) => {
+    const clamped = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+    setZoomSignal(clamped);
+    writeZoom(clamped);
+  };
+  const zoomIn = () => setZoom(zoom() + ZOOM_STEP);
+  const zoomOut = () => setZoom(zoom() - ZOOM_STEP);
+  const zoomReset = () => setZoom(1.0);
 
   let saveTimer: number | null = null;
   let editorRef: HTMLTextAreaElement | undefined;
@@ -276,6 +322,11 @@ const BookSourceView: Component<BookSourceViewProps> = (props) => {
   };
 
   const handleScroll = () => {
+    // Sync gutter scroll immediately (no RAF — it must visually follow
+    // the textarea exactly, no lag).
+    if (gutterRef && editorRef && gutterRef.scrollTop !== editorRef.scrollTop) {
+      gutterRef.scrollTop = editorRef.scrollTop;
+    }
     if (scrollSyncRaf !== null) cancelAnimationFrame(scrollSyncRaf);
     scrollSyncRaf = requestAnimationFrame(() => {
       scrollSyncRaf = null;
@@ -289,6 +340,12 @@ const BookSourceView: Component<BookSourceViewProps> = (props) => {
     try {
       const text = await typesetterService.readBookFile(props.bookPath, activeIndex());
       setContent(text);
+      // The textarea is uncontrolled (no `value={content()}` binding) —
+      // we set its value imperatively here on programmatic load so
+      // user-typing doesn't pay the cost of a value re-assignment
+      // through Solid on every keystroke (which can reset scroll
+      // position on a 200KB textarea).
+      if (editorRef) editorRef.value = text;
       setDirty(false);
     } catch (e) {
       setError(`Failed to load: ${e instanceof Error ? e.message : String(e)}`);
@@ -407,7 +464,11 @@ const BookSourceView: Component<BookSourceViewProps> = (props) => {
     textareaResizeObserver?.disconnect();
     textareaResizeObserver = null;
     if (!el || typeof ResizeObserver === "undefined") return;
-    textareaResizeObserver = new ResizeObserver(() => invalidateAnchors());
+    textareaResizeObserver = new ResizeObserver(() => {
+      invalidateAnchors();
+      // Width change → wraps shift → line tops shift → re-render gutter.
+      scheduleGutterRender(150);
+    });
     textareaResizeObserver.observe(el);
   };
 
@@ -415,6 +476,21 @@ const BookSourceView: Component<BookSourceViewProps> = (props) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
       e.preventDefault();
       void flushSave();
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      // Zoom shortcuts. `+` requires Shift on US layouts, so accept
+      // both `+` and `=` for zoom-in; `-` for zoom-out; `0` to reset.
+      if (e.key === "+" || e.key === "=") {
+        e.preventDefault();
+        zoomIn();
+      } else if (e.key === "-" || e.key === "_") {
+        e.preventDefault();
+        zoomOut();
+      } else if (e.key === "0") {
+        e.preventDefault();
+        zoomReset();
+      }
     }
   };
 
@@ -459,6 +535,10 @@ const BookSourceView: Component<BookSourceViewProps> = (props) => {
     }
     textareaResizeObserver?.disconnect();
     textareaResizeObserver = null;
+    if (gutterRenderTimer !== null) {
+      clearTimeout(gutterRenderTimer);
+      gutterRenderTimer = null;
+    }
   });
 
   const fileBaseName = (path: string) => path.split(/[/\\]/).pop() ?? path;
@@ -483,8 +563,8 @@ const BookSourceView: Component<BookSourceViewProps> = (props) => {
     const suffix = needsBlankAfter ? (after.startsWith("\n") ? "\n" : "\n\n") : "";
     const inserted = `${prefix}${snippet}${suffix}`;
     const next = before + inserted + after;
-    setContent(next);
     ta.value = next;
+    setContent(next);
     setDirty(true);
     invalidateAnchors();
     const cursor = before.length + inserted.length;
@@ -502,6 +582,140 @@ const BookSourceView: Component<BookSourceViewProps> = (props) => {
     scheduleSave();
     reportEditAt();
   };
+
+  /** Compute the body-text width (in inches) for the configured trim
+   *  size and margins. Matches `@page` body in the rendered PDF, so
+   *  the page-styled column reads at the same density as actual
+   *  pages. */
+  const bodyWidthIn = (): number | null => {
+    const c = props.config;
+    if (!c) return null;
+    let trimW: number;
+    switch (c.trim.size) {
+      case "5x8":
+        trimW = 5;
+        break;
+      case "5.5x8.5":
+        trimW = 5.5;
+        break;
+      case "6x9":
+        trimW = 6;
+        break;
+      default: {
+        // Free-form "WxH" inches (Custom trim option).
+        const m = /^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/.exec(c.trim.size);
+        trimW = m ? parseFloat(m[1]) : 6;
+        if (!Number.isFinite(trimW) || trimW <= 0) trimW = 6;
+      }
+    }
+    const inner = trimW - c.trim.margins_in.inside - c.trim.margins_in.outside;
+    return inner > 1 ? inner : null;
+  };
+
+  /** Inline style applied to the textarea. In paged mode, pulls font /
+   *  size / leading from the user's typography config and column
+   *  width from the trim + margins. Zoom is NOT applied here — it's
+   *  applied via CSS `zoom` on the shared zoom-area wrapper around
+   *  the gutter+textarea, so everything (column, font, margins,
+   *  gutter alignment) scales together as a PDF-page would. */
+  const pageStyledStyle = (): Record<string, string> | undefined => {
+    if (!props.pageStyled || !props.config) return undefined;
+    const t = props.config.typography;
+    const font =
+      t.body_font && t.body_font.trim().length > 0
+        ? t.body_font
+        : "EB Garamond";
+    const w = bodyWidthIn();
+    return {
+      "font-family": `"${font}", Georgia, "Times New Roman", serif`,
+      "font-size": `${t.body_size_pt}pt`,
+      "line-height": `${t.body_leading_pt}pt`,
+      width: w ? `${w}in` : "100%",
+    };
+  };
+
+  // ----- Line number gutter --------------------------------------------------
+  // Gutter is rendered via direct innerHTML write rather than a Solid
+  // <For>. Reactively rendering 5000+ absolutely-positioned divs costs
+  // O(N) Solid reactions on every keystroke; one innerHTML string is
+  // a single browser parse. We also debounce the recompute (150ms
+  // after typing stops) so fast typing doesn't pay the
+  // canvas.measureText cost on every keystroke.
+  let gutterRef: HTMLDivElement | undefined;
+  let gutterRenderTimer: number | null = null;
+
+  // Regex matching lines that are pure snippet divs (page-break,
+  // blank-page, space-*). Used by the gutter render to flag those
+  // lines with a distinct color + icon — the textarea itself can't
+  // render HTML so we can't colorize the div text inline.
+  const SNIPPET_LINE_RE =
+    /^\s*<div class="(page-break|blank-page|space-small|space-medium|space-large|space-section)">\s*<\/div>\s*$/;
+
+  const renderGutterNow = () => {
+    if (!gutterRef || !editorRef) return;
+    const text = content();
+    const tops = computeLineTops(text);
+    if (tops.length === 0) {
+      gutterRef.innerHTML = "";
+      return;
+    }
+    const lines = text.split("\n");
+    const spacerHeight = tops[tops.length - 1] ?? 0;
+    let html =
+      '<div class="book-source-gutter-spacer" style="height:' +
+      spacerHeight +
+      'px"></div>';
+    for (let i = 0; i < tops.length; i++) {
+      const snippetMatch = (lines[i] ?? "").match(SNIPPET_LINE_RE);
+      if (snippetMatch) {
+        // Pick a glyph that hints at the snippet kind.
+        const kind = snippetMatch[1];
+        const glyph =
+          kind === "page-break"
+            ? "↵" // ↵ return arrow
+            : kind === "blank-page"
+              ? "▭" // ▭ rectangle
+              : "—"; // — em-dash for space snippets
+        html +=
+          '<div class="book-source-gutter-num book-source-gutter-num-snippet" data-kind="' +
+          kind +
+          '" style="top:' +
+          tops[i] +
+          'px"><span class="book-source-gutter-glyph">' +
+          glyph +
+          "</span>" +
+          (i + 1) +
+          "</div>";
+      } else {
+        html +=
+          '<div class="book-source-gutter-num" style="top:' +
+          tops[i] +
+          'px">' +
+          (i + 1) +
+          "</div>";
+      }
+    }
+    gutterRef.innerHTML = html;
+  };
+
+  const scheduleGutterRender = (delayMs = 150) => {
+    if (gutterRenderTimer !== null) clearTimeout(gutterRenderTimer);
+    gutterRenderTimer = window.setTimeout(() => {
+      gutterRenderTimer = null;
+      renderGutterNow();
+    }, delayMs);
+  };
+
+  // Schedule a debounced gutter re-render whenever the content or
+  // layout-affecting props change. Zoom is included because font-size
+  // change shifts every line's scrollTop.
+  createEffect(() => {
+    void content();
+    void props.pageStyled;
+    void props.config;
+    void zoom();
+    scheduleGutterRender(150);
+  });
 
   const SNIPPETS: Array<{ label: string; title: string; snippet: string }> = [
     {
@@ -573,6 +787,31 @@ const BookSourceView: Component<BookSourceViewProps> = (props) => {
         <button class="book-source-btn" onClick={flushSave} disabled={!dirty() || saving()}>
           Save now (Ctrl+S)
         </button>
+        <div class="book-source-zoom">
+          <button
+            class="book-source-btn book-source-zoom-btn"
+            onClick={zoomOut}
+            title="Zoom out (Ctrl+−)"
+            disabled={zoom() <= ZOOM_MIN + 1e-6}
+          >
+            −
+          </button>
+          <button
+            class="book-source-btn book-source-zoom-btn"
+            onClick={zoomReset}
+            title="Reset zoom (Ctrl+0)"
+          >
+            {Math.round(zoom() * 100)}%
+          </button>
+          <button
+            class="book-source-btn book-source-zoom-btn"
+            onClick={zoomIn}
+            title="Zoom in (Ctrl+=)"
+            disabled={zoom() >= ZOOM_MAX - 1e-6}
+          >
+            +
+          </button>
+        </div>
       </div>
 
       <div class="book-source-snippets">
@@ -598,20 +837,43 @@ const BookSourceView: Component<BookSourceViewProps> = (props) => {
         when={!loading()}
         fallback={<div class="book-source-loading">Loading...</div>}
       >
-        <textarea
-          ref={(el) => {
-            editorRef = el;
-            attachResizeObserver(el);
-            props.onScrollSurfaceReady?.(el ? { el, getAnchors } : null);
+        <div
+          classList={{
+            "book-source-shell": true,
+            "book-source-shell-paged": props.pageStyled === true,
           }}
-          class="book-source-editor"
-          value={content()}
-          onInput={handleInput}
-          onKeyDown={handleKeyDown}
-          onScroll={handleScroll}
-          spellcheck={false}
-          autocomplete="off"
-        />
+        >
+          <div
+            class="book-source-zoom-area"
+            style={zoom() === 1.0 ? undefined : { zoom: `${zoom()}` }}
+          >
+            <div
+              class="book-source-gutter"
+              ref={(el) => {
+                gutterRef = el ?? undefined;
+                if (el) queueMicrotask(renderGutterNow);
+              }}
+            />
+            <textarea
+              ref={(el) => {
+                editorRef = el;
+                attachResizeObserver(el);
+                if (el) el.value = content();
+                props.onScrollSurfaceReady?.(el ? { el, getAnchors } : null);
+              }}
+              classList={{
+                "book-source-editor": true,
+                "book-source-editor-paged": props.pageStyled === true,
+              }}
+              style={pageStyledStyle()}
+              onInput={handleInput}
+              onKeyDown={handleKeyDown}
+              onScroll={handleScroll}
+              spellcheck={false}
+              autocomplete="off"
+            />
+          </div>
+        </div>
       </Show>
     </div>
   );
