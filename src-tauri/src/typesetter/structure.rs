@@ -20,9 +20,12 @@
 
 use std::sync::OnceLock;
 
+use chrono::Datelike;
 use regex::Regex;
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
+
+use super::book_config::BookMeta;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -390,6 +393,17 @@ pub fn enrich_html(html: &str, sections: &[BookSection]) -> String {
 }
 
 pub fn analyze(html: &str) -> Result<StructuredHtml, StructureError> {
+    analyze_with_options(html, 5)
+}
+
+/// Same as `analyze` but lets the caller specify how many words after
+/// the drop cap get the lead-in span. 0 disables lead-in (drop cap span
+/// still wrapped). Pulled out so the typesetter can pass through the
+/// typography.lead_in_word_count config value.
+pub fn analyze_with_options(
+    html: &str,
+    lead_in_word_count: usize,
+) -> Result<StructuredHtml, StructureError> {
     let headings = extract_top_level_sections(html);
     if headings.is_empty() {
         return Err(StructureError::NoSections);
@@ -399,7 +413,8 @@ pub fn analyze(html: &str) -> Result<StructuredHtml, StructureError> {
     let interlude_count = sections.iter().filter(|s| s.kind == SectionKind::Interlude).count() as u32;
     let front_matter_count = sections.iter().filter(|s| s.kind == SectionKind::FrontMatter).count() as u32;
     let back_matter_count = sections.iter().filter(|s| s.kind == SectionKind::BackMatter).count() as u32;
-    let enriched_html = enrich_html(html, &sections);
+    let mut enriched_html = enrich_html(html, &sections);
+    enriched_html = wrap_chapter_openers(&enriched_html, lead_in_word_count);
 
     Ok(StructuredHtml {
         structure: BookStructure {
@@ -411,6 +426,267 @@ pub fn analyze(html: &str) -> Result<StructuredHtml, StructureError> {
         },
         enriched_html,
     })
+}
+
+/// Build HTML for the generated title / copyright / dedication pages
+/// from the book.toml metadata. Returns an empty string if there's
+/// nothing to render (no title and no copyright holder/author).
+///
+/// Pages are tagged `data-section-type="front-matter"` so the existing
+/// front-matter @page rule applies (lower-roman page numbers, no
+/// running header). They also carry `data-front-page="title|copyright
+/// |dedication"` and a unique class so CSS can target each one
+/// individually (suppress page numbers on title page, center the
+/// dedication, etc.).
+///
+/// Intentionally not added to the `BookStructure.sections` list —
+/// these are "virtual" pages that don't appear in the outline tree;
+/// the writer didn't author them.
+pub fn build_generated_front_matter(book: &BookMeta) -> String {
+    let mut out = String::new();
+
+    // ---- Title page ----
+    if !book.title.trim().is_empty() {
+        out.push_str(
+            r#"<section data-section-type="front-matter" data-front-page="title" class="generated-title-page">
+  <div class="title-page-inner">
+"#,
+        );
+        out.push_str(&format!(
+            "    <h1 class=\"gen-book-title\">{}</h1>\n",
+            escape_html(&book.title)
+        ));
+        if !book.subtitle.trim().is_empty() {
+            out.push_str(&format!(
+                "    <p class=\"gen-book-subtitle\">{}</p>\n",
+                escape_html(&book.subtitle)
+            ));
+        }
+        if !book.author.trim().is_empty() {
+            out.push_str(&format!(
+                "    <p class=\"gen-book-author\">{}</p>\n",
+                escape_html(&book.author)
+            ));
+        }
+        out.push_str("  </div>\n</section>\n");
+    }
+
+    // ---- Copyright page ----
+    let holder = if book.copyright_holder.trim().is_empty() {
+        book.author.trim()
+    } else {
+        book.copyright_holder.trim()
+    };
+    let year = if book.copyright_year.trim().is_empty() {
+        chrono::Utc::now().year().to_string()
+    } else {
+        book.copyright_year.trim().to_string()
+    };
+    if !holder.is_empty() {
+        out.push_str(
+            r#"<section data-section-type="front-matter" data-front-page="copyright" class="generated-copyright-page">
+  <div class="copyright-page-inner">
+"#,
+        );
+        out.push_str(&format!(
+            "    <p>Copyright \u{00A9} {} {}</p>\n",
+            escape_html(&year),
+            escape_html(holder)
+        ));
+        out.push_str("    <p>All rights reserved.</p>\n");
+        if !book.publisher.trim().is_empty() {
+            out.push_str(&format!(
+                "    <p class=\"gen-publisher\">{}</p>\n",
+                escape_html(book.publisher.trim())
+            ));
+        }
+        if !book.isbn.trim().is_empty() {
+            out.push_str(&format!(
+                "    <p class=\"gen-isbn\">ISBN {}</p>\n",
+                escape_html(book.isbn.trim())
+            ));
+        }
+        out.push_str("  </div>\n</section>\n");
+    }
+
+    // ---- Dedication ----
+    if !book.dedication.trim().is_empty() {
+        out.push_str(
+            r#"<section data-section-type="front-matter" data-front-page="dedication" class="generated-dedication-page">
+  <div class="dedication-inner">
+"#,
+        );
+        out.push_str(&format!(
+            "    <p>{}</p>\n",
+            escape_html(book.dedication.trim())
+        ));
+        out.push_str("  </div>\n</section>\n");
+    }
+
+    out
+}
+
+/// HTML for generated BACK-matter pages — currently just the
+/// acknowledgements page. Returns empty string if nothing to render.
+/// Caller appends this to the enriched_html (after all chapters /
+/// authored back matter / notes).
+pub fn build_generated_back_matter(book: &BookMeta) -> String {
+    let mut out = String::new();
+    let ack = book.acknowledgements.trim();
+    if ack.is_empty() {
+        return out;
+    }
+    out.push_str(
+        r#"<section data-section-type="back-matter" data-back-page="acknowledgements" class="generated-acknowledgements-page">
+  <h2 class="gen-ack-heading">Acknowledgements</h2>
+  <div class="acknowledgements-inner">
+"#,
+    );
+    // Split on blank lines so the writer can compose multi-paragraph
+    // acks in the textarea. Each chunk becomes its own <p>.
+    for para in ack.split("\n\n") {
+        let trimmed = para.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Preserve intra-paragraph soft line breaks as <br>.
+        let with_breaks = escape_html(trimmed).replace('\n', "<br>");
+        out.push_str(&format!("    <p>{}</p>\n", with_breaks));
+    }
+    out.push_str("  </div>\n</section>\n");
+    out
+}
+
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Wrap the first letter of every chapter's opening paragraph in a
+/// `<span class="drop-cap">`, and the next `lead_in_word_count` words
+/// in a `<span class="lead-in">`. Leading punctuation (quotes, dashes,
+/// ellipses, opening parenthesis) is preserved BEFORE the drop cap so
+/// it renders at normal size — fixes the "`"H`ello..." pseudo-element
+/// bug where the cap landed on the quote mark.
+///
+/// Paragraphs that start with inline HTML (`<em>`, `<a>`, etc.) are
+/// left untouched in V2 — a rare-enough case to defer.
+fn wrap_chapter_openers(html: &str, lead_in_word_count: usize) -> String {
+    // Match each chapter section opener followed (eventually) by the
+    // first `<p>` element's content. The lazy `.*?` between captures
+    // 1 and 2 swallows the H1 + any whitespace; capture 2 isolates
+    // the paragraph's inner text for span insertion.
+    static CAP_RE: OnceLock<Regex> = OnceLock::new();
+    let re = CAP_RE.get_or_init(|| {
+        // Greedy `[^<]+` after the <p> open tag consumes everything up
+        // to the first nested inline tag (or the closing `</p>`).
+        // Look-around isn't supported by Rust's regex crate; this
+        // achieves the same effect because `[^<]+` naturally stops at
+        // the next `<`.
+        Regex::new(
+            r#"(?s)(<section [^>]*data-section-type="chapter"[^>]*>.*?<p[^>]*>)([^<]+)"#,
+        )
+        .unwrap()
+    });
+
+    re.replace_all(html, |caps: &regex::Captures| {
+        let opener = &caps[1];
+        let p_text = &caps[2];
+        match wrap_opener_text(p_text, lead_in_word_count) {
+            Some(wrapped) => format!("{}{}", opener, wrapped),
+            None => caps[0].to_string(),
+        }
+    })
+    .into_owned()
+}
+
+/// Wraps the drop cap + lead-in spans on a paragraph's leading text
+/// run (the text before the first inline tag). Returns None when no
+/// suitable leading letter is found.
+fn wrap_opener_text(text: &str, lead_in_word_count: usize) -> Option<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut idx = 0;
+    let mut prefix = String::new();
+
+    // Skip leading whitespace and common opening punctuation. Stop at
+    // the first alphabetic character — that's the drop cap.
+    while idx < chars.len() {
+        let c = chars[idx];
+        if c.is_alphabetic() {
+            break;
+        }
+        // Allow whitespace and common opening punctuation BEFORE the cap.
+        if c.is_whitespace()
+            || matches!(
+                c,
+                '"' | '\''
+                    | '\u{201C}' // “
+                    | '\u{201D}' // ”
+                    | '\u{2018}' // ‘
+                    | '\u{2019}' // ’
+                    | '\u{00AB}' // «
+                    | '\u{00BB}' // »
+                    | '—' | '–' | '-'
+                    | '…' | '.' | ','
+                    | '(' | '['
+            )
+        {
+            prefix.push(c);
+            idx += 1;
+            continue;
+        }
+        // Numbers, symbols, etc. — bail; no drop cap for this paragraph.
+        return None;
+    }
+
+    if idx >= chars.len() {
+        return None;
+    }
+    let drop_cap = chars[idx];
+    idx += 1;
+
+    // Lead-in: rest of the first word + (lead_in_word_count - 1) more
+    // words. A word boundary is a transition from non-whitespace to
+    // whitespace; we count completed words. Stops early if an inline
+    // tag (`<`) appears — keeps the HTML well-formed.
+    let mut lead_in = String::new();
+    let mut completed_words: usize = 0;
+    let mut in_word = true; // continuation of the drop-cap word
+
+    while idx < chars.len() {
+        let c = chars[idx];
+        if c == '<' {
+            break;
+        }
+        if c.is_whitespace() {
+            if in_word {
+                completed_words += 1;
+                in_word = false;
+                if completed_words >= lead_in_word_count {
+                    break;
+                }
+            }
+        } else {
+            in_word = true;
+        }
+        lead_in.push(c);
+        idx += 1;
+    }
+    // If we ended mid-word at the text boundary, count it as completed
+    // (otherwise short opening paragraphs lose their lead-in entirely).
+    if in_word && completed_words < lead_in_word_count {
+        // Trailing word was unterminated by whitespace — that's fine,
+        // it's included in `lead_in` already.
+    }
+
+    let tail: String = chars[idx..].iter().collect();
+
+    Some(format!(
+        "{}<span class=\"drop-cap\">{}</span><span class=\"lead-in\">{}</span>{}",
+        prefix, drop_cap, lead_in, tail
+    ))
 }
 
 #[cfg(test)]

@@ -54,6 +54,25 @@ pub struct BookMeta {
     pub back_cover_image: Option<String>,
     /// Locale / language tag for the EPUB and pandoc.
     pub language: Option<String>,
+    /// Publisher name, prints on the copyright page. Empty = omit.
+    #[serde(default)]
+    pub publisher: String,
+    /// Year string for the copyright line. Empty = use current year.
+    /// String (not int) so "2025-2026" or "© 2026" variants work.
+    #[serde(default)]
+    pub copyright_year: String,
+    /// Name on the © line. Empty = fall back to `author`.
+    #[serde(default)]
+    pub copyright_holder: String,
+    /// Dedication text, printed on its own page after copyright.
+    /// Empty = omit dedication page entirely.
+    #[serde(default)]
+    pub dedication: String,
+    /// Acknowledgements text. Multi-paragraph (split on blank lines).
+    /// Renders as italicized, centered text on its own back-matter
+    /// page, under an "Acknowledgements" heading. Empty = omit.
+    #[serde(default)]
+    pub acknowledgements: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +133,24 @@ pub struct TypographyConfig {
     ///   "compact-arabic"       — "3 · The Title"
     ///   "compact-roman"        — "III · The Title"
     pub running_header_style: String,
+    /// Number of words after the drop cap that get the small-caps
+    /// lead-in treatment in the `traditional` chapter-opener preset.
+    /// The structure parser wraps the first N words of every chapter's
+    /// first paragraph in a <span class="lead-in"> regardless of preset,
+    /// so the CSS for `modern` can ignore it and `traditional` can
+    /// style it. Default 5.
+    pub lead_in_word_count: u32,
+    /// Chapter opener style preset. One of:
+    ///   "modern" (default)    — centered small-caps title at 2em, no
+    ///                            special lead-in. V1 behavior.
+    ///   "traditional"          — smaller 1.6em title with 6em top
+    ///                            whitespace, large 4em drop cap, and
+    ///                            small-caps lead-in (the first
+    ///                            lead_in_word_count words).
+    /// The drop-cap and lead-in <span> tags are always written by the
+    /// structure parser; this preset only changes which CSS targets
+    /// them.
+    pub chapter_opener_style: String,
 }
 
 impl Default for TypographyConfig {
@@ -124,6 +161,8 @@ impl Default for TypographyConfig {
             body_leading_pt: 14.0,
             heading_space_em: 1.0,
             running_header_style: "title".to_string(),
+            lead_in_word_count: 5,
+            chapter_opener_style: "modern".to_string(),
         }
     }
 }
@@ -273,6 +312,26 @@ impl BookConfig {
                 toml_string_literal(back)
             ));
         }
+        out.push_str(&format!(
+            "publisher = {}\n",
+            toml_string_literal(&self.book.publisher)
+        ));
+        out.push_str(&format!(
+            "copyright_year = {}\n",
+            toml_string_literal(&self.book.copyright_year)
+        ));
+        out.push_str(&format!(
+            "copyright_holder = {}\n",
+            toml_string_literal(&self.book.copyright_holder)
+        ));
+        out.push_str(&format!(
+            "dedication = {}\n",
+            toml_string_literal(&self.book.dedication)
+        ));
+        out.push_str(&format!(
+            "acknowledgements = {}\n",
+            toml_string_literal(&self.book.acknowledgements)
+        ));
         out.push('\n');
 
         out.push_str("[trim]\n");
@@ -306,6 +365,14 @@ impl BookConfig {
         out.push_str(&format!(
             "running_header_style = {}\n",
             toml_string_literal(&self.typography.running_header_style)
+        ));
+        out.push_str(&format!(
+            "lead_in_word_count = {}\n",
+            self.typography.lead_in_word_count
+        ));
+        out.push_str(&format!(
+            "chapter_opener_style = {}\n",
+            toml_string_literal(&self.typography.chapter_opener_style)
         ));
         out.push('\n');
 

@@ -14,6 +14,7 @@ import {
 import BookPagedPreview from "./BookPagedPreview";
 import BookConfigEditor from "./BookConfigEditor";
 import BookSourceView from "./BookSourceView";
+import RelevantSources from "./RelevantSources";
 import "./BookMode.css";
 
 /**
@@ -102,6 +103,9 @@ const BookMode: Component<BookModeProps> = (props) => {
   >("outline");
   const [showSettings, setShowSettings] = createSignal(false);
   const [exporting, setExporting] = createSignal(false);
+  // Relevant Sources side panel — ranks the user's saved Sources by
+  // semantic similarity to the section they're currently in.
+  const [showRelevant, setShowRelevant] = createSignal(false);
   // 1-based BookSection.order — which top-level section is currently in
   // view in either Pages or Source. Lets the views sync scroll position
   // when the user switches between them.
@@ -552,6 +556,31 @@ const BookMode: Component<BookModeProps> = (props) => {
     );
   };
 
+  // Plain-text body of the section the writer is currently in,
+  // extracted from enriched_html by data-section-order. Feeds the
+  // Relevant Sources panel — capped because embedding models truncate
+  // long inputs and the first ~2k chars carry the topic signal.
+  const currentSectionText = (): string => {
+    const b = book();
+    if (!b) return "";
+    const order = currentSectionOrder();
+    try {
+      const doc = new DOMParser().parseFromString(b.enriched_html, "text/html");
+      const sec = doc.querySelector(`[data-section-order="${order}"]`);
+      if (!sec) return "";
+      return (sec.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 2000);
+    } catch {
+      return "";
+    }
+  };
+
+  const currentSectionLabel = (): string => {
+    const s = book()?.structure.sections.find(
+      (sec) => sec.order === currentSectionOrder(),
+    );
+    return s ? s.title || s.h1_raw : "";
+  };
+
   const scrollToSection = (htmlId: string) => {
     // Sync shared cursor so Pages/Source jump to here too.
     const sec = book()?.structure.sections.find((s) => s.html_id === htmlId);
@@ -729,6 +758,17 @@ const BookMode: Component<BookModeProps> = (props) => {
               </button>
             </Show>
           </Show>
+          <button
+            classList={{
+              "book-mode-btn": true,
+              "book-mode-btn-settings": true,
+              active: showRelevant(),
+            }}
+            onClick={() => setShowRelevant(!showRelevant())}
+            title="Show sources relevant to the section you're in"
+          >
+            📎 Relevant
+          </button>
           <button
             classList={{
               "book-mode-btn": true,
@@ -953,6 +993,12 @@ const BookMode: Component<BookModeProps> = (props) => {
         </Show>
 
           </div>
+          <Show when={showRelevant()}>
+            <RelevantSources
+              queryText={currentSectionText()}
+              contextLabel={currentSectionLabel()}
+            />
+          </Show>
           <Show when={showSettings()}>
             <BookConfigEditor
               bookPath={path()}

@@ -229,6 +229,70 @@ const BookConfigEditor: Component<BookConfigEditorProps> = (props) => {
               />
             </label>
           </div>
+          <p class="bce-help" style="margin-top: 12px">
+            Front matter — these populate the generated title and
+            copyright pages. Leave empty to omit a page.
+          </p>
+          <label class="bce-field">
+            <span>Publisher</span>
+            <input
+              type="text"
+              value={draft().book.publisher ?? ""}
+              onInput={(e) =>
+                update((d) => (d.book.publisher = e.currentTarget.value))
+              }
+            />
+          </label>
+          <div class="bce-row">
+            <label class="bce-field bce-field-narrow">
+              <span>Copyright year</span>
+              <input
+                type="text"
+                placeholder="(current year)"
+                value={draft().book.copyright_year ?? ""}
+                onInput={(e) =>
+                  update((d) => (d.book.copyright_year = e.currentTarget.value))
+                }
+              />
+            </label>
+            <label class="bce-field bce-field-narrow">
+              <span>Copyright holder</span>
+              <input
+                type="text"
+                placeholder="(falls back to author)"
+                value={draft().book.copyright_holder ?? ""}
+                onInput={(e) =>
+                  update((d) => (d.book.copyright_holder = e.currentTarget.value))
+                }
+              />
+            </label>
+          </div>
+          <label class="bce-field">
+            <span>Dedication</span>
+            <input
+              type="text"
+              placeholder='e.g. "For my parents."'
+              value={draft().book.dedication ?? ""}
+              onInput={(e) =>
+                update((d) => (d.book.dedication = e.currentTarget.value))
+              }
+            />
+          </label>
+          <label class="bce-field">
+            <span>Acknowledgements</span>
+            <textarea
+              class="bce-textarea"
+              placeholder={
+                "Centered italic block printed at the end of the book.\n" +
+                "Separate paragraphs with a blank line."
+              }
+              value={draft().book.acknowledgements ?? ""}
+              onInput={(e) =>
+                update((d) => (d.book.acknowledgements = e.currentTarget.value))
+              }
+              rows={6}
+            />
+          </label>
         </section>
 
         <section class="bce-section">
@@ -351,6 +415,31 @@ const BookConfigEditor: Component<BookConfigEditorProps> = (props) => {
           <p class="bce-help">
             Strip at the top of each page within a chapter. Helps the
             reader locate themselves without remembering the title.
+          </p>
+          <label class="bce-field">
+            <span>Chapter opener</span>
+            <select
+              value={draft().typography.chapter_opener_style ?? "modern"}
+              onChange={(e) =>
+                update(
+                  (d) =>
+                    (d.typography.chapter_opener_style =
+                      e.currentTarget.value),
+                )
+              }
+            >
+              <option value="modern">
+                Modern — centered small-caps title, simple drop cap
+              </option>
+              <option value="traditional">
+                Traditional — large 4-line drop cap, small-caps lead-in
+              </option>
+            </select>
+          </label>
+          <p class="bce-help">
+            Visual style of the first page of every chapter. Modern is
+            the V1 default; traditional is the novel-style large
+            initial cap with the first few words in small caps.
           </p>
         </section>
 

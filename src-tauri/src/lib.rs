@@ -523,6 +523,7 @@ pub fn run() {
             commands::typesetter_write_book_file,
             // Research feed
             commands::research_feed_list,
+            commands::research_run_daily_fetch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

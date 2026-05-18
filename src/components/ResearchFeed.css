@@ -65,6 +65,24 @@
   font-size: 13px;
 }
 
+.rf-info {
+  margin: 10px 16px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(86, 156, 214, 0.12);
+  border: 1px solid rgba(86, 156, 214, 0.4);
+  color: #cfe6ff;
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+  white-space: pre-wrap;
+}
+
+.rf-btn-primary {
+  background: rgba(86, 156, 214, 0.18);
+  border-color: rgba(86, 156, 214, 0.6);
+  color: #cfe6ff;
+}
+
 .rf-empty {
   flex: 1;
   display: flex;
@@ -170,6 +188,13 @@
   background: rgba(255, 224, 130, 0.15);
   border-color: rgba(255, 193, 7, 0.6);
   color: #ffd54f;
+}
+
+.rf-action-sent {
+  background: rgba(129, 199, 132, 0.15);
+  border-color: rgba(129, 199, 132, 0.5);
+  color: #81c784;
+  cursor: default;
 }
 
 .rf-action-dismiss {

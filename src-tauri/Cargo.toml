@@ -1,6 +1,6 @@
 [package]
 name = "marlos"
-version = "0.1.0"
+version = "0.2.0"
 description = "MarlOS - Semantic Document Environment"
 authors = ["MarlOS Team"]
 license = "Proprietary"
@@ -38,7 +38,7 @@ required-features = ["tauri-app"]
 tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
-tauri = { version = "2", features = [], optional = true }
+tauri = { version = "2", features = ["protocol-asset"], optional = true }
 tauri-plugin-shell = { version = "2", optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
 tauri-plugin-fs = { version = "2", optional = true }

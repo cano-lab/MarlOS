@@ -93,6 +93,39 @@ pub fn build_export_css(config: &BookConfig, structure: &BookStructure) -> Strin
 
     let running_header_style = config.typography.running_header_style.as_str();
 
+    // Chapter-opener preset overrides. "modern" is the baseline; the
+    // earlier rules already implement it. "traditional" appends an
+    // override block (larger drop cap, smaller centered title, more
+    // top whitespace, small-caps lead-in) — order matters: these
+    // rules sit AFTER the modern ones in the CSS source so equal
+    // specificity means traditional wins.
+    let chapter_opener_extra_css =
+        if config.typography.chapter_opener_style == "traditional" {
+            r#"
+section[data-section-type="chapter"] > h1 {
+  font-size: 1.6em;
+  margin: 6em 0 2em;
+}
+section[data-section-type="chapter"] > p:first-of-type {
+  text-indent: 0;
+}
+.drop-cap {
+  float: left;
+  font-size: 4em;
+  line-height: 0.85;
+  padding: 0.06em 0.1em 0 0;
+  font-weight: 600;
+}
+.lead-in {
+  font-variant: small-caps;
+  letter-spacing: 0.05em;
+}
+"#
+            .to_string()
+        } else {
+            String::new()
+        };
+
     // Per-chapter @page rules with literal headers. Chromium's native
     // string()/string-set has been unreliable across versions; literal
     // content in named pages always works.
@@ -340,12 +373,22 @@ section[data-section-type="chapter"][data-section-number="1"] {{
   counter-reset: page 1;
 }}
 
-section[data-section-type="chapter"] > p:first-of-type::first-letter {{
+/* Drop cap is now a structure-parser span (.drop-cap) instead of a
+   pseudo-element. Skips leading punctuation so quoted openings ("He
+   said...") cap the letter, not the quote mark. Lead-in span is
+   defined but only styled by the `traditional` preset (V2 ships
+   `modern` styling here = no special lead-in). */
+.drop-cap {{
   float: left;
   font-size: 3.2em;
   line-height: 0.85;
   padding: 0.05em 0.08em 0 0;
   font-weight: 600;
+}}
+
+.lead-in {{
+  /* `modern` preset: no special styling. The `traditional` preset
+     overrides this with small-caps + letter-spacing in Phase I. */
 }}
 
 h1, h2, h3, h4 {{
@@ -471,6 +514,135 @@ sup.note-ref a {{
   display: none;
 }}
 
+/* Chapter-opener preset override (empty when modern) */
+{chapter_opener_extra}
+
+/* Generated front-matter pages — title, copyright, dedication.
+   Each is a flex-centered full body block so the content sits at
+   the page's vertical center regardless of how much text it
+   contains. Page numbers suppressed on title and dedication
+   (they're typically unprinted); copyright keeps its lower-roman
+   page number per print convention. */
+@page no-page-number {{
+  @top-center {{ content: none; }}
+  @bottom-center {{ content: none; }}
+  @bottom-left {{ content: none; }}
+  @bottom-right {{ content: none; }}
+}}
+
+.generated-title-page,
+.generated-copyright-page,
+.generated-dedication-page {{
+  break-before: right;
+  page-break-before: right;
+  break-after: page;
+  page-break-after: always;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}}
+
+.generated-title-page {{ page: no-page-number; }}
+.generated-dedication-page {{ page: no-page-number; }}
+
+.generated-title-page .title-page-inner,
+.generated-copyright-page .copyright-page-inner,
+.generated-dedication-page .dedication-inner {{
+  width: 100%;
+  max-width: 4in;
+}}
+
+.generated-title-page .gen-book-title {{
+  font-size: 2.4em;
+  margin: 0 0 0.5em;
+  font-variant: small-caps;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  line-height: 1.15;
+  text-wrap: balance;
+}}
+
+.generated-title-page .gen-book-subtitle {{
+  font-size: 1.1em;
+  font-style: italic;
+  margin: 0 0 2.5em;
+  color: #333;
+  text-wrap: balance;
+}}
+
+.generated-title-page .gen-book-author {{
+  font-size: 1.05em;
+  font-variant: small-caps;
+  letter-spacing: 0.08em;
+  margin: 0;
+}}
+
+.generated-copyright-page .copyright-page-inner {{
+  font-size: 0.85em;
+  line-height: 1.5;
+  color: #222;
+}}
+
+.generated-copyright-page p {{
+  margin: 0 0 0.6em;
+  text-indent: 0;
+  text-align: center;
+}}
+
+.generated-copyright-page .gen-publisher {{
+  font-style: italic;
+  margin-top: 1.2em;
+}}
+
+.generated-copyright-page .gen-isbn {{
+  font-family: var(--font-mono, monospace);
+  letter-spacing: 0.05em;
+}}
+
+.generated-dedication-page .dedication-inner {{
+  font-size: 1.05em;
+  font-style: italic;
+  line-height: 1.5;
+  text-wrap: balance;
+}}
+
+.generated-dedication-page p {{
+  margin: 0;
+  text-indent: 0;
+  text-align: center;
+}}
+
+/* Acknowledgements page — back matter. Centered italic block under
+   a small-caps heading. Unlike the dedication, the body flows
+   normally across pages if it runs long (no flex-center). */
+.generated-acknowledgements-page {{
+  break-before: page;
+}}
+
+.generated-acknowledgements-page .gen-ack-heading {{
+  text-align: center;
+  font-size: 1.4em;
+  font-variant: small-caps;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  margin: 4em 0 2em;
+}}
+
+.generated-acknowledgements-page .acknowledgements-inner {{
+  max-width: 4in;
+  margin: 0 auto;
+  font-style: italic;
+  text-align: center;
+  line-height: 1.6;
+}}
+
+.generated-acknowledgements-page .acknowledgements-inner p {{
+  margin: 0 0 1em;
+  text-indent: 0;
+}}
+
 /* Per-chapter named pages with literal headers — generated below */
 {per_chapter}
 "#,
@@ -485,6 +657,7 @@ sup.note-ref a {{
         bl = body_lead,
         btitle = book_title_lit,
         per_chapter = per_chapter_css,
+        chapter_opener_extra = chapter_opener_extra_css,
         font_faces = font_face_block,
     )
 }

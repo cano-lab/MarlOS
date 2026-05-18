@@ -83,6 +83,18 @@ export interface BookMeta {
   cover_image: string | null;
   back_cover_image: string | null;
   language: string | null;
+  /** Publisher name on the copyright page. Empty = omit. */
+  publisher: string;
+  /** Year on the © line. Empty = current year. */
+  copyright_year: string;
+  /** Name on the © line. Empty = falls back to `author`. */
+  copyright_holder: string;
+  /** Dedication text, prints on its own page. Empty = no dedication. */
+  dedication: string;
+  /** Acknowledgements text. Multi-paragraph (split on blank lines).
+   *  Renders as centered italic body under an "Acknowledgements"
+   *  heading at the end of the book. Empty = omit. */
+  acknowledgements: string;
 }
 
 export interface BookConfig {
@@ -100,6 +112,15 @@ export interface BookConfig {
      *  One of: "title" | "chapter-number" | "chapter-number-title" |
      *  "compact-arabic" | "compact-roman". */
     running_header_style: string;
+    /** Word count for the small-caps lead-in span after the drop cap
+     *  (used by the `traditional` chapter-opener preset, Phase I).
+     *  Default 5. The structure parser wraps regardless of preset. */
+    lead_in_word_count: number;
+    /** Chapter opener visual preset. "modern" = V1 default (centered
+     *  small-caps title, no special lead-in). "traditional" = larger
+     *  drop cap, smaller title, more top whitespace, small-caps
+     *  lead-in. */
+    chapter_opener_style: string;
   };
   export: { color_mode: string };
   files: string[];

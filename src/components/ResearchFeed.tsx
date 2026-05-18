@@ -18,6 +18,7 @@ interface ResearchFeedItem {
 
 const SAVED_LS_KEY = "marlos-research-feed-saved";
 const DISMISSED_LS_KEY = "marlos-research-feed-dismissed";
+const SENT_LS_KEY = "marlos-research-feed-sent-to-sources";
 
 function readLsSet(key: string): Set<string> {
   try {
@@ -54,6 +55,14 @@ const ResearchFeed: Component = () => {
   const [dismissed, setDismissed] = createSignal<Set<string>>(readLsSet(DISMISSED_LS_KEY));
   const [hideDismissed, setHideDismissed] = createSignal(true);
   const [showOnlySaved, setShowOnlySaved] = createSignal(false);
+  const [fetching, setFetching] = createSignal(false);
+  const [fetchStatus, setFetchStatus] = createSignal<string | null>(null);
+  // IDs of feed items the user has promoted into the Research Hub's
+  // Sources library. Persisted so the button reflects "already sent"
+  // across sessions.
+  const [sentToSources, setSentToSources] = createSignal<Set<string>>(
+    readLsSet(SENT_LS_KEY),
+  );
 
   const filteredItems = (): ResearchFeedItem[] => {
     let result = items();
@@ -85,6 +94,37 @@ const ResearchFeed: Component = () => {
     }
   };
 
+  const runDailyFetch = async () => {
+    setFetching(true);
+    setError(null);
+    setFetchStatus("Fetching candidates from arXiv / Semantic Scholar / CrossRef…");
+    try {
+      const out = await invoke<{
+        total_stored: number;
+        per_topic: Array<{
+          topic: string;
+          fetched: number;
+          stored: number;
+          error: string | null;
+        }>;
+      }>("research_run_daily_fetch", { topic: null, limitPerTopic: 5 });
+      const lines = out.per_topic.map(
+        (t) =>
+          `${t.topic}: +${t.stored} new (of ${t.fetched} candidates)` +
+          (t.error ? ` — ${t.error}` : ""),
+      );
+      setFetchStatus(
+        `Done — ${out.total_stored} new summaries stored.\n${lines.join("\n")}`,
+      );
+      await load();
+    } catch (e) {
+      setError(`Fetch failed: ${e instanceof Error ? e.message : String(e)}`);
+      setFetchStatus(null);
+    } finally {
+      setFetching(false);
+    }
+  };
+
   const next = () => {
     const list = filteredItems();
     if (list.length === 0) return;
@@ -113,6 +153,41 @@ const ResearchFeed: Component = () => {
     writeLsSet(DISMISSED_LS_KEY, next);
     // Advance — hideDismissed will re-filter, so the current() rolls
     // forward automatically if the card we just dismissed was visible.
+  };
+
+  // Promote the current feed item into the Research Hub's Sources
+  // library — creates a proper Source record (authors, citations,
+  // tags, notes) usable by the paper generator and citation tools.
+  // Distinct from the local ★ Save, which is just a quick "maybe".
+  const sendToSources = async () => {
+    const cur = current();
+    if (!cur) return;
+    if (sentToSources().has(cur.id)) return; // already promoted
+    setError(null);
+    try {
+      await invoke("research_add_manual", {
+        request: {
+          url: cur.url,
+          title: cur.title,
+          authors: cur.authors
+            ? cur.authors.split(/,\s*/).map((a) => a.trim()).filter(Boolean)
+            : null,
+          published_date: cur.year || cur.date || null,
+          source_type: "paper",
+          tags: cur.topic ? [cur.topic] : null,
+          notes: null,
+          content: cur.summary,
+        },
+      });
+      const next = new Set(sentToSources());
+      next.add(cur.id);
+      setSentToSources(next);
+      writeLsSet(SENT_LS_KEY, next);
+    } catch (e) {
+      setError(
+        `Send to Sources failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   };
 
   const copyCite = async () => {
@@ -154,6 +229,9 @@ const ResearchFeed: Component = () => {
     } else if (e.key === "c") {
       e.preventDefault();
       void copyCite();
+    } else if (e.key === "a") {
+      e.preventDefault();
+      void sendToSources();
     }
   };
 
@@ -171,6 +249,14 @@ const ResearchFeed: Component = () => {
       <div class="research-feed-toolbar">
         <button class="rf-btn" onClick={load} disabled={loading()}>
           {loading() ? "Loading…" : "↻ Refresh"}
+        </button>
+        <button
+          class="rf-btn rf-btn-primary"
+          onClick={runDailyFetch}
+          disabled={fetching() || loading()}
+          title="Pull fresh papers from arXiv, Semantic Scholar, and CrossRef for every registered research topic"
+        >
+          {fetching() ? "⏳ Fetching…" : "⬇ Fetch latest"}
         </button>
         <span class="rf-counter">
           <Show when={total() > 0} fallback="0 / 0">
@@ -194,12 +280,15 @@ const ResearchFeed: Component = () => {
           Saved only ({saved().size})
         </label>
         <span class="rf-help">
-          ← → navigate · S save · D dismiss · C copy [CITE:]
+          ← → navigate · S save · A → sources · D dismiss · C copy [CITE:]
         </span>
       </div>
 
       <Show when={error()}>
         <div class="rf-error">{error()}</div>
+      </Show>
+      <Show when={fetchStatus()}>
+        <div class="rf-info">{fetchStatus()}</div>
       </Show>
 
       <Show
@@ -263,6 +352,19 @@ const ResearchFeed: Component = () => {
                 onClick={toggleSave}
               >
                 {saved().has(item().id) ? "★ Saved (S)" : "☆ Save (S)"}
+              </button>
+              <button
+                classList={{
+                  "rf-action-btn": true,
+                  "rf-action-sent": sentToSources().has(item().id),
+                }}
+                onClick={sendToSources}
+                disabled={sentToSources().has(item().id)}
+                title="Promote into the Research Hub's Sources library"
+              >
+                {sentToSources().has(item().id)
+                  ? "✓ In Sources"
+                  : "→ Send to Sources (A)"}
               </button>
               <button class="rf-action-btn" onClick={copyCite}>
                 ⎘ Copy [CITE:] (C)

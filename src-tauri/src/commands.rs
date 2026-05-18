@@ -9923,8 +9923,26 @@ pub async fn typesetter_book_load(book_path: String) -> Result<LoadedBook, Strin
 
     let StructuredHtml {
         structure,
-        enriched_html,
-    } = analyze_structure(&combined_html).map_err(|e| e.to_string())?;
+        mut enriched_html,
+    } = crate::typesetter::analyze_structure_with_options(
+        &combined_html,
+        config.typography.lead_in_word_count as usize,
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Prepend generated title / copyright / dedication pages drawn
+    // from book.toml metadata. Empty pages are omitted automatically.
+    let generated_front =
+        crate::typesetter::build_generated_front_matter(&config.book);
+    if !generated_front.is_empty() {
+        enriched_html = format!("{}{}", generated_front, enriched_html);
+    }
+    // Append generated back-matter — acknowledgements page.
+    let generated_back =
+        crate::typesetter::build_generated_back_matter(&config.book);
+    if !generated_back.is_empty() {
+        enriched_html.push_str(&generated_back);
+    }
 
     let resolve_cover = |rel: &Option<String>| -> Option<String> {
         let r = rel.as_ref()?;
@@ -10081,7 +10099,25 @@ pub async fn typesetter_export_pdf(
     let combined_html = pandoc_outcome
         .map_err(|e| format!("pandoc failed: {}", e))?
         .html;
-    let structured = analyze_structure(&combined_html).map_err(|e| e.to_string())?;
+    let mut structured = crate::typesetter::analyze_structure_with_options(
+        &combined_html,
+        config.typography.lead_in_word_count as usize,
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Prepend generated title / copyright / dedication pages.
+    let generated_front =
+        crate::typesetter::build_generated_front_matter(&config.book);
+    if !generated_front.is_empty() {
+        structured.enriched_html =
+            format!("{}{}", generated_front, structured.enriched_html);
+    }
+    // Append generated back-matter — acknowledgements page.
+    let generated_back =
+        crate::typesetter::build_generated_back_matter(&config.book);
+    if !generated_back.is_empty() {
+        structured.enriched_html.push_str(&generated_back);
+    }
 
     // Resolve cover paths
     let resolve_cover = |rel: &Option<String>| -> Option<std::path::PathBuf> {
@@ -10195,4 +10231,287 @@ pub async fn research_feed_list(
         .collect();
     items.sort_by(|a, b| b.date.cmp(&a.date));
     Ok(items)
+}
+
+// =============================================================================
+// Daily research fetch — triggers the same academic-search loop the cron job
+// runs, but invocable from the Marlos UI. For each registered research topic,
+// fetches papers via the academic-search APIs, dedups against already-stored
+// summaries, and stores the abstract as the summary (no LLM call needed for
+// browseable swipe-through cards; LLM-improved summaries can come later).
+// =============================================================================
+
+#[derive(serde::Serialize)]
+pub struct ResearchFetchResult {
+    pub total_stored: usize,
+    pub per_topic: Vec<ResearchFetchTopicResult>,
+}
+
+#[derive(serde::Serialize)]
+pub struct ResearchFetchTopicResult {
+    pub topic: String,
+    pub queries: Vec<String>,
+    pub fetched: usize,
+    pub stored: usize,
+    pub error: Option<String>,
+}
+
+fn normalize_research_url(url: &str) -> String {
+    let lower = url.trim().to_lowercase();
+    let without_scheme = lower
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let without_query = without_scheme.split('?').next().unwrap_or(without_scheme);
+    let without_frag = without_query.split('#').next().unwrap_or(without_query);
+    without_frag.trim_end_matches('/').to_string()
+}
+
+#[tauri::command]
+pub async fn research_run_daily_fetch(
+    topic: Option<String>,
+    limit_per_topic: Option<usize>,
+    search: State<'_, Arc<SemanticSearch>>,
+) -> Result<ResearchFetchResult, String> {
+    use crate::mcp::web_search;
+    use crate::semantic_object::SemanticObject;
+    use crate::memory::SecurityTier;
+    use chrono::Utc;
+
+    let limit_per_topic = limit_per_topic.unwrap_or(5).clamp(1, 20);
+
+    let topics: Vec<(String, Vec<String>)> = {
+        let store = search.store.read().await;
+        let objs = store
+            .list_by_tag("kind:research-topic", 200)
+            .map_err(|e| e.to_string())?;
+        objs.into_iter()
+            .filter_map(|o| {
+                let name = o
+                    .tags
+                    .iter()
+                    .find(|t| t.starts_with("research-topic-name:"))
+                    .map(|t| t.trim_start_matches("research-topic-name:").to_string())?;
+                if let Some(filter) = &topic {
+                    if &name != filter {
+                        return None;
+                    }
+                }
+                let parsed: serde_json::Value = o
+                    .content_as_str()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or(serde_json::json!({}));
+                let queries: Vec<String> = parsed
+                    .get("queries")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_else(|| vec![name.clone()]);
+                Some((name, queries))
+            })
+            .collect()
+    };
+
+    if topics.is_empty() {
+        return Err(
+            "No research topics registered. Use the MCP add_research_topic tool first.".to_string(),
+        );
+    }
+
+    let mut per_topic_results = Vec::new();
+    let mut total_stored = 0usize;
+
+    for (topic_idx, (topic_name, queries)) in topics.into_iter().enumerate() {
+        // 3-second gap between topics. The first topic runs without
+        // wait so the user sees the spinner move quickly initially.
+        if topic_idx > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        }
+        let mut fetched_papers: Vec<web_search::AcademicPaper> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut fetch_error: Option<String> = None;
+
+        // Call Semantic Scholar and arXiv directly per query so we can
+        // surface per-source errors. Throttled — Semantic Scholar's
+        // free tier is ~1 req/sec and arXiv asks for 3-sec spacing in
+        // their robots.txt. Bursting 12 requests gets us 429s.
+        let per_query = (limit_per_topic * 2).max(8);
+        let mut source_errors: Vec<String> = Vec::new();
+        for (qi, q) in queries.iter().enumerate() {
+            let mut got_any = false;
+
+            // Spacing between iterations — first query runs immediately.
+            if qi > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+            }
+
+            match web_search::search_semantic_scholar(q, per_query).await {
+                Ok(papers) => {
+                    for paper in papers {
+                        let norm: String = paper
+                            .title
+                            .to_lowercase()
+                            .chars()
+                            .filter(|c| c.is_alphanumeric())
+                            .collect();
+                        if seen.insert(norm) {
+                            fetched_papers.push(paper);
+                            got_any = true;
+                        }
+                    }
+                }
+                Err(e) => {
+                    source_errors.push(format!("S2 [{}]: {}", q, e));
+                }
+            }
+
+            // Brief spacing between S2 and arXiv for the same query.
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+
+            match web_search::search_arxiv(q, (per_query / 2).max(4)).await {
+                Ok(papers) => {
+                    for paper in papers {
+                        let norm: String = paper
+                            .title
+                            .to_lowercase()
+                            .chars()
+                            .filter(|c| c.is_alphanumeric())
+                            .collect();
+                        if seen.insert(norm) {
+                            fetched_papers.push(paper);
+                            got_any = true;
+                        }
+                    }
+                }
+                Err(e) => {
+                    source_errors.push(format!("arXiv [{}]: {}", q, e));
+                }
+            }
+
+            if !got_any && source_errors.is_empty() {
+                source_errors.push(format!("[{}]: both sources returned 0 results", q));
+            }
+        }
+
+        if !source_errors.is_empty() {
+            fetch_error = Some(source_errors.join(" | "));
+        }
+
+        let fetched_count = fetched_papers.len();
+        let mut stored_count = 0usize;
+
+        for paper in fetched_papers.into_iter().take(limit_per_topic * 2) {
+            if stored_count >= limit_per_topic {
+                break;
+            }
+
+            let url_tag = format!("dedup-url:{}", normalize_research_url(&paper.url));
+            let doi_tag = paper.doi.as_ref().map(|d| {
+                if d.starts_with("arXiv:") {
+                    format!("dedup-arxiv:{}", d.trim_start_matches("arXiv:"))
+                } else {
+                    format!("dedup-doi:{}", d)
+                }
+            });
+
+            let already_stored = {
+                let store = search.store.read().await;
+                let url_hit = store
+                    .list_by_tag(&url_tag, 1)
+                    .map(|hits| hits.iter().any(|o| o.tags.iter().any(|t| t == &url_tag)))
+                    .unwrap_or(false);
+                let doi_hit = if let Some(tag) = &doi_tag {
+                    store
+                        .list_by_tag(tag, 1)
+                        .map(|hits| hits.iter().any(|o| o.tags.iter().any(|t| t == tag)))
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+                url_hit || doi_hit
+            };
+
+            if already_stored {
+                continue;
+            }
+
+            let summary = paper
+                .abstract_text
+                .as_deref()
+                .unwrap_or("(no abstract available)")
+                .to_string();
+
+            let authors_line = if paper.authors.is_empty() {
+                String::new()
+            } else {
+                format!("\n**Authors:** {}", paper.authors.join(", "))
+            };
+            let year_line = paper
+                .year
+                .map(|y| format!("\n**Year:** {}", y))
+                .unwrap_or_default();
+            let venue_line = paper
+                .venue
+                .as_ref()
+                .map(|v| format!("\n**Venue:** {}", v))
+                .unwrap_or_default();
+            let doi_line = paper
+                .doi
+                .as_ref()
+                .map(|d| format!("\n**DOI:** {}", d))
+                .unwrap_or_default();
+
+            let markdown = format!(
+                "# {}\n\n**URL:** {}{}{}{}{}\n\n## Summary\n\n{}\n",
+                paper.title, paper.url, authors_line, year_line, venue_line, doi_line, summary
+            );
+
+            let today = Utc::now().format("%Y-%m-%d").to_string();
+            let mut obj = SemanticObject::from_markdown(&markdown)
+                .with_name(&paper.title)
+                .with_tag("kind:research-summary")
+                .with_tag(&format!("research-topic-name:{}", topic_name))
+                .with_tag(&format!("research-date:{}", today))
+                .with_tag(&url_tag)
+                .with_tier(SecurityTier::Open);
+
+            if let Some(tag) = &doi_tag {
+                obj = obj.with_tag(tag);
+            }
+
+            obj = obj
+                .with_metadata("topic", serde_json::json!(topic_name))
+                .with_metadata("source_url", serde_json::json!(paper.url))
+                .with_metadata("authors", serde_json::json!(paper.authors))
+                .with_metadata("year", serde_json::json!(paper.year))
+                .with_metadata("venue", serde_json::json!(paper.venue))
+                .with_metadata("doi", serde_json::json!(paper.doi))
+                .with_metadata("arxiv_id", serde_json::Value::Null);
+
+            match search.store(&obj).await {
+                Ok(_) => {
+                    stored_count += 1;
+                    total_stored += 1;
+                }
+                Err(e) => {
+                    log::warn!("Failed to store research summary: {}", e);
+                }
+            }
+        }
+
+        per_topic_results.push(ResearchFetchTopicResult {
+            topic: topic_name,
+            queries,
+            fetched: fetched_count,
+            stored: stored_count,
+            error: fetch_error,
+        });
+    }
+
+    Ok(ResearchFetchResult {
+        total_stored,
+        per_topic: per_topic_results,
+    })
 }

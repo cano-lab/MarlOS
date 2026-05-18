@@ -202,7 +202,7 @@ pub async fn search_academic(query: &str, num_results: usize) -> Result<Academic
 }
 
 /// Search Semantic Scholar API
-async fn search_semantic_scholar(query: &str, num_results: usize) -> Result<Vec<AcademicPaper>, String> {
+pub async fn search_semantic_scholar(query: &str, num_results: usize) -> Result<Vec<AcademicPaper>, String> {
     let client = Client::builder()
         .user_agent("MarlOS-Research/1.0")
         .timeout(std::time::Duration::from_secs(30))
@@ -294,7 +294,7 @@ async fn search_semantic_scholar(query: &str, num_results: usize) -> Result<Vec<
 }
 
 /// Search arXiv API
-async fn search_arxiv(query: &str, num_results: usize) -> Result<Vec<AcademicPaper>, String> {
+pub async fn search_arxiv(query: &str, num_results: usize) -> Result<Vec<AcademicPaper>, String> {
     let client = Client::builder()
         .user_agent("MarlOS-Research/1.0")
         .timeout(std::time::Duration::from_secs(30))

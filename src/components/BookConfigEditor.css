@@ -79,7 +79,8 @@
 }
 
 .bce-field input,
-.bce-field select {
+.bce-field select,
+.bce-field textarea {
   padding: 5px 8px;
   background: var(--bg-primary);
   color: var(--text-primary);
@@ -91,8 +92,16 @@
 }
 
 .bce-field input:focus,
-.bce-field select:focus {
+.bce-field select:focus,
+.bce-field textarea:focus {
   border-color: rgba(86, 156, 214, 0.7);
+}
+
+.bce-textarea {
+  resize: vertical;
+  min-height: 4em;
+  line-height: 1.45;
+  font-family: var(--font-mono, monospace);
 }
 
 .bce-row {

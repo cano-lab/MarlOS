@@ -252,6 +252,124 @@ hr {
   display: none;
 }
 
+/* Generated front-matter pages (title / copyright / dedication).
+   Matched against pdf_export.rs so preview and PDF look the same. */
+@page no-page-number {
+  @top-center { content: none; }
+  @bottom-center { content: none; }
+  @bottom-left { content: none; }
+  @bottom-right { content: none; }
+}
+
+.generated-title-page,
+.generated-copyright-page,
+.generated-dedication-page {
+  break-before: right;
+  page-break-before: right;
+  break-after: page;
+  page-break-after: always;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.generated-title-page { page: no-page-number; }
+.generated-dedication-page { page: no-page-number; }
+
+.generated-title-page .title-page-inner,
+.generated-copyright-page .copyright-page-inner,
+.generated-dedication-page .dedication-inner {
+  width: 100%;
+  max-width: 4in;
+}
+
+.generated-title-page .gen-book-title {
+  font-size: 2.4em;
+  margin: 0 0 0.5em;
+  font-variant: small-caps;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  line-height: 1.15;
+}
+
+.generated-title-page .gen-book-subtitle {
+  font-size: 1.1em;
+  font-style: italic;
+  margin: 0 0 2.5em;
+  color: #333;
+}
+
+.generated-title-page .gen-book-author {
+  font-size: 1.05em;
+  font-variant: small-caps;
+  letter-spacing: 0.08em;
+  margin: 0;
+}
+
+.generated-copyright-page .copyright-page-inner {
+  font-size: 0.85em;
+  line-height: 1.5;
+  color: #222;
+}
+
+.generated-copyright-page p {
+  margin: 0 0 0.6em;
+  text-indent: 0;
+  text-align: center;
+}
+
+.generated-copyright-page .gen-publisher {
+  font-style: italic;
+  margin-top: 1.2em;
+}
+
+.generated-copyright-page .gen-isbn {
+  font-family: var(--font-mono, monospace);
+  letter-spacing: 0.05em;
+}
+
+.generated-dedication-page .dedication-inner {
+  font-size: 1.05em;
+  font-style: italic;
+  line-height: 1.5;
+}
+
+.generated-dedication-page p {
+  margin: 0;
+  text-indent: 0;
+  text-align: center;
+}
+
+/* Acknowledgements page — back matter. Centered italic body under a
+   small-caps heading. Flows across pages naturally if the text is long. */
+.generated-acknowledgements-page {
+  break-before: page;
+}
+
+.generated-acknowledgements-page .gen-ack-heading {
+  text-align: center;
+  font-size: 1.4em;
+  font-variant: small-caps;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  margin: 4em 0 2em;
+}
+
+.generated-acknowledgements-page .acknowledgements-inner {
+  max-width: 4in;
+  margin: 0 auto;
+  font-style: italic;
+  text-align: center;
+  line-height: 1.6;
+}
+
+.generated-acknowledgements-page .acknowledgements-inner p {
+  margin: 0 0 1em;
+  text-indent: 0;
+}
+
 
 /* Manual paragraph-spacing utility classes — use raw HTML in markdown:
      <div class="space-small"></div>      ~half line
