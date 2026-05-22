@@ -432,8 +432,18 @@ math, math * {{
   font-family: math, "Cambria Math", "STIX Two Math", "Latin Modern Math", serif;
 }}
 /* pandoc emits display equations as bare <math display="block">, which
-   left-aligns by default — center it to match the on-screen preview. */
-math[display="block"] {{ display: block; text-align: center; margin: 1em 0; }}
+   left-aligns by default. A block <math> fills the line, so text-align
+   alone won't center the equation — shrink the box to its content and
+   auto-center it. The wrapping <p> also gets centered as a fallback for
+   engines that treat the math box as inline-level. */
+math[display="block"] {{
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin: 1em auto;
+  text-align: center;
+}}
+p:has(> math[display="block"]) {{ text-align: center; text-indent: 0; }}
 
 em, i {{ font-style: italic; }}
 strong, b {{ font-weight: 600; }}

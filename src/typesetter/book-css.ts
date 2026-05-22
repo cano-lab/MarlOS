@@ -234,6 +234,19 @@ p {
   text-indent: 1em;
 }
 
+/* Display equations ($$...$$) — pandoc emits an inline <span class="math
+   display"> that KaTeX renders into. Without making the wrapper a block,
+   KaTeX's own centering has nothing to center against and the equation
+   hugs the left margin. Force the block + center so all display
+   equations sit centered (matches the PDF pipeline). Inline math
+   ($...$) stays in the text flow. */
+.math.display {
+  display: block;
+  text-align: center;
+  text-indent: 0;
+  margin: 1em 0;
+}
+
 /* Several rules from pdf_export.rs::build_export_css are intentionally
    PDF-only because Paged.js v0.4's chunker throws
    "item doesn't belong to list" when it encounters them mid-split:
