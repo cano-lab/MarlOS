@@ -420,6 +420,21 @@ li {{ margin: 0.2em 0; }}
 .math {{ white-space: nowrap; }}
 .math.display {{ display: block; text-align: center; margin: 1em 0; white-space: normal; }}
 
+/* The PDF pipeline renders math as native MathML (Chromium's MathML
+   engine). MathML elements inherit `font-family` from the body, but
+   EB Garamond is a text face with no math coverage — partial-
+   differential ∂, reduced-Planck ℏ, stretchy delimiters, accents like
+   \hat — so equations come out with missing/tofu glyphs. Reset the
+   math subtree to the CSS `math` generic family so Chromium falls to
+   its installed OpenType math font (Cambria Math on Windows), which
+   has full coverage and embeds into the PDF. */
+math, math * {{
+  font-family: math, "Cambria Math", "STIX Two Math", "Latin Modern Math", serif;
+}}
+/* pandoc emits display equations as bare <math display="block">, which
+   left-aligns by default — center it to match the on-screen preview. */
+math[display="block"] {{ display: block; text-align: center; margin: 1em 0; }}
+
 em, i {{ font-style: italic; }}
 strong, b {{ font-weight: 600; }}
 
