@@ -1,4 +1,5 @@
 import { Component, createEffect, createSignal, For, onCleanup, Show } from "solid-js";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   typesetterService,
   SectionAnchor,
@@ -562,25 +563,113 @@ const BookSourceView: Component<BookSourceViewProps> = (props) => {
     const prefix = needsBlankBefore ? (before.endsWith("\n") ? "\n" : "\n\n") : "";
     const suffix = needsBlankAfter ? (after.startsWith("\n") ? "\n" : "\n\n") : "";
     const inserted = `${prefix}${snippet}${suffix}`;
-    const next = before + inserted + after;
-    ta.value = next;
-    setContent(next);
+
+    // Splice with setRangeText instead of reassigning ta.value. Setting
+    // `.value` wholesale moves the caret to the end of the field and
+    // scrolls the textarea to the bottom of the document — that was the
+    // "jumps to the end" bug on page-break / blank-page inserts.
+    // setRangeText inserts in place, holds the scroll position, leaves
+    // the caret right after the inserted snippet ("end"), and preserves
+    // native undo history.
+    ta.focus();
+    ta.setRangeText(inserted, start, end, "end");
+    setContent(ta.value);
     setDirty(true);
     invalidateAnchors();
-    const cursor = before.length + inserted.length;
-    ta.focus();
-    ta.setSelectionRange(cursor, cursor);
-
-    // Scroll the textarea so the snippet sits near the upper third of
-    // the visible area — otherwise the cursor jumps off-screen on
-    // long manuscripts and the writer loses their place.
-    const snippetLine = (before + prefix).split("\n").length - 1;
-    const tops = computeLineTops(next);
-    const snippetTop = tops[snippetLine] ?? 0;
-    ta.scrollTop = Math.max(0, snippetTop - ta.clientHeight / 3);
 
     scheduleSave();
     reportEditAt();
+  };
+
+  // ----- Image insertion popover -------------------------------------------
+  const [showImagePicker, setShowImagePicker] = createSignal(false);
+  const [imagePath, setImagePath] = createSignal("");
+  const [imageAlt, setImageAlt] = createSignal("");
+  const [imageLayout, setImageLayout] = createSignal<
+    "inline" | "float-top" | "float-bottom" | "full-page"
+  >("inline");
+  const [imageWidth, setImageWidth] = createSignal("");
+
+  /** Compute a path relative to the book.toml directory so the same
+   *  source markdown works across machines. Falls back to the absolute
+   *  path when the picked file isn't under the book root. */
+  const relativeImagePath = (abs: string): string => {
+    const bookDir = props.bookPath.replace(/[\\/][^\\/]+$/, "");
+    if (!bookDir) return abs.replace(/\\/g, "/");
+    const normBook = bookDir.replace(/\\/g, "/").replace(/\/$/, "");
+    const normAbs = abs.replace(/\\/g, "/");
+    if (
+      normAbs.toLowerCase().startsWith(normBook.toLowerCase() + "/")
+    ) {
+      return normAbs.slice(normBook.length + 1);
+    }
+    return normAbs;
+  };
+
+  const browseForImage = async () => {
+    try {
+      const picked = await open({
+        multiple: false,
+        directory: false,
+        filters: [
+          {
+            name: "Image",
+            extensions: [
+              "png",
+              "jpg",
+              "jpeg",
+              "gif",
+              "webp",
+              "svg",
+              "tiff",
+              "tif",
+            ],
+          },
+        ],
+      });
+      if (typeof picked === "string") {
+        setImagePath(picked);
+        // Seed alt text from the filename so the writer rarely needs
+        // to type one from scratch.
+        if (imageAlt().trim() === "") {
+          const base = picked.split(/[\\/]/).pop() ?? "";
+          const noExt = base.replace(/\.[^.]+$/, "");
+          const friendly = noExt
+            .replace(/[-_]+/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+          setImageAlt(friendly);
+        }
+      }
+    } catch (e) {
+      setError(`Image picker failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const openImagePicker = () => {
+    setImagePath("");
+    setImageAlt("");
+    setImageLayout("inline");
+    setImageWidth("");
+    setShowImagePicker(true);
+  };
+
+  const insertImage = () => {
+    const path = imagePath().trim();
+    if (!path) return;
+    const rel = relativeImagePath(path);
+    const alt = imageAlt().trim();
+    const layout = imageLayout();
+    const width = imageWidth().trim();
+    // Build the pandoc attribute block: {.class width=...}. Omit
+    // empty classes / width so the markdown stays readable.
+    const attrs: string[] = [];
+    if (layout !== "inline") attrs.push(`.${layout}`);
+    if (width) attrs.push(`width=${width}`);
+    const attrStr = attrs.length ? `{${attrs.join(" ")}}` : "";
+    const md = `![${alt}](${rel})${attrStr}`;
+    setShowImagePicker(false);
+    insertSnippet(md);
   };
 
   /** Compute the body-text width (in inches) for the configured trim
@@ -827,7 +916,108 @@ const BookSourceView: Component<BookSourceViewProps> = (props) => {
             </button>
           )}
         </For>
+        <button
+          class="book-source-snippet-btn"
+          title="Insert an image figure (markdown: ![alt](path){.class width=...})"
+          onClick={openImagePicker}
+        >
+          🖼 Image
+        </button>
       </div>
+
+      <Show when={showImagePicker()}>
+        <div class="book-source-image-modal-backdrop" onClick={() => setShowImagePicker(false)}>
+          <div class="book-source-image-modal" onClick={(e) => e.stopPropagation()}>
+            <div class="bsim-header">
+              <span>Insert image</span>
+              <button
+                class="bsim-close"
+                onClick={() => setShowImagePicker(false)}
+                title="Cancel"
+              >
+                ✕
+              </button>
+            </div>
+            <div class="bsim-body">
+              <label class="bsim-field">
+                <span>File</span>
+                <div class="bsim-row">
+                  <input
+                    type="text"
+                    class="bsim-input"
+                    value={imagePath()}
+                    placeholder="(pick an image file)"
+                    onInput={(e) => setImagePath(e.currentTarget.value)}
+                  />
+                  <button class="book-source-btn" onClick={browseForImage}>
+                    Browse…
+                  </button>
+                </div>
+                <span class="bsim-help">
+                  Stored as a path relative to book.toml when the file is
+                  under the book directory.
+                </span>
+              </label>
+              <label class="bsim-field">
+                <span>Caption / alt text</span>
+                <input
+                  type="text"
+                  class="bsim-input"
+                  value={imageAlt()}
+                  placeholder="(optional — used as caption + accessibility text)"
+                  onInput={(e) => setImageAlt(e.currentTarget.value)}
+                />
+              </label>
+              <div class="bsim-row">
+                <label class="bsim-field">
+                  <span>Layout</span>
+                  <select
+                    class="bsim-input"
+                    value={imageLayout()}
+                    onChange={(e) =>
+                      setImageLayout(e.currentTarget.value as
+                        | "inline"
+                        | "float-top"
+                        | "float-bottom"
+                        | "full-page")
+                    }
+                  >
+                    <option value="inline">Inline (default)</option>
+                    <option value="float-top">Float top of page</option>
+                    <option value="float-bottom">Float bottom of page</option>
+                    <option value="full-page">Full page</option>
+                  </select>
+                </label>
+                <label class="bsim-field">
+                  <span>Width (optional)</span>
+                  <input
+                    type="text"
+                    class="bsim-input"
+                    value={imageWidth()}
+                    placeholder='e.g. "4in" or "80%"'
+                    onInput={(e) => setImageWidth(e.currentTarget.value)}
+                  />
+                </label>
+              </div>
+            </div>
+            <div class="bsim-footer">
+              <button
+                class="book-source-btn"
+                onClick={() => setShowImagePicker(false)}
+              >
+                Cancel
+              </button>
+              <button
+                class="book-source-btn book-source-btn-primary"
+                onClick={insertImage}
+                disabled={!imagePath().trim()}
+              >
+                Insert
+              </button>
+            </div>
+          </div>
+        </div>
+      </Show>
 
       <Show when={error()}>
         <div class="book-source-error">{error()}</div>

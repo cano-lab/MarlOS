@@ -66,6 +66,10 @@ const BookPagedPreview: Component<BookPagedPreviewProps> = (props) => {
   let scrollRoot: HTMLElement | null = null;
   let scrollListener: (() => void) | null = null;
   let scrollRaf: number | null = null;
+  // Scroll position captured just before a re-paginate wipes the DOM,
+  // so we can hold the reader's place across the re-flow (see
+  // restoreScrollAfterPagination).
+  let preScrollTop = 0;
   // Last order this view reported via onSectionChange. Used to dedup
   // round-trips: if the parent's currentSectionOrder ends up matching
   // this, we know it's our own report bouncing back and skip the
@@ -228,6 +232,10 @@ const BookPagedPreview: Component<BookPagedPreviewProps> = (props) => {
     // "rendered" on success and decide whether the queued pass needs
     // to run.
     const htmlForThisRun = props.enrichedHtml;
+    // Remember where the reader was before we throw away the DOM, so we
+    // can restore it after Paged.js re-flows (otherwise scrollTop resets
+    // to 0 and any auto-scroll would yank the view away).
+    preScrollTop = mountRef.scrollTop;
     mountRef.innerHTML = "";
 
     const t0 = performance.now();
@@ -295,8 +303,26 @@ const BookPagedPreview: Component<BookPagedPreviewProps> = (props) => {
       queueMicrotask(restoreScrollAfterPagination);
     } catch (e) {
       if (!cancelled) {
-        setError(e instanceof Error ? e.message : String(e));
+        // ProgressEvent (from a failed fetch inside Paged.js) stringifies
+        // as "[object ProgressEvent]" by default — extract the failing
+        // URL from target so the error message points at the cause.
+        let msg: string;
+        if (e instanceof Error) {
+          msg = e.message;
+        } else if (e && typeof e === "object" && "target" in e) {
+          const target = (e as { target?: unknown }).target as
+            | { url?: string; src?: string; href?: string; tagName?: string }
+            | undefined;
+          const url =
+            target?.url ?? target?.src ?? target?.href ?? "(unknown URL)";
+          const tag = target?.tagName ?? "fetch";
+          msg = `${e.constructor.name} from ${tag} loading ${url}`;
+        } else {
+          msg = String(e);
+        }
+        setError(msg);
         setStatus("error");
+        console.error("Pagination error:", e);
       }
       // Mark this html as "attempted (failed)" so the drain check at
       // the end of `finally` doesn't see enrichedHtml !== renderedHtml
@@ -378,52 +404,24 @@ const BookPagedPreview: Component<BookPagedPreviewProps> = (props) => {
     queueMicrotask(() => scrollToOrder(order));
   });
 
-  /** Resolve a flashAnchor (order, paraIndex) to its `<p>` (or section
-   *  heading at paraIndex 0) in the paginated DOM. */
-  const flashTarget = (
-    fa: { order: number; paraIndex: number },
-  ): HTMLElement | null => {
-    if (!mountRef) return null;
-    const sec = mountRef.querySelector<HTMLElement>(
-      `[data-section-order="${fa.order}"]`,
-    );
-    if (!sec) return null;
-    if (fa.paraIndex <= 0) return sec;
-    const paragraphs = sec.querySelectorAll<HTMLElement>("p");
-    const owned: HTMLElement[] = [];
-    paragraphs.forEach((p) => {
-      if (p.closest("[data-section-order]") === sec) owned.push(p);
-    });
-    return owned[fa.paraIndex - 1] ?? null;
-  };
-
-  // (Live-typing paragraph flash was removed — kept noisy/distracting
-  // during fast typing. `flashAnchor` is still used by
-  // `restoreScrollAfterPagination` below to bring the user back to
-  // their last edit position after a re-pagination.)
-
   /** Restore the user's view position after a fresh pagination. Pages
    *  re-paginates from scratch (the temp DOM is wiped every time), so
-   *  scrollTop resets to 0. We use the most recent edit anchor to
-   *  bring the user back to where they were typing — with a small
-   *  amount of headroom above so any inserted page-break / space
-   *  divs in front of the target paragraph remain visible. */
+   *  scrollTop resets to 0.
+   *
+   *  AUTO-SCROLL TEMPORARILY DISABLED. The previous behavior chased the
+   *  most-recent edit anchor and, when it couldn't resolve one, fell
+   *  back to `scrollToOrder(currentSectionOrder)`. Inserting a page
+   *  break (a `<div class="page-break">`, not a paragraph) can't resolve
+   *  to a paragraph anchor, so it hit that fallback and jumped the view
+   *  — often to the bottom of the document. Until we design a proper
+   *  edit-follow sync, just hold the reader's previous scroll position
+   *  across the re-flow so editing/inserting never moves the page.
+   *
+   *  The old anchor-follow logic (using `flashAnchor` + `flashTarget`)
+   *  is preserved in git history for when we revisit this. */
   const restoreScrollAfterPagination = () => {
     if (!mountRef) return;
-    const fa = props.flashAnchor;
-    if (fa) {
-      const target = flashTarget(fa);
-      if (target) {
-        const rect = target.getBoundingClientRect();
-        const rootRect = mountRef.getBoundingClientRect();
-        const top = rect.top - rootRect.top + mountRef.scrollTop - 80;
-        mountRef.scrollTop = Math.max(0, top);
-        return;
-      }
-    }
-    if (typeof props.currentSectionOrder === "number") {
-      scrollToOrder(props.currentSectionOrder);
-    }
+    mountRef.scrollTop = preScrollTop;
   };
 
   return (
