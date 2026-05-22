@@ -17,7 +17,7 @@ pub mod structure;
 pub use book_config::{BookConfig, BookConfigError, BookMeta};
 pub use citations::{
     cleanup_temp_markdown, normalize_unicode_scripts, prepare_book_markdown,
-    transform_citations, CitationError, CitationTransformResult,
+    tag_math_anchors, transform_citations, CitationError, CitationTransformResult,
 };
 pub use epub_export::{export_epub, EpubExportError};
 pub use pandoc::{PandocConverter, PandocConvertResult, PandocError};

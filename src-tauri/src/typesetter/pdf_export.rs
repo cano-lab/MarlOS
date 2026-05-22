@@ -411,6 +411,23 @@ h2 {{ font-size: 1.25em; margin: 1.4em 0 0.6em; }}
 h3 {{ font-size: 1.05em; margin: 1.2em 0 0.4em; font-style: italic; font-weight: 500; }}
 
 blockquote {{ margin: 1em 1.5em; font-style: italic; }}
+
+/* "Math Anchor" callout boxes — the equations/derivations the writer
+   flags inline. Tagged with class="math-anchor" by the structure
+   pipeline. A bordered, lightly tinted box that stays on one page. */
+blockquote.math-anchor {{
+  margin: 1.2em 0;
+  padding: 0.6em 0.9em;
+  border: 0.75pt solid #aaaaaa;
+  border-left: 3pt solid #555555;
+  background: #f5f5f5;
+  font-style: normal;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}}
+blockquote.math-anchor > :first-child {{ margin-top: 0; }}
+blockquote.math-anchor > :last-child {{ margin-bottom: 0; }}
+blockquote.math-anchor p {{ text-indent: 0; }}
 ul, ol {{ margin: 0.5em 0 0.5em 1.5em; padding: 0; }}
 li {{ margin: 0.2em 0; }}
 

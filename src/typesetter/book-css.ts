@@ -272,6 +272,23 @@ section[data-section-type="interlude"] > h1 {
 }
 
 blockquote { margin: 1em 1.5em; font-style: italic; }
+
+/* "Math Anchor" callout boxes — tagged with class="math-anchor" by the
+   structure pipeline. Bordered, lightly tinted box that stays on one
+   page. Mirrors pdf_export.rs::build_export_css. */
+blockquote.math-anchor {
+  margin: 1.2em 0;
+  padding: 0.6em 0.9em;
+  border: 1px solid #aaaaaa;
+  border-left: 3px solid #555555;
+  background: #f5f5f5;
+  font-style: normal;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+blockquote.math-anchor > :first-child { margin-top: 0; }
+blockquote.math-anchor > :last-child { margin-bottom: 0; }
+blockquote.math-anchor p { text-indent: 0; }
 ul, ol { margin: 0.5em 0 0.5em 1.5em; padding: 0; }
 li { margin: 0.2em 0; }
 

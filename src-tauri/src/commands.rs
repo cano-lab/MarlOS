@@ -9899,8 +9899,11 @@ pub async fn typesetter_book_load(book_path: String) -> Result<LoadedBook, Strin
 
     // Rewrite precomposed Unicode super/subscripts (10⁻³⁵, |ψ|², K₂⁰)
     // into <sup>/<sub> with ASCII glyphs so they render in the embedded
-    // body font instead of falling back to a mismatched system font.
-    let combined_html = crate::typesetter::normalize_unicode_scripts(&pandoc_result.html);
+    // body font instead of falling back to a mismatched system font,
+    // then tag "Math Anchor" blockquotes so they render as boxed asides.
+    let combined_html = crate::typesetter::tag_math_anchors(
+        &crate::typesetter::normalize_unicode_scripts(&pandoc_result.html),
+    );
     let pandoc_version = pandoc_result.pandoc_version;
 
     // Surface citation warnings + pandoc stderr together so the writer
@@ -10099,10 +10102,12 @@ pub async fn typesetter_export_pdf(
     };
     let pandoc_outcome = PandocConverter::convert_file(&temp_md, &opts).await;
     crate::typesetter::cleanup_temp_markdown(&temp_md);
-    let combined_html = crate::typesetter::normalize_unicode_scripts(
-        &pandoc_outcome
-            .map_err(|e| format!("pandoc failed: {}", e))?
-            .html,
+    let combined_html = crate::typesetter::tag_math_anchors(
+        &crate::typesetter::normalize_unicode_scripts(
+            &pandoc_outcome
+                .map_err(|e| format!("pandoc failed: {}", e))?
+                .html,
+        ),
     );
     let mut structured = crate::typesetter::analyze_structure_with_options(
         &combined_html,

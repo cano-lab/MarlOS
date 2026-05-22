@@ -564,6 +564,23 @@ pub fn normalize_unicode_scripts(html: &str) -> String {
     out
 }
 
+/// Tag "Math Anchor" callout blockquotes with `class="math-anchor"` so
+/// the CSS can render them as boxed asides instead of plain pull-quotes.
+///
+/// The manuscript writes them as blockquotes opening with
+/// `**Math Anchor — ...**`, which pandoc renders as
+/// `<blockquote>\n<p><strong>Math Anchor ...`. Only those blockquotes
+/// get the class — ordinary blockquotes (epigraphs, dialogue) are left
+/// as-is. Runs post-pandoc on the rendered HTML.
+pub fn tag_math_anchors(html: &str) -> String {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r#"<blockquote>(\s*<p><strong>Math Anchor)"#).unwrap()
+    });
+    re.replace_all(html, r#"<blockquote class="math-anchor">$1"#)
+        .into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -643,6 +660,17 @@ Hello.
         assert_eq!(normalize_unicode_scripts("\u{2113}\u{209A}"), "\u{2113}<sub>p</sub>");
         // No scripts → unchanged.
         assert_eq!(normalize_unicode_scripts("plain text"), "plain text");
+    }
+
+    #[test]
+    fn tags_math_anchor_blockquotes_only() {
+        let html = "<blockquote>\n<p><strong>Math Anchor — Newton</strong>: x</p>\n</blockquote>\
+                    <blockquote>\n<p>An ordinary epigraph.</p>\n</blockquote>";
+        let out = tag_math_anchors(html);
+        assert!(out.contains(r#"<blockquote class="math-anchor">"#));
+        // The ordinary blockquote stays untagged.
+        assert_eq!(out.matches(r#"class="math-anchor""#).count(), 1);
+        assert!(out.contains("<blockquote>\n<p>An ordinary epigraph."));
     }
 
     #[test]
