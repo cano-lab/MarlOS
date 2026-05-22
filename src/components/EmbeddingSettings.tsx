@@ -43,7 +43,7 @@ interface EmbeddingSettingsProps {
 }
 
 const PROVIDER_URLS: Record<string, string> = {
-  lm_studio: "http://localhost:1234/v1",
+  lm_studio: "http://localhost:4321/v1",
   ollama: "http://localhost:11434",
   open_ai: "https://api.openai.com/v1",
   mock: "mock://",
@@ -60,7 +60,7 @@ const EmbeddingSettings: Component<EmbeddingSettingsProps> = (props) => {
   // Embedding config state
   const [embeddingConfig, setEmbeddingConfig] = createSignal<EmbeddingConfig>({
     provider_type: "lm_studio",
-    base_url: "http://localhost:1234/v1",
+    base_url: "http://localhost:4321/v1",
     model: "text-embedding-qwen3-embedding-0.6b",
     dimensions: 1024,
     max_tokens: 8192,

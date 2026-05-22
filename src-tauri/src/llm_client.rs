@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 pub enum LlmProvider {
     /// Ollama running locally (default port 11434)
     Ollama { base_url: String, model: String },
-    /// LM Studio running locally (default port 1234)
+    /// LM Studio running locally (default port 4321)
     LmStudio { base_url: String },
     /// OpenAI-compatible API
     OpenAi { base_url: String, api_key: String, model: String },
@@ -174,7 +174,7 @@ impl LlmClient {
 
     pub fn lm_studio() -> Self {
         Self::new(LlmProvider::LmStudio {
-            base_url: "http://localhost:1234".to_string(),
+            base_url: "http://localhost:4321".to_string(),
         })
     }
 

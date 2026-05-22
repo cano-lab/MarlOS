@@ -45,7 +45,7 @@ pub struct Message {
 pub struct ProviderConfig {
     /// Provider name for display
     pub name: String,
-    /// API base URL (e.g., "http://localhost:1234/v1")
+    /// API base URL (e.g., "http://localhost:4321/v1")
     pub base_url: String,
     /// API key (optional for local providers)
     pub api_key: Option<String>,
@@ -63,7 +63,7 @@ impl Default for ProviderConfig {
     fn default() -> Self {
         Self {
             name: "LM Studio".to_string(),
-            base_url: "http://localhost:1234/v1".to_string(),
+            base_url: "http://localhost:4321/v1".to_string(),
             api_key: None,
             model: None,
             temperature: 0.7,
@@ -227,12 +227,158 @@ impl AiManager {
         }
     }
 
+    /// List all available models from the provider
+    pub async fn list_models(&self) -> Result<Vec<String>> {
+        let config = self.config.lock().map_err(|_| AiError::Lock)?.clone();
+        let url = format!("{}/models", config.base_url);
+        let mut request = self.client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(10));
+
+        if let Some(api_key) = &config.api_key {
+            if !api_key.is_empty() {
+                request = request.header("Authorization", format!("Bearer {}", api_key));
+            }
+        }
+
+        let response = request.send().await
+            .map_err(|e| AiError::Http(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(AiError::Api(format!("Models endpoint returned {}", response.status())));
+        }
+
+        let body: serde_json::Value = response.json().await
+            .map_err(|e| AiError::Http(format!("Failed to parse models response: {}", e)))?;
+
+        let models = body.get("data")
+            .and_then(|d| d.as_array())
+            .ok_or_else(|| AiError::Api("No models data in response".into()))?;
+
+        Ok(models.iter()
+            .filter_map(|m| {
+                let id = m.get("id").and_then(|v| v.as_str())?;
+                // Check metadata type field
+                if let Some(model_type) = m.get("type").and_then(|v| v.as_str()) {
+                    if model_type == "embedding" || model_type == "text-embedding" {
+                        return None;
+                    }
+                }
+                // Filter by name pattern
+                if Self::is_embedding_model(id) {
+                    return None;
+                }
+                Some(id.to_string())
+            })
+            .collect())
+    }
+
+    /// Check if a model ID looks like an embedding model
+    fn is_embedding_model(id: &str) -> bool {
+        let id_lower = id.to_lowercase();
+        // Common embedding model name patterns
+        id_lower.contains("embed")
+            || id_lower.contains("e5-")
+            || id_lower.contains("bge-")
+            || id_lower.contains("minilm")
+            || id_lower.contains("gte-")
+            || id_lower.contains("snowflake")
+            || id_lower.contains("mxbai")
+            || id_lower.contains("jina")
+            || id_lower.contains("sentence-transform")
+            || id_lower.contains("text-embedding")
+            || id_lower.contains("nomic-embed")
+            || id_lower.contains("nomic-ai")
+            // LM Studio sometimes uses type prefixes
+            || id_lower.starts_with("embedding")
+    }
+
+    /// Query available models from the provider and pick the best chat model.
+    /// Prefers non-embedding models; uses broad pattern matching to filter.
+    async fn detect_chat_model(&self, config: &ProviderConfig) -> Option<String> {
+        let url = format!("{}/models", config.base_url);
+        let mut request = self.client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(10));
+
+        if let Some(api_key) = &config.api_key {
+            if !api_key.is_empty() {
+                request = request.header("Authorization", format!("Bearer {}", api_key));
+            }
+        }
+
+        let response = match request.send().await {
+            Ok(r) if r.status().is_success() => r,
+            _ => return None,
+        };
+
+        let body: serde_json::Value = match response.json().await {
+            Ok(v) => v,
+            Err(_) => return None,
+        };
+
+        let models = body.get("data")?.as_array()?;
+
+        // Collect model IDs, preferring chat/instruct models over embedding models
+        let mut chat_models: Vec<String> = Vec::new();
+        let mut all_models: Vec<String> = Vec::new();
+
+        for model in models {
+            if let Some(id) = model.get("id").and_then(|v| v.as_str()) {
+                all_models.push(id.to_string());
+
+                // Check metadata type field (LM Studio provides this)
+                if let Some(model_type) = model.get("type").and_then(|v| v.as_str()) {
+                    if model_type == "embedding" || model_type == "text-embedding" {
+                        log::info!("Skipping embedding model (by type): {}", id);
+                        continue;
+                    }
+                }
+
+                // Skip by name pattern
+                if Self::is_embedding_model(id) {
+                    log::info!("Skipping embedding model (by name): {}", id);
+                    continue;
+                }
+                chat_models.push(id.to_string());
+            }
+        }
+
+        log::info!("Model detection: {} total, {} chat candidates: {:?}",
+            all_models.len(), chat_models.len(), chat_models);
+
+        // Only return chat models — do NOT fall back to embedding models
+        if chat_models.is_empty() {
+            log::warn!("No chat models found! All {} models appear to be embedding models: {:?}",
+                all_models.len(), all_models);
+            return None;
+        }
+        let selected = chat_models.first().cloned();
+        if let Some(ref model) = selected {
+            log::info!("Auto-detected chat model: {}", model);
+        }
+        selected
+    }
+
     /// Send a chat completion request (async)
     pub async fn chat(&self, messages: Vec<Message>, system_prompt: Option<&str>) -> Result<AiResponse> {
         let config = self.config.lock().map_err(|_| AiError::Lock)?.clone();
 
         let url = format!("{}/chat/completions", config.base_url);
         log::info!("AI request to: {}", url);
+
+        // Auto-detect model if not specified
+        let model = match &config.model {
+            Some(m) if !m.is_empty() => Some(m.clone()),
+            _ => self.detect_chat_model(&config).await,
+        };
+
+        if model.is_none() {
+            return Err(AiError::NotAvailable(
+                "No chat model found. Only embedding models are loaded in LM Studio. \
+                 Please load a chat/instruct model (e.g. Qwen, Llama, Mistral) in LM Studio.".to_string()
+            ));
+        }
 
         // Build messages with optional system prompt
         let mut all_messages: Vec<serde_json::Value> = Vec::new();
@@ -262,7 +408,7 @@ impl AiManager {
             "stream": false
         });
 
-        if let Some(model) = &config.model {
+        if let Some(model) = &model {
             payload["model"] = serde_json::json!(model);
         }
 

@@ -39,7 +39,7 @@ export const defaultAIConfig: AIConfig = {
       id: 'local',
       name: 'Local API (LM Studio/Ollama)',
       type: 'local',
-      baseUrl: 'http://localhost:1234/v1', // LM Studio default
+      baseUrl: 'http://localhost:4321/v1', // LM Studio default
       defaultModel: 'local-model',
       availableModels: ['local-model'],
     },

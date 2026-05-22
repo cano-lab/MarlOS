@@ -97,9 +97,8 @@ pub struct OllamaEmbedding {
 ///
 /// The dangerous case isn't a closed port (that refuses instantly) —
 /// it's a process that accepts the TCP connection but never speaks
-/// HTTP. QEMU's GDB stub defaults to port 1234, which is also LM
-/// Studio's default port; when `localhost` resolves to the QEMU
-/// binding the probe would otherwise hang for the full request timeout.
+/// HTTP — e.g. QEMU's GDB stub (default port 1234). A probe that hits
+/// such a socket would otherwise hang for the full request timeout.
 /// A 1s connect / 2s total ceiling bounds that to a brief blip.
 fn probe_client() -> reqwest::Client {
     reqwest::Client::builder()
@@ -243,7 +242,7 @@ impl OpenAIEmbedding {
         )
     }
 
-    /// Create for LM Studio (localhost:1234, no API key needed)
+    /// Create for LM Studio (localhost:4321, no API key needed)
     pub fn lm_studio(model: &str) -> Self {
         let (dimensions, max_tokens) = match model {
             // Qwen3 embedding models
@@ -267,7 +266,7 @@ impl OpenAIEmbedding {
 
         Self {
             client: Self::create_client(),
-            base_url: "http://localhost:1234/v1".to_string(),
+            base_url: "http://localhost:4321/v1".to_string(),
             api_key: None, // LM Studio doesn't require API key
             model: model.to_string(),
             model_info: ModelInfo {
@@ -466,7 +465,7 @@ impl EmbeddingManager {
         // Default transform config - rotation for security, watermark for identification
         let transform_config = TransformConfig::default();
 
-        // Try LM Studio first (localhost:1234)
+        // Try LM Studio first (localhost:4321)
         let lm_studio = OpenAIEmbedding::lm_studio_default();
         if lm_studio.is_available().await {
             log::info!("Using LM Studio for embeddings (text-embedding-qwen3-embedding-0.6b, 1024 dims)");

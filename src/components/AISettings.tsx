@@ -1,5 +1,5 @@
-import { Component, createSignal, For, Show, createEffect } from "solid-js";
-import { aiProviderManager, defaultAIConfig, type AIProvider } from "../services/ai-config";
+import { Component, createSignal, For, Show } from "solid-js";
+import { aiProviderManager, type AIProvider } from "../services/ai-config";
 import { useLocalLLM } from "../services/ai-service";
 import "./AISettings.css";
 
@@ -35,7 +35,7 @@ const AISettings: Component = () => {
       setTestStatus({
         provider: provider.id,
         success: false,
-        message: `Error: ${e.message}`,
+        message: `Error: ${(e as Error).message}`,
       });
     }
   };
@@ -118,7 +118,7 @@ const AISettings: Component = () => {
                         type="text"
                         value={provider.baseUrl}
                         onChange={(e) => handleUpdateProvider(provider.id, { baseUrl: e.target.value })}
-                        placeholder="http://localhost:1234/v1"
+                        placeholder="http://localhost:4321/v1"
                       />
                     </label>
 

@@ -70,7 +70,7 @@ pub fn get_presets() -> Vec<ProviderPreset> {
     vec![
         ProviderPreset {
             name: "LM Studio".to_string(),
-            base_url: "http://localhost:1234/v1".to_string(),
+            base_url: "http://localhost:4321/v1".to_string(),
             requires_api_key: false,
             default_model: None,
             description: "Local LLM server with OpenAI-compatible API".to_string(),
@@ -132,7 +132,7 @@ impl Default for ProviderStoreData {
         // Create default LM Studio provider
         let default_provider = CustomProviderConfig::new(
             "LM Studio".to_string(),
-            "http://localhost:1234/v1".to_string(),
+            "http://localhost:4321/v1".to_string(),
         );
         let default_id = default_provider.id.clone();
 

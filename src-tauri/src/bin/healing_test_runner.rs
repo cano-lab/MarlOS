@@ -60,7 +60,7 @@ fn main() {
     // Create LLM client
     let client = match provider.as_str() {
         "lmstudio" => {
-            println!("Using LM Studio (localhost:1234)");
+            println!("Using LM Studio (localhost:4321)");
             LlmClient::lm_studio()
         }
         "ollama" => {
@@ -111,7 +111,7 @@ fn main() {
             eprintln!("✗ Failed to connect to LLM: {}", e);
             eprintln!();
             eprintln!("Make sure LM Studio is running with a model loaded.");
-            eprintln!("The server should be on http://localhost:1234");
+            eprintln!("The server should be on http://localhost:4321");
             return;
         }
     }

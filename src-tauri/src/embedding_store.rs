@@ -40,7 +40,7 @@ impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
             provider_type: EmbeddingProviderType::LmStudio,
-            base_url: "http://localhost:1234/v1".to_string(),
+            base_url: "http://localhost:4321/v1".to_string(),
             model: "text-embedding-qwen3-embedding-0.6b".to_string(),
             dimensions: 1024,
             max_tokens: 8192,
@@ -330,7 +330,7 @@ impl EmbeddingStore {
         let preset = presets.iter().find(|p| p.name == preset_name)?;
 
         let base_url = match preset.provider {
-            EmbeddingProviderType::LmStudio => "http://localhost:1234/v1".to_string(),
+            EmbeddingProviderType::LmStudio => "http://localhost:4321/v1".to_string(),
             EmbeddingProviderType::Ollama => "http://localhost:11434".to_string(),
             EmbeddingProviderType::OpenAI => "https://api.openai.com/v1".to_string(),
             EmbeddingProviderType::Mock => "mock://".to_string(),

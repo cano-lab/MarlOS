@@ -1,8 +1,11 @@
-import { Component, createSignal, createEffect, onMount, Show, For } from "solid-js";
+import { Component, createSignal, onMount, Show, For } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import "./ChatPanel.css";
 import ThinkingDebugger from "./ThinkingDebugger";
 import { useLearningSession, LearningStep, webSearch, academicSearch, formatSearchResultsForContext, formatAcademicResultsForContext, SearchResults, AcademicSearchResults } from "../hooks/useLearningSession";
+import { useTTS } from "../services/tts-service";
+import { useVoiceClone } from "../services/voice-clone-service";
+import VoiceCloneSettings from "./VoiceCloneSettings";
 
 type ChatMode = "chat" | "learn";
 
@@ -76,6 +79,7 @@ interface CustomProvider {
 
 // Predefined AI tasks
 const AI_TASKS = [
+  { id: "research", label: "Research", icon: "🔬", description: "Search web & papers, then summarize" },
   { id: "intent_map", label: "Intent Map", icon: "🎯", description: "Extract themes and structure" },
   { id: "summarize", label: "Summarize", icon: "📝", description: "Concise summary" },
   { id: "explain", label: "Explain", icon: "💡", description: "Clear explanation" },
@@ -91,6 +95,7 @@ const SLASH_COMMANDS: Record<string, { description: string; handler: string }> =
   "/ingest": { description: "Ingest a file into context", handler: "file_ingest" },
   "/ls": { description: "List files", handler: "file_list" },
   "/search": { description: "Search semantic memory", handler: "semantic_search" },
+  "/research": { description: "Search web & papers, summarize findings", handler: "research" },
   "/help": { description: "Show available commands", handler: "help" },
 };
 
@@ -117,59 +122,6 @@ const ChatPanel: Component<ChatPanelProps> = (props) => {
   // Mode toggle: chat or learn
   const [mode, setMode] = createSignal<ChatMode>("chat");
 
-  // Discovery/search handlers and state
-  const [showDiscovery, setShowDiscovery] = createSignal(false);
-  const [discoveryQuery, setDiscoveryQuery] = createSignal("");
-  const [discoveryResults, setDiscoveryResults] = createSignal<Array<{
-    name: string;
-    summary: string;
-    score: number;
-    source_type?: string;
-    url: string;
-    authors?: string[];
-    year?: number;
-    pdf_url?: string;
-    doi?: string;
-    venue?: string;
-    citations?: number;
-  }>>([]);
-  const [isDiscovering, setIsDiscovering] = createSignal(false);
-
-  const toggleDiscovery = () => setShowDiscovery(!showDiscovery());
-  const discoverSources = async () => {
-    const query = discoveryQuery().trim();
-    if (!query) return;
-
-    setIsDiscovering(true);
-    setDiscoveryResults(null);
-    setError(null);
-
-    try {
-      // Use web search by default
-      const results = await invoke<Array<{ name: string; summary: string; score: number }>>(
-        "semantic_search",
-        {
-          query,
-          limit: 10
-        }
-      );
-
-      setDiscoveryResults({
-        sources: results.map(r => ({
-          name: r.name,
-          summary: r.summary,
-          score: r.score,
-          url: r.url,
-          source_type: "web"
-        }))
-      });
-    } catch (e) {
-      setError(`Search failed: ${e}`);
-    } finally {
-      setIsDiscovering(false);
-    }
-  };
-
   // Chat mode state
   const [messages, setMessages] = createSignal<Message[]>([]);
   const [inputText, setInputText] = createSignal("");
@@ -183,7 +135,8 @@ const ChatPanel: Component<ChatPanelProps> = (props) => {
   const [activeProviderId, setActiveProviderId] = createSignal<string | null>(null);
   const [fileOperations, setFileOperations] = createSignal<FileOperation[]>([]);
   const [abortController, setAbortController] = createSignal<AbortController | null>(null);
-  const [showHelp, setShowHelp] = createSignal(false);
+  // showHelp signal reserved for future use
+  const [availableModels, setAvailableModels] = createSignal<string[]>([]);
 
   // Learning mode state
   const learning = useLearningSession();
@@ -191,25 +144,100 @@ const ChatPanel: Component<ChatPanelProps> = (props) => {
   const [predictionInput, setPredictionInput] = createSignal("");
   const [predictionType, setPredictionType] = createSignal<typeof PREDICTION_TYPES[number]["id"]>("guess");
   const [integrationInput, setIntegrationInput] = createSignal("");
-  const [useWebSearch, setUseWebSearch] = createSignal(false);
-  const [useAcademicSearch, setUseAcademicSearch] = createSignal(false);
-  const [searchResults, setSearchResults] = createSignal<string>("");
+  const [useWebSearch, setUseWebSearch] = createSignal(true);
+  const [useAcademicSearch, setUseAcademicSearch] = createSignal(true);
+  const [isSearching, setIsSearching] = createSignal(false);
+  const [, setSearchResults] = createSignal<string>("");
   const [webSearchData, setWebSearchData] = createSignal<SearchResults | null>(null);
   const [academicSearchData, setAcademicSearchData] = createSignal<AcademicSearchResults | null>(null);
-  const [searchError, setSearchError] = createSignal<string | null>(null);
+  const [searchError] = createSignal<string | null>(null);
 
   const [config, setConfig] = createSignal<ProviderConfig>({
     name: "LM Studio",
-    base_url: "http://localhost:1234/v1",
+    base_url: "http://localhost:4321/v1",
     api_key: null,
     model: null,
     temperature: 0.7,
     max_tokens: 2048,
-    timeout_secs: 60,
+    timeout_secs: 300,
   });
 
   let messagesEndRef: HTMLDivElement | undefined;
   let inputRef: HTMLTextAreaElement | undefined;
+
+  // TTS
+  const tts = useTTS();
+  const voiceClone = useVoiceClone();
+  const [speakingIndex, setSpeakingIndex] = createSignal<number | null>(null);
+  const [showVoiceSettings, setShowVoiceSettings] = createSignal(false);
+  // Voice clone synthesis progress
+  const [voicePhase, setVoicePhase] = createSignal<"idle" | "loading_model" | "synthesizing">(
+    "idle"
+  );
+  const [voiceElapsed, setVoiceElapsed] = createSignal(0);
+  let voiceTimerId: number | null = null;
+
+  const startVoiceTimer = (phase: "loading_model" | "synthesizing") => {
+    setVoicePhase(phase);
+    setVoiceElapsed(0);
+    if (voiceTimerId !== null) clearInterval(voiceTimerId);
+    voiceTimerId = window.setInterval(() => setVoiceElapsed((s) => s + 1), 1000);
+  };
+
+  const stopVoiceTimer = () => {
+    if (voiceTimerId !== null) {
+      clearInterval(voiceTimerId);
+      voiceTimerId = null;
+    }
+    setVoicePhase("idle");
+    setVoiceElapsed(0);
+  };
+
+  const stripMarkdown = (md: string): string =>
+    md
+      .replace(/```[\s\S]*?```/g, " ")
+      .replace(/`([^`]*)`/g, "$1")
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/[#>*_~]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const handleSpeak = async (idx: number, content: string) => {
+    const cloneReady = voiceClone.status()?.has_reference === true;
+
+    // Toggle off if already speaking this message
+    if (speakingIndex() === idx) {
+      if (cloneReady) voiceClone.stop();
+      else if (tts.status().status === "playing") tts.stop();
+      setSpeakingIndex(null);
+      return;
+    }
+
+    setSpeakingIndex(idx);
+    try {
+      const text = stripMarkdown(content);
+      if (cloneReady) {
+        // Pick the right phase based on whether the model is already loaded.
+        // status() reflects last refresh; if model_loaded is false treat as first call.
+        const modelLoaded = voiceClone.status()?.model_loaded === true;
+        startVoiceTimer(modelLoaded ? "synthesizing" : "loading_model");
+        try {
+          await voiceClone.speak(text);
+          // Refresh status so subsequent calls show "synthesizing" instead of "loading"
+          await voiceClone.refresh();
+        } finally {
+          stopVoiceTimer();
+        }
+      } else {
+        await tts.speak(text);
+      }
+    } catch (e) {
+      console.error("Speak failed:", e);
+    } finally {
+      setSpeakingIndex(null);
+    }
+  };
 
   onMount(async () => {
     // Load custom providers (may set config if active provider exists)
@@ -289,6 +317,16 @@ const ChatPanel: Component<ChatPanelProps> = (props) => {
     try {
       const available = await invoke<boolean>("ai_check_status");
       setIsAvailable(available);
+
+      // Fetch available models for the dropdown
+      if (available) {
+        try {
+          const models = await invoke<string[]>("ai_list_models");
+          setAvailableModels(models);
+        } catch {
+          setAvailableModels([]);
+        }
+      }
     } catch (e) {
       setIsAvailable(false);
     }
@@ -341,8 +379,6 @@ const ChatPanel: Component<ChatPanelProps> = (props) => {
     const args = parts.length > 1 ? text.substring(parts[0].length + 1) : "";
 
     if (!(cmd in SLASH_COMMANDS)) return false;
-
-    const command = SLASH_COMMANDS[cmd];
 
     if (cmd === "/help") {
       let helpText = "**Available Commands:**\n\n";
@@ -456,6 +492,15 @@ const ChatPanel: Component<ChatPanelProps> = (props) => {
       return true;
     }
 
+    if (cmd === "/research") {
+      if (!args) {
+        addSystemMessage("Usage: /research <topic> — searches web + academic papers and synthesizes findings");
+        return true;
+      }
+      await runResearch(args);
+      return true;
+    }
+
     addSystemMessage(`Command "${cmd}" requires arguments. Type /help for usage.`);
     return true;
   };
@@ -498,76 +543,24 @@ const ChatPanel: Component<ChatPanelProps> = (props) => {
     setAbortController(controller);
 
     try {
-      // Fetch session context if available
-      let sessionContext = "";
-      try {
-        sessionContext = await invoke<string>("get_session_context");
-      } catch (e) {
-        // No active session or error fetching context - that's fine
-        console.debug("No session context available:", e);
-      }
-
-      // Fetch relevant semantic memory automatically
-      let semanticContext = "";
-      try {
-        const results = await invoke<Array<{ name: string; summary: string; score: number }>>(
-          "semantic_search",
-          { query: text, limit: 3 }
-        );
-        if (results.length > 0) {
-          semanticContext = results
-            .filter(r => r.score > 0.3)
-            .map(r => `[${r.name}]: ${r.summary}`)
-            .join("\n");
-        }
-      } catch (e) {
-        console.debug("Semantic search not available:", e);
-      }
-
-      // Build message with optional context
+      // Build message — keep it lean for local models
       let fullMessage = text;
       if (props.contextContent) {
-        fullMessage = `[Document Context]\n${props.contextContent}\n[/Document Context]\n\n${text}`;
-      }
-      if (semanticContext) {
-        fullMessage = `[Relevant Memory]\n${semanticContext}\n[/Relevant Memory]\n\n${fullMessage}`;
-      }
-      if (sessionContext && !sessionContext.includes("No active session")) {
-        fullMessage = `[Session Context]\n${sessionContext}\n[/Session Context]\n\n${fullMessage}`;
+        // Truncate document context to avoid overwhelming the model
+        const truncated = props.contextContent.length > 2000
+          ? props.contextContent.slice(0, 2000) + "\n...(truncated)"
+          : props.contextContent;
+        fullMessage = `[Document Context]\n${truncated}\n[/Document Context]\n\n${text}`;
       }
 
-      // Build chat history for context
-      const chatMessages = messages()
-        .filter(m => m.role !== "system")
-        .map(m => ({ role: m.role, content: m.content }));
-
+      // Build chat history — limit to last 10 exchanges to keep context manageable
+      const allMessages = messages().filter(m => m.role !== "system");
+      const recentMessages = allMessages.slice(-20); // last 10 user+assistant pairs
+      const chatMessages = recentMessages.map(m => ({ role: m.role, content: m.content }));
       chatMessages.push({ role: "user", content: fullMessage });
 
-      // System prompt with session query capabilities
-      let systemPrompt = `You are an UNSTUCK assistant with access to the user's session history.
-
-The user has work sessions stored in MarlOS. You can query these sessions to provide better context and help.
-
-Available Session Commands:
-- get_session_context: Get current active session info
-- get_session_history: List all past sessions
-- get_session_details(session_id): Get full details of a specific session
-- get_sessions_by_provider(provider, limit): Get sessions from a specific AI (e.g., "Claude", "ChatGPT", "Codex")
-- get_recent_context(days): Get summary of recent work (default 7 days)
-- search_sessions(query): Search sessions by content
-
-When helpful, ask the user if they want to check their past sessions for relevant context.`;
-
-      // Fetch recent context automatically for better AI responses
-      // Use vector-based analysis (fast, no LLM needed)
-      try {
-        const recentContext = await invoke<string>("get_session_vector_analysis", { days: 7 });
-        if (recentContext && !recentContext.includes("No sessions in")) {
-          systemPrompt += `\n\nRecent Work Context:\n${recentContext}`;
-        }
-      } catch (e) {
-        console.debug("Could not fetch recent context:", e);
-      }
+      // Compact system prompt — avoid bloating context for small models
+      let systemPrompt = `You are an UNSTUCK assistant. Help the user clarify thinking, get unstuck on problems, and suggest next steps. Be direct and actionable.`;
 
       const response = await invoke<AiResponse>("ai_chat", {
         messages: chatMessages,
@@ -612,7 +605,85 @@ When helpful, ask the user if they want to check their past sessions for relevan
     }
   };
 
+  const runResearch = async (query?: string) => {
+    const topic = query || inputText().trim() || props.contextContent?.slice(0, 200);
+    if (!topic) {
+      addSystemMessage("Enter a topic to research, or select text first.");
+      return;
+    }
+
+    setInputText("");
+    addUserMessage(`[Research] ${topic}`);
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      // Run web + academic search in parallel
+      addSystemMessage("Searching web and academic databases...");
+      const [webResults, academicResults] = await Promise.all([
+        webSearch(topic, 5),
+        academicSearch(topic, 8),
+      ]);
+
+      // Build source summary for display
+      let sourceSummary = "";
+      if (webResults.results.length > 0) {
+        sourceSummary += `**Web Sources (${webResults.results.length}):**\n`;
+        for (const r of webResults.results) {
+          sourceSummary += `- [${r.title}](${r.url}) — ${r.snippet.slice(0, 120)}\n`;
+        }
+        sourceSummary += "\n";
+      }
+      if (academicResults.papers.length > 0) {
+        sourceSummary += `**Academic Papers (${academicResults.papers.length}):**\n`;
+        for (const p of academicResults.papers) {
+          const authors = p.authors.slice(0, 2).join(", ") + (p.authors.length > 2 ? " et al." : "");
+          const year = p.year ? ` (${p.year})` : "";
+          const cites = p.citation_count ? ` [${p.citation_count} citations]` : "";
+          sourceSummary += `- **${p.title}**${year} — ${authors}${cites}\n`;
+          if (p.abstract_text) {
+            sourceSummary += `  ${p.abstract_text.slice(0, 150)}...\n`;
+          }
+        }
+      }
+
+      if (!sourceSummary) {
+        addAssistantMessage("No results found. Try rephrasing your search topic.");
+        return;
+      }
+
+      // Now ask AI to synthesize
+      addSystemMessage("Synthesizing findings...");
+      const searchContext = formatSearchResultsForContext(webResults) + formatAcademicResultsForContext(academicResults);
+
+      const response = await invoke<AiResponse>("ai_chat", {
+        messages: [{ role: "user", content: `Research topic: ${topic}\n\n${searchContext}\n\nSynthesize these sources into a clear summary. Cite specific papers/sources. Highlight key findings, areas of consensus, and open questions.` }],
+        systemPrompt: `You are a research assistant. The user wants to learn about a topic. You have been given real search results from the web and academic databases. Your job is to:
+1. Synthesize the findings into a clear, structured summary
+2. Cite specific sources by name and author
+3. Highlight key findings and areas of consensus
+4. Note any contradictions or open questions
+5. Suggest what to read first if the user wants to go deeper
+
+Be thorough but accessible. Use the actual search results — don't make up information.`,
+      });
+
+      // Show sources first, then synthesis
+      addAssistantMessage(`${sourceSummary}\n---\n\n**Synthesis:**\n${response.content}`);
+    } catch (e) {
+      setError(`Research failed: ${e}`);
+      addSystemMessage(`Error: ${e}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const runTask = async (taskId: string) => {
+    // Handle research task specially
+    if (taskId === "research") {
+      return runResearch();
+    }
+
     const content = props.contextContent || inputText().trim();
     if (!content) {
       addSystemMessage("Please select some text or enter content to analyze.");
@@ -662,16 +733,38 @@ When helpful, ask the user if they want to check their past sessions for relevan
       setWebSearchData(null);
       setAcademicSearchData(null);
 
-      if (useWebSearch()) {
-        const results = await webSearch(topic, 5);
-        setWebSearchData(results);
-        searchContext += formatSearchResultsForContext(results);
+      const doSearch = useWebSearch() || useAcademicSearch();
+      if (doSearch) {
+        setIsSearching(true);
       }
 
-      if (useAcademicSearch()) {
-        const results = await academicSearch(topic, 5);
-        setAcademicSearchData(results);
-        searchContext += formatAcademicResultsForContext(results);
+      try {
+        // Run searches in parallel for speed
+        const searchPromises: Promise<void>[] = [];
+
+        if (useWebSearch()) {
+          searchPromises.push(
+            webSearch(topic, 5).then(results => {
+              setWebSearchData(results);
+              searchContext += formatSearchResultsForContext(results);
+            })
+          );
+        }
+
+        if (useAcademicSearch()) {
+          searchPromises.push(
+            academicSearch(topic, 8).then(results => {
+              setAcademicSearchData(results);
+              searchContext += formatAcademicResultsForContext(results);
+            })
+          );
+        }
+
+        await Promise.all(searchPromises);
+      } catch (err) {
+        console.warn("Search failed:", err);
+      } finally {
+        setIsSearching(false);
       }
 
       setSearchResults(searchContext);
@@ -773,6 +866,17 @@ When helpful, ask the user if they want to check their past sessions for relevan
           <button class="icon-btn" onClick={() => setShowSettings(!showSettings())} title="Settings">
             ⚙️
           </button>
+          <button
+            class="icon-btn"
+            onClick={() => setShowVoiceSettings(!showVoiceSettings())}
+            title={
+              voiceClone.status()?.has_reference
+                ? "Voice cloning ready — manage reference"
+                : "Set up voice cloning"
+            }
+          >
+            🎙️
+          </button>
           <button class="icon-btn" onClick={clearChat} title="Clear chat">
             🗑️
           </button>
@@ -815,6 +919,13 @@ When helpful, ask the user if they want to check their past sessions for relevan
         </div>
       </Show>
 
+      {/* Voice cloning settings panel */}
+      <Show when={showVoiceSettings()}>
+        <div class="voice-settings-overlay">
+          <VoiceCloneSettings onClose={() => setShowVoiceSettings(false)} />
+        </div>
+      </Show>
+
       {/* Settings panel */}
       <Show when={showSettings()}>
         <div class="settings-panel">
@@ -824,7 +935,7 @@ When helpful, ask the user if they want to check their past sessions for relevan
               type="text"
               value={config().base_url}
               onInput={(e) => setConfig({ ...config(), base_url: e.currentTarget.value })}
-              placeholder="http://localhost:1234/v1"
+              placeholder="http://localhost:4321/v1"
             />
           </div>
           <div class="setting-row">
@@ -837,13 +948,25 @@ When helpful, ask the user if they want to check their past sessions for relevan
             />
           </div>
           <div class="setting-row">
-            <label>Model (optional)</label>
-            <input
-              type="text"
-              value={config().model || ""}
-              onInput={(e) => setConfig({ ...config(), model: e.currentTarget.value || null })}
-              placeholder="Auto-detect"
-            />
+            <label>Model {availableModels().length > 0 ? `(${availableModels().length} available)` : "(auto-detect)"}</label>
+            <Show when={availableModels().length > 0} fallback={
+              <input
+                type="text"
+                value={config().model || ""}
+                onInput={(e) => setConfig({ ...config(), model: e.currentTarget.value || null })}
+                placeholder="Auto-detect (connects to check models)"
+              />
+            }>
+              <select
+                value={config().model || ""}
+                onChange={(e) => setConfig({ ...config(), model: e.currentTarget.value || null })}
+              >
+                <option value="">Auto-detect (pick best chat model)</option>
+                <For each={availableModels()}>
+                  {(model) => <option value={model}>{model}</option>}
+                </For>
+              </select>
+            </Show>
           </div>
           <div class="setting-row half">
             <div>
@@ -919,7 +1042,7 @@ When helpful, ask the user if they want to check their past sessions for relevan
         {/* Messages */}
         <div class="chat-messages">
           <For each={messages()}>
-            {(msg) => (
+            {(msg, idx) => (
               <div class={`message ${msg.role}`}>
                 <div class="message-header">
                   <span class="message-role">
@@ -929,6 +1052,33 @@ When helpful, ask the user if they want to check their past sessions for relevan
                     <span class="message-time">
                       {msg.timestamp?.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                     </span>
+                  </Show>
+                  <Show when={msg.role === "assistant" && msg.content}>
+                    <button
+                      class="message-speak-btn"
+                      onClick={() => handleSpeak(idx(), msg.content)}
+                      disabled={
+                        tts.status().status === "loading" ||
+                        tts.status().status === "synthesizing"
+                      }
+                      title={
+                        speakingIndex() === idx() && tts.status().status === "playing"
+                          ? "Stop speaking"
+                          : tts.status().status === "loading"
+                          ? `Loading TTS (${Math.round((tts.status().progress || 0) * 100)}%)`
+                          : tts.status().status === "synthesizing"
+                          ? "Synthesizing..."
+                          : "Read aloud"
+                      }
+                    >
+                      {speakingIndex() === idx() && tts.status().status === "playing"
+                        ? "⏹"
+                        : tts.status().status === "loading" && speakingIndex() === idx()
+                        ? "⏳"
+                        : tts.status().status === "synthesizing" && speakingIndex() === idx()
+                        ? "…"
+                        : "🔊"}
+                    </button>
                   </Show>
                 </div>
                 <div class="message-content" innerHTML={formatMessage(msg.content)} />
@@ -964,6 +1114,22 @@ When helpful, ask the user if they want to check their past sessions for relevan
           </For>
           <div ref={messagesEndRef} />
         </div>
+
+        {/* Voice synthesis progress */}
+        <Show when={voicePhase() !== "idle"}>
+          <div class={`voice-progress voice-progress-${voicePhase()}`}>
+            <span class="voice-progress-spinner" />
+            <span class="voice-progress-label">
+              <Show
+                when={voicePhase() === "loading_model"}
+                fallback={<>Synthesizing voice...</>}
+              >
+                Loading voice model... <span class="voice-progress-hint">first call only, ~30s</span>
+              </Show>
+            </span>
+            <span class="voice-progress-elapsed">{voiceElapsed()}s</span>
+          </div>
+        </Show>
 
         {/* Error display */}
         <Show when={error()}>
@@ -1039,8 +1205,8 @@ When helpful, ask the user if they want to check their past sessions for relevan
                     <span>Academic</span>
                   </label>
                 </div>
-                <button type="submit" class="learn-btn" disabled={!topicInput().trim()}>
-                  Start Learning
+                <button type="submit" class="learn-btn" disabled={!topicInput().trim() || isSearching()}>
+                  {isSearching() ? "Searching..." : "Start Learning"}
                 </button>
               </form>
             </Show>
@@ -1119,7 +1285,7 @@ When helpful, ask the user if they want to check their past sessions for relevan
                                 <div class="search-result-meta">{paper.venue}</div>
                               </Show>
                               <Show when={paper.abstract_text}>
-                                <div class="search-result-snippet">{paper.abstract_text.slice(0, 200)}...</div>
+                                <div class="search-result-snippet">{paper.abstract_text!.slice(0, 200)}...</div>
                               </Show>
                             </div>
                           )}

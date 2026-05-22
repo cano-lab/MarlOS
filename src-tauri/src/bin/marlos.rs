@@ -2225,7 +2225,7 @@ fn check_lm_studio_running() -> bool {
         .unwrap();
 
     client
-        .get("http://localhost:1234/v1/models")
+        .get("http://localhost:4321/v1/models")
         .send()
         .is_ok()
 }
