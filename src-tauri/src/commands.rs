@@ -9897,7 +9897,10 @@ pub async fn typesetter_book_load(book_path: String) -> Result<LoadedBook, Strin
     crate::typesetter::cleanup_temp_markdown(&temp_md);
     let pandoc_result = pandoc_result?;
 
-    let combined_html = pandoc_result.html;
+    // Rewrite precomposed Unicode super/subscripts (10⁻³⁵, |ψ|², K₂⁰)
+    // into <sup>/<sub> with ASCII glyphs so they render in the embedded
+    // body font instead of falling back to a mismatched system font.
+    let combined_html = crate::typesetter::normalize_unicode_scripts(&pandoc_result.html);
     let pandoc_version = pandoc_result.pandoc_version;
 
     // Surface citation warnings + pandoc stderr together so the writer
@@ -10096,9 +10099,11 @@ pub async fn typesetter_export_pdf(
     };
     let pandoc_outcome = PandocConverter::convert_file(&temp_md, &opts).await;
     crate::typesetter::cleanup_temp_markdown(&temp_md);
-    let combined_html = pandoc_outcome
-        .map_err(|e| format!("pandoc failed: {}", e))?
-        .html;
+    let combined_html = crate::typesetter::normalize_unicode_scripts(
+        &pandoc_outcome
+            .map_err(|e| format!("pandoc failed: {}", e))?
+            .html,
+    );
     let mut structured = crate::typesetter::analyze_structure_with_options(
         &combined_html,
         config.typography.lead_in_word_count as usize,

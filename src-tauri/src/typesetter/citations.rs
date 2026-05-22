@@ -386,31 +386,49 @@ pub fn transform_citations(markdown: &str) -> CitationTransformResult {
         output.push('\n');
     }
 
-    // Emit the # Notes back-matter section.
+    // Build the # Notes back-matter section into a separate buffer
+    // first, then insert it BEFORE the first `# Appendix*` heading
+    // if one exists. Notes belong with the chapters they reference,
+    // so they should come before the appendix(es) — not stuck at the
+    // very end after all back matter. Fallback: append at end when no
+    // appendix is present.
     let chapters_with_notes = chapters.iter().filter(|g| !g.notes.is_empty()).count() as u32;
+    let mut notes_section = String::new();
     if chapters_with_notes > 0 {
-        output.push_str("\n\n# Notes\n\n");
+        notes_section.push_str("\n\n# Notes\n\n");
         for group in &chapters {
             if group.notes.is_empty() {
                 continue;
             }
-            output.push_str(&format!("## {}\n\n", group.title));
+            notes_section.push_str(&format!("## {}\n\n", group.title));
             // Raw HTML <ol> + <li> for stable IDs and back-links.
             // pandoc's `markdown_in_html_blocks` (default in our
             // invocation) processes the markdown text inside.
-            output.push_str("<ol class=\"notes-list\">\n\n");
+            notes_section.push_str("<ol class=\"notes-list\">\n\n");
             for note in &group.notes {
-                output.push_str("<li id=\"");
-                output.push_str(&note.note_id);
-                output.push_str("\" epub:type=\"endnote\" role=\"doc-endnote\">\n\n<span class=\"note-num\">");
-                output.push_str(&note.number.to_string());
-                output.push_str(".</span> ");
-                output.push_str(&note.text);
-                output.push_str(" <a href=\"#");
-                output.push_str(&note.note_id);
-                output.push_str("-back\" class=\"note-back\" aria-label=\"back to text\">↩</a>\n\n</li>\n\n");
+                notes_section.push_str("<li id=\"");
+                notes_section.push_str(&note.note_id);
+                notes_section.push_str("\" epub:type=\"endnote\" role=\"doc-endnote\">\n\n<span class=\"note-num\">");
+                notes_section.push_str(&note.number.to_string());
+                notes_section.push_str(".</span> ");
+                notes_section.push_str(&note.text);
+                notes_section.push_str(" <a href=\"#");
+                notes_section.push_str(&note.note_id);
+                notes_section.push_str("-back\" class=\"note-back\" aria-label=\"back to text\">↩</a>\n\n</li>\n\n");
             }
-            output.push_str("</ol>\n\n");
+            notes_section.push_str("</ol>\n\n");
+        }
+    }
+    if !notes_section.is_empty() {
+        // Find the first H1 that starts with "Appendix". Multi-line
+        // mode so `^` matches the start of any line.
+        static APPENDIX_INSERT_RE: OnceLock<Regex> = OnceLock::new();
+        let appendix_re = APPENDIX_INSERT_RE
+            .get_or_init(|| Regex::new(r"(?mi)^#\s+Appendix\b").unwrap());
+        if let Some(m) = appendix_re.find(&output) {
+            output.insert_str(m.start(), &notes_section);
+        } else {
+            output.push_str(&notes_section);
         }
     }
 
@@ -420,6 +438,130 @@ pub fn transform_citations(markdown: &str) -> CitationTransformResult {
         note_count: total,
         chapters_with_notes,
     }
+}
+
+/// Rewrite precomposed Unicode superscript/subscript characters (e.g.
+/// `10⁻³⁵`, `|ψ|²`, `K₂⁰`, `ℓₚ`) into real `<sup>`/`<sub>` markup
+/// carrying ordinary ASCII glyphs. Contiguous runs of the same script
+/// collapse into a single element, so `10⁻³⁵` becomes
+/// `10<sup>-35</sup>` rather than three separate tags.
+///
+/// Why: EB Garamond's embedded subset covers the Latin-1 superscripts
+/// (¹ ² ³) but not the "Superscripts and Subscripts" block (⁰ ⁴ ⁵ ⁻ …
+/// ₀ ₂ ₚ …), so Chromium silently falls back to a system font for the
+/// missing glyphs. The result: the two digits inside one exponent
+/// render in different typefaces, and KDP may reject the fallback glyph
+/// as not embedded. Routing every super/subscript through `<sup>`/`<sub>`
+/// with plain digits lets the global `sup, sub` CSS rule pin them to the
+/// embedded font, so they all match.
+///
+/// Runs *after* pandoc, on the rendered HTML, so both the body and the
+/// generated Notes section are covered in one pass. Super/subscript
+/// characters never appear inside HTML tags or attributes, so a flat
+/// character scan is safe.
+pub fn normalize_unicode_scripts(html: &str) -> String {
+    #[derive(PartialEq, Clone, Copy)]
+    enum Kind {
+        Sup,
+        Sub,
+    }
+
+    fn classify(c: char) -> Option<(Kind, char)> {
+        let m = match c {
+            // Superscripts (Latin-1 + Superscripts/Subscripts block).
+            '\u{2070}' => (Kind::Sup, '0'),
+            '\u{00B9}' => (Kind::Sup, '1'),
+            '\u{00B2}' => (Kind::Sup, '2'),
+            '\u{00B3}' => (Kind::Sup, '3'),
+            '\u{2074}' => (Kind::Sup, '4'),
+            '\u{2075}' => (Kind::Sup, '5'),
+            '\u{2076}' => (Kind::Sup, '6'),
+            '\u{2077}' => (Kind::Sup, '7'),
+            '\u{2078}' => (Kind::Sup, '8'),
+            '\u{2079}' => (Kind::Sup, '9'),
+            '\u{207A}' => (Kind::Sup, '+'),
+            '\u{207B}' => (Kind::Sup, '-'),
+            '\u{207C}' => (Kind::Sup, '='),
+            '\u{207D}' => (Kind::Sup, '('),
+            '\u{207E}' => (Kind::Sup, ')'),
+            '\u{207F}' => (Kind::Sup, 'n'),
+            '\u{2071}' => (Kind::Sup, 'i'),
+            // Subscripts.
+            '\u{2080}' => (Kind::Sub, '0'),
+            '\u{2081}' => (Kind::Sub, '1'),
+            '\u{2082}' => (Kind::Sub, '2'),
+            '\u{2083}' => (Kind::Sub, '3'),
+            '\u{2084}' => (Kind::Sub, '4'),
+            '\u{2085}' => (Kind::Sub, '5'),
+            '\u{2086}' => (Kind::Sub, '6'),
+            '\u{2087}' => (Kind::Sub, '7'),
+            '\u{2088}' => (Kind::Sub, '8'),
+            '\u{2089}' => (Kind::Sub, '9'),
+            '\u{208A}' => (Kind::Sub, '+'),
+            '\u{208B}' => (Kind::Sub, '-'),
+            '\u{208C}' => (Kind::Sub, '='),
+            '\u{208D}' => (Kind::Sub, '('),
+            '\u{208E}' => (Kind::Sub, ')'),
+            '\u{2090}' => (Kind::Sub, 'a'),
+            '\u{2091}' => (Kind::Sub, 'e'),
+            '\u{2092}' => (Kind::Sub, 'o'),
+            '\u{2093}' => (Kind::Sub, 'x'),
+            '\u{2095}' => (Kind::Sub, 'h'),
+            '\u{2096}' => (Kind::Sub, 'k'),
+            '\u{2097}' => (Kind::Sub, 'l'),
+            '\u{2098}' => (Kind::Sub, 'm'),
+            '\u{2099}' => (Kind::Sub, 'n'),
+            '\u{209A}' => (Kind::Sub, 'p'),
+            '\u{209B}' => (Kind::Sub, 's'),
+            '\u{209C}' => (Kind::Sub, 't'),
+            '\u{1D62}' => (Kind::Sub, 'i'),
+            '\u{1D63}' => (Kind::Sub, 'r'),
+            '\u{1D64}' => (Kind::Sub, 'u'),
+            '\u{1D65}' => (Kind::Sub, 'v'),
+            '\u{2C7C}' => (Kind::Sub, 'j'),
+            _ => return None,
+        };
+        Some(m)
+    }
+
+    fn flush(out: &mut String, run: &mut Option<Kind>, buf: &mut String) {
+        if let Some(k) = run.take() {
+            let tag = match k {
+                Kind::Sup => "sup",
+                Kind::Sub => "sub",
+            };
+            out.push('<');
+            out.push_str(tag);
+            out.push('>');
+            out.push_str(buf);
+            out.push_str("</");
+            out.push_str(tag);
+            out.push('>');
+            buf.clear();
+        }
+    }
+
+    let mut out = String::with_capacity(html.len() + 16);
+    let mut run: Option<Kind> = None;
+    let mut buf = String::new();
+
+    for c in html.chars() {
+        match classify(c) {
+            Some((k, ascii)) => {
+                if run != Some(k) {
+                    flush(&mut out, &mut run, &mut buf);
+                    run = Some(k);
+                }
+                buf.push(ascii);
+            }
+            None => {
+                flush(&mut out, &mut run, &mut buf);
+                out.push(c);
+            }
+        }
+    }
+    flush(&mut out, &mut run, &mut buf);
+    out
 }
 
 #[cfg(test)]
@@ -487,6 +629,20 @@ Hello.
         let md = "# Interlude II — The Student\n[CITE: foo]\n";
         let r = transform_citations(md);
         assert!(r.transformed.contains("interlude2n1"));
+    }
+
+    #[test]
+    fn normalizes_unicode_superscripts() {
+        // Runs of the same script collapse into one tag; ASCII glyphs.
+        assert_eq!(normalize_unicode_scripts("10\u{207B}\u{00B3}\u{2075}"), "10<sup>-35</sup>");
+        // Latin-1 superscript digit also normalized.
+        assert_eq!(normalize_unicode_scripts("|\u{03C8}|\u{00B2}"), "|\u{03C8}|<sup>2</sup>");
+        // Mixed sub/superscript split into separate tags (K subscript-2 superscript-0).
+        assert_eq!(normalize_unicode_scripts("K\u{2082}\u{2070}"), "K<sub>2</sub><sup>0</sup>");
+        // Subscript letter (Planck ℓ_p).
+        assert_eq!(normalize_unicode_scripts("\u{2113}\u{209A}"), "\u{2113}<sub>p</sub>");
+        // No scripts → unchanged.
+        assert_eq!(normalize_unicode_scripts("plain text"), "plain text");
     }
 
     #[test]

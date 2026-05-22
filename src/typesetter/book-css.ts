@@ -69,6 +69,16 @@ export function buildBookCss(config: BookConfig): string {
   // mIn used in asymmetric verso/recto margin rules below.
   void mIn;
 
+  // Body page-number content. Front matter still uses lower-roman.
+  const pageNumberContent =
+    config.typography.page_number_style === "none"
+      ? "none"
+      : config.typography.page_number_style === "roman"
+        ? "counter(page, upper-roman)"
+        : config.typography.page_number_style === "lower-roman"
+          ? "counter(page, lower-roman)"
+          : "counter(page)";
+
   // Running header style — the chapter strip at the top of each page.
   // The H1's string-set captures the running header text; @top-center
   // pulls it via string(). Counter increments per chapter so we can
@@ -121,7 +131,7 @@ section[data-section-type="chapter"] { counter-increment: chapter-num; }`;
     color: #444;
   }
   @bottom-center {
-    content: counter(page);
+    content: ${pageNumberContent};
     font-family: var(--body-font);
     font-size: 9pt;
     color: #444;
@@ -179,6 +189,13 @@ section[data-section-type="chapter"] {
 }
 
 section[data-section-type="interlude"] {
+  break-before: page;
+}
+
+/* Each top-level back-matter heading (Notes, Appendix, About the
+   Author, etc.) starts a new page. Without this they flow together
+   and the appendix lands halfway down the last Notes page. */
+section[data-section-type="back-matter"] {
   break-before: page;
 }
 
@@ -285,6 +302,15 @@ hr {
   max-width: 4in;
 }
 
+/* Title-page elements override the generic <p> rules so every line is
+   center-aligned with no first-line indent. */
+.generated-title-page .gen-book-title,
+.generated-title-page .gen-book-subtitle,
+.generated-title-page .gen-book-author {
+  text-align: center;
+  text-indent: 0;
+}
+
 .generated-title-page .gen-book-title {
   font-size: 2.4em;
   margin: 0 0 0.5em;
@@ -370,6 +396,34 @@ hr {
   text-indent: 0;
 }
 
+/* Phase J: figures + captions (inline only). Same rules as PDF; the
+   wrapper comes from pandoc's implicit_figures extension. */
+figure {
+  break-inside: avoid;
+  page-break-inside: avoid;
+  margin: 1em auto;
+  display: block;
+  text-align: center;
+  max-width: 100%;
+}
+
+figure img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}
+
+figcaption {
+  font-size: 0.9em;
+  font-style: italic;
+  margin-top: 0.4em;
+  text-align: center;
+  text-wrap: balance;
+  text-indent: 0;
+  color: #333;
+}
+
 
 /* Manual paragraph-spacing utility classes — use raw HTML in markdown:
      <div class="space-small"></div>      ~half line
@@ -394,6 +448,20 @@ hr {
   height: 0;
   visibility: hidden;
 }
+
+/* All inline super/subscripts (math exponents, chemical subscripts,
+   manual footnote markers). The structure pipeline rewrites precomposed
+   Unicode super/subscripts into <sup>/<sub> with ASCII glyphs; pinning
+   the body font + lining numerals here keeps every digit consistent and
+   matches the PDF export pipeline. */
+sup, sub {
+  font-family: ${bodyFont};
+  font-size: 0.72em;
+  line-height: 0;
+  font-variant-numeric: lining-nums;
+}
+sup { vertical-align: super; }
+sub { vertical-align: sub; }
 
 /* Citation superscript references in body. */
 sup.note-ref {

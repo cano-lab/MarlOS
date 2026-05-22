@@ -93,6 +93,15 @@ pub fn build_export_css(config: &BookConfig, structure: &BookStructure) -> Strin
 
     let running_header_style = config.typography.running_header_style.as_str();
 
+    // Body page-number content. Front matter stays lower-roman.
+    let page_number_content: &str = match config.typography.page_number_style.as_str() {
+        "none" => "none",
+        "roman" => "counter(page, upper-roman)",
+        "lower-roman" => "counter(page, lower-roman)",
+        // "arabic" or anything unrecognized
+        _ => "counter(page)",
+    };
+
     // Chapter-opener preset overrides. "modern" is the baseline; the
     // earlier rules already implement it. "traditional" appends an
     // override block (larger drop cap, smaller centered title, more
@@ -230,7 +239,7 @@ section[data-section-type="chapter"][data-section-number="{n}"] {{
     max-width: 100%;
   }}
   @bottom-center {{
-    content: counter(page);
+    content: {pgnum};
     font-family: {bf};
     font-size: 9pt;
     color: #444;
@@ -338,7 +347,8 @@ section[data-section-type="front-matter"] {{
 }}
 
 section[data-section-type="chapter"],
-section[data-section-type="interlude"] {{
+section[data-section-type="interlude"],
+section[data-section-type="back-matter"] {{
   break-before: page;
 }}
 
@@ -457,6 +467,28 @@ a {{ color: inherit; text-decoration: none; }}
   visibility: hidden;
 }}
 
+/* All inline super/subscripts — math exponents (10<sup>-35</sup>),
+   chemical/Planck subscripts (ℓ<sub>p</sub>), and manually-typed
+   footnote markers — are pinned to the embedded body font with
+   lining numerals, same as citation refs below. The structure
+   pipeline rewrites every precomposed Unicode super/subscript
+   (⁰¹²³⁴⁵⁶⁷⁸⁹⁻ ₀₁₂…) into <sup>/<sub> with ordinary ASCII glyphs so
+   this rule can pin them. Without it, Chromium falls back to a system
+   font for the Unicode super/subscripts EB Garamond doesn't subset
+   (⁴ ⁵ ⁻ live outside Latin-1), which makes the two digits inside one
+   exponent render in different typefaces and risks KDP flagging the
+   glyph as not embedded. */
+sup, sub {{
+  font-family: {bf};
+  font-size: 0.72em;
+  line-height: 0;
+  font-feature-settings: "lnum" 1;
+  font-variant-numeric: lining-nums;
+  font-weight: 400;
+}}
+sup {{ vertical-align: super; }}
+sub {{ vertical-align: sub; }}
+
 /* Citation superscript references in body.
    Explicitly pin font-family + lining numerals so the digit glyph is
    guaranteed to come from the embedded EB Garamond Latin subset
@@ -554,6 +586,15 @@ sup.note-ref a {{
   max-width: 4in;
 }}
 
+/* Title-page elements override the generic `p` rules (justify +
+   text-indent) so every line is center-aligned with no leading indent. */
+.generated-title-page .gen-book-title,
+.generated-title-page .gen-book-subtitle,
+.generated-title-page .gen-book-author {{
+  text-align: center;
+  text-indent: 0;
+}}
+
 .generated-title-page .gen-book-title {{
   font-size: 2.4em;
   margin: 0 0 0.5em;
@@ -643,6 +684,38 @@ sup.note-ref a {{
   text-indent: 0;
 }}
 
+/* === Phase J: figures + captions (inline layout only) ===
+   Pandoc's implicit_figures extension wraps any paragraph that's just
+   an image-with-alt in `<figure><img/><figcaption>alt</figcaption></figure>`.
+   These rules style that wrapper: centered, capped at the body width,
+   never split across pages, caption in italic below.
+   Layout-mode classes (.float-top, .full-page) come in Phase K. */
+figure {{
+  break-inside: avoid;
+  page-break-inside: avoid;
+  margin: 1em auto;
+  display: block;
+  text-align: center;
+  max-width: 100%;
+}}
+
+figure img {{
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}}
+
+figcaption {{
+  font-size: 0.9em;
+  font-style: italic;
+  margin-top: 0.4em;
+  text-align: center;
+  text-wrap: balance;
+  text-indent: 0;
+  color: #333;
+}}
+
 /* Per-chapter named pages with literal headers — generated below */
 {per_chapter}
 "#,
@@ -659,6 +732,7 @@ sup.note-ref a {{
         per_chapter = per_chapter_css,
         chapter_opener_extra = chapter_opener_extra_css,
         font_faces = font_face_block,
+        pgnum = page_number_content,
     )
 }
 

@@ -87,6 +87,28 @@ pub struct OllamaEmbedding {
     model_info: ModelInfo,
 }
 
+/// Short-timeout HTTP client for liveness probes only.
+///
+/// A real embedding request may legitimately take a while (the server
+/// might be loading a model), so the provider clients use a 120s
+/// timeout. A *probe*, on the other hand, must fail fast: `auto_detect`
+/// runs on the main thread during Tauri `setup()` via `block_on`, so a
+/// slow probe freezes the whole window ("Not Responding", white view).
+///
+/// The dangerous case isn't a closed port (that refuses instantly) —
+/// it's a process that accepts the TCP connection but never speaks
+/// HTTP. QEMU's GDB stub defaults to port 1234, which is also LM
+/// Studio's default port; when `localhost` resolves to the QEMU
+/// binding the probe would otherwise hang for the full request timeout.
+/// A 1s connect / 2s total ceiling bounds that to a brief blip.
+fn probe_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(1))
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 impl OllamaEmbedding {
     /// Create a new Ollama embedding provider
     pub fn new(base_url: &str, model: &str) -> Self {
@@ -159,7 +181,7 @@ impl EmbeddingProvider for OllamaEmbedding {
 
     async fn is_available(&self) -> bool {
         let url = format!("{}/api/tags", self.base_url);
-        self.client.get(&url).send().await.is_ok()
+        probe_client().get(&url).send().await.is_ok()
     }
 }
 
@@ -321,7 +343,7 @@ impl EmbeddingProvider for OpenAIEmbedding {
         // For LM Studio (no API key), probe the server
         if self.api_key.is_none() {
             let url = format!("{}/models", self.base_url);
-            return self.client.get(&url).send().await.is_ok();
+            return probe_client().get(&url).send().await.is_ok();
         }
         // For API services with key, assume available
         true
