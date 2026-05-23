@@ -1,4 +1,4 @@
-import { Component, createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { Component, createEffect, createSignal, For, onMount, Show } from "solid-js";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import katex from "katex";
 import "katex/dist/katex.min.css";
@@ -113,14 +113,21 @@ const BookMode: Component<BookModeProps> = (props) => {
   // Set when Source autosaves — defers the expensive pandoc + structure
   // reload until the user switches to a view that needs it.
   const [pagesStale, setPagesStale] = createSignal(false);
+  // Bumped on every successful loadBook so the Source pane can re-read
+  // its file from disk when the book is (re)loaded — otherwise an
+  // on-disk change (external edit, version bump) shows in Pages but not
+  // in the Source textarea, which keeps its stale buffer.
+  const [reloadToken, setReloadToken] = createSignal(0);
   // Scroll surfaces exposed by the two child views — { el, getAnchors }
   // pairs that BookMode uses to mirror scrolling between them in split
   // mode with per-section interpolation.
   const [sourceSurface, setSourceSurface] = createSignal<ScrollSurface | null>(null);
   const [pagesSurface, setPagesSurface] = createSignal<ScrollSurface | null>(null);
-  // Toggle for split-mode scroll sync. Off lets each pane scroll
-  // independently — useful when comparing two distant places.
-  const [splitScrollSync, setSplitScrollSync] = createSignal(true);
+  // Sync is now on-demand only — two buttons in the split toolbar
+  // jump one pane to the other's position when clicked. The old
+  // continuous mirror was removed because the constant scroll-event
+  // ping-pong made small movements feel jumpy and re-firing
+  // getBoundingClientRect on every scroll was a perf hot path.
   // When off, autosaves don't trigger an immediate loadBook +
   // re-pagination. Edits still save to disk; Pages just stays on
   // whatever was rendered last. Useful when typing fast and the
@@ -134,188 +141,108 @@ const BookMode: Component<BookModeProps> = (props) => {
   >(null);
   let renderedRef: HTMLElement | undefined;
 
-  // Split-mode scroll mirror: per-section interpolated.
-  //
-  // For each scroll event we ask both panes for their per-section anchors
-  // (scrollTop where each section begins). We find the section the user
-  // is currently inside on the "from" pane, compute their progress within
-  // that section (0..1), and place the "to" pane at the same progress
-  // within the matching section. Outside any known section (above the
-  // first / below the last) we fall back to interpolating against the
-  // top/bottom of the document.
-  //
-  // This keeps you visually at "the same paragraph" even when the two
-  // panes have wildly different per-section densities (chapter openers,
-  // blank pages, notes back-matter all change the page-side density
-  // without changing the source-side density).
-  //
-  // Echo suppression uses two direction-specific timestamps so a
-  // programmatic write to side A doesn't bounce back through A's
-  // listener.
-  createEffect(() => {
-    const mode = viewMode();
-    const fromSrc = sourceSurface();
-    const fromPgs = pagesSurface();
-    const syncOn = splitScrollSync();
-    if (mode !== "split" || !fromSrc || !fromPgs || !syncOn) return;
+  // On-demand sync helpers. Map a scrollTop on one pane to the
+  // matching paragraph position on the other using the per-section
+  // anchors both sides expose. Called from the toolbar buttons in
+  // split mode — no automatic scroll listeners, no echo suppression,
+  // no baseline offset.
+  const findMatch = (
+    anchors: SectionAnchor[],
+    order: number,
+    paraIndex: number,
+  ): SectionAnchor | undefined => {
+    const exact = anchors.find(
+      (a) => a.order === order && a.paraIndex === paraIndex,
+    );
+    if (exact) return exact;
+    let best: SectionAnchor | undefined;
+    for (const a of anchors) {
+      if (a.order !== order) continue;
+      if (a.paraIndex > paraIndex) continue;
+      if (!best || a.paraIndex > best.paraIndex) best = a;
+    }
+    if (best) return best;
+    return anchors.find((a) => a.order === order && a.paraIndex === 0);
+  };
 
-    const src = fromSrc.el;
-    const pgs = fromPgs.el;
-    let suppressSrcUntil = 0;
-    let suppressPgsUntil = 0;
-
-    // RAF throttle — scroll events fire at higher rates than the
-    // display refresh on some setups, and `getAnchors` reads layout
-    // (cached now, but still O(N) when the cache misses). One mirror
-    // pass per frame is plenty.
-    let mirrorRaf: number | null = null;
-    let pendingMirror: (() => void) | null = null;
-    const scheduleMirror = (fn: () => void) => {
-      pendingMirror = fn;
-      if (mirrorRaf !== null) return;
-      mirrorRaf = requestAnimationFrame(() => {
-        mirrorRaf = null;
-        const f = pendingMirror;
-        pendingMirror = null;
-        f?.();
-      });
-    };
-
-    const findMatch = (
-      anchors: SectionAnchor[],
-      order: number,
-      paraIndex: number,
-    ): SectionAnchor | undefined => {
-      // Exact match first; if missing (paragraph counts drifted because
-      // of a list/code block within this section), fall back to the
-      // largest paraIndex <= ours within the same section.
-      const exact = anchors.find(
-        (a) => a.order === order && a.paraIndex === paraIndex,
-      );
-      if (exact) return exact;
-      let best: SectionAnchor | undefined;
-      for (const a of anchors) {
-        if (a.order !== order) continue;
-        if (a.paraIndex > paraIndex) continue;
-        if (!best || a.paraIndex > best.paraIndex) best = a;
-      }
-      if (best) return best;
-      // No anchor in that section at all — return the section header.
-      return anchors.find((a) => a.order === order && a.paraIndex === 0);
-    };
-
-    /** Pure function: given a position on `from`, compute the natural
-     *  mirrored position on `to` based on paragraph anchors alone (no
-     *  baseline offset). Returns scrollTop in `to`'s pixel space. */
-    const computeMirror = (
-      fromTop: number,
-      from: HTMLElement,
-      to: HTMLElement,
-      fromAnchors: SectionAnchor[],
-      toAnchors: SectionAnchor[],
-    ): number => {
-      const fromBottom = Math.max(1, from.scrollHeight - from.clientHeight);
-      const toBottom = Math.max(1, to.scrollHeight - to.clientHeight);
-
-      // Fall back to flat fraction when we have no anchors on either side.
-      if (fromAnchors.length === 0 || toAnchors.length === 0) {
-        return (fromTop / fromBottom) * toBottom;
-      }
-
-      let idx = -1;
-      for (let i = 0; i < fromAnchors.length; i++) {
-        if (fromAnchors[i].top <= fromTop) idx = i;
-        else break;
-      }
-
-      if (idx === -1) {
-        const fa = fromAnchors[0];
-        const ta = findMatch(toAnchors, fa.order, fa.paraIndex) ?? toAnchors[0];
-        const span = Math.max(1, fa.top);
-        const within = fromTop / span;
-        return within * ta.top;
-      }
-
-      const fromCurr = fromAnchors[idx];
-      const fromNext = fromAnchors[idx + 1];
-
-      const toCurr = findMatch(toAnchors, fromCurr.order, fromCurr.paraIndex);
-      if (!toCurr) {
-        return (fromTop / fromBottom) * toBottom;
-      }
-
-      if (!fromNext) {
-        const span = Math.max(1, fromBottom - fromCurr.top);
-        const within = (fromTop - fromCurr.top) / span;
-        return (
-          toCurr.top + Math.max(0, Math.min(1, within)) * (toBottom - toCurr.top)
-        );
-      }
-
-      const toNext = findMatch(toAnchors, fromNext.order, fromNext.paraIndex);
-      if (!toNext || toNext.top <= toCurr.top) {
-        const span = Math.max(1, fromBottom - fromCurr.top);
-        const within = (fromTop - fromCurr.top) / span;
-        return (
-          toCurr.top + Math.max(0, Math.min(1, within)) * (toBottom - toCurr.top)
-        );
-      }
-
-      const span = Math.max(1, fromNext.top - fromCurr.top);
+  const computeMirrorTarget = (
+    fromTop: number,
+    from: HTMLElement,
+    to: HTMLElement,
+    fromAnchors: SectionAnchor[],
+    toAnchors: SectionAnchor[],
+  ): number => {
+    const fromBottom = Math.max(1, from.scrollHeight - from.clientHeight);
+    const toBottom = Math.max(1, to.scrollHeight - to.clientHeight);
+    if (fromAnchors.length === 0 || toAnchors.length === 0) {
+      return (fromTop / fromBottom) * toBottom;
+    }
+    let idx = -1;
+    for (let i = 0; i < fromAnchors.length; i++) {
+      if (fromAnchors[i].top <= fromTop) idx = i;
+      else break;
+    }
+    if (idx === -1) {
+      const fa = fromAnchors[0];
+      const ta = findMatch(toAnchors, fa.order, fa.paraIndex) ?? toAnchors[0];
+      const span = Math.max(1, fa.top);
+      return (fromTop / span) * ta.top;
+    }
+    const fromCurr = fromAnchors[idx];
+    const fromNext = fromAnchors[idx + 1];
+    const toCurr = findMatch(toAnchors, fromCurr.order, fromCurr.paraIndex);
+    if (!toCurr) return (fromTop / fromBottom) * toBottom;
+    if (!fromNext) {
+      const span = Math.max(1, fromBottom - fromCurr.top);
       const within = (fromTop - fromCurr.top) / span;
       return (
-        toCurr.top + Math.max(0, Math.min(1, within)) * (toNext.top - toCurr.top)
+        toCurr.top + Math.max(0, Math.min(1, within)) * (toBottom - toCurr.top)
       );
-    };
+    }
+    const toNext = findMatch(toAnchors, fromNext.order, fromNext.paraIndex);
+    if (!toNext || toNext.top <= toCurr.top) {
+      const span = Math.max(1, fromBottom - fromCurr.top);
+      const within = (fromTop - fromCurr.top) / span;
+      return (
+        toCurr.top + Math.max(0, Math.min(1, within)) * (toBottom - toCurr.top)
+      );
+    }
+    const span = Math.max(1, fromNext.top - fromCurr.top);
+    const within = (fromTop - fromCurr.top) / span;
+    return (
+      toCurr.top + Math.max(0, Math.min(1, within)) * (toNext.top - toCurr.top)
+    );
+  };
 
-    // Baseline offsets captured the moment sync flips on. Whatever
-    // alignment the user has at that moment becomes the new zero, and
-    // subsequent mirroring propagates only the *delta* from there.
-    // Without this, the first scroll event after re-enabling sync
-    // would snap the other pane back to the calculated position,
-    // throwing away the user's manual lineup.
-    const offsetForPgs =
-      pgs.scrollTop -
-      computeMirror(src.scrollTop, src, pgs, fromSrc.getAnchors(), fromPgs.getAnchors());
-    const offsetForSrc =
-      src.scrollTop -
-      computeMirror(pgs.scrollTop, pgs, src, fromPgs.getAnchors(), fromSrc.getAnchors());
+  /** Jump Pages to the position matching Source's current scrollTop. */
+  const syncPagesToSource = () => {
+    const src = sourceSurface();
+    const pgs = pagesSurface();
+    if (!src || !pgs) return;
+    const target = computeMirrorTarget(
+      src.el.scrollTop,
+      src.el,
+      pgs.el,
+      src.getAnchors(),
+      pgs.getAnchors(),
+    );
+    pgs.el.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+  };
 
-    const onSrcScroll = () => {
-      if (performance.now() < suppressSrcUntil) return;
-      scheduleMirror(() => {
-        if (performance.now() < suppressSrcUntil) return;
-        const target =
-          computeMirror(src.scrollTop, src, pgs, fromSrc.getAnchors(), fromPgs.getAnchors()) +
-          offsetForPgs;
-        suppressPgsUntil = performance.now() + 120;
-        pgs.scrollTop = target;
-      });
-    };
-    const onPgsScroll = () => {
-      if (performance.now() < suppressPgsUntil) return;
-      scheduleMirror(() => {
-        if (performance.now() < suppressPgsUntil) return;
-        const target =
-          computeMirror(pgs.scrollTop, pgs, src, fromPgs.getAnchors(), fromSrc.getAnchors()) +
-          offsetForSrc;
-        suppressSrcUntil = performance.now() + 120;
-        src.scrollTop = target;
-      });
-    };
-
-    src.addEventListener("scroll", onSrcScroll, { passive: true });
-    pgs.addEventListener("scroll", onPgsScroll, { passive: true });
-    onCleanup(() => {
-      src.removeEventListener("scroll", onSrcScroll);
-      pgs.removeEventListener("scroll", onPgsScroll);
-      if (mirrorRaf !== null) {
-        cancelAnimationFrame(mirrorRaf);
-        mirrorRaf = null;
-      }
-      pendingMirror = null;
-    });
-  });
+  /** Jump Source to the position matching Pages's current scrollTop. */
+  const syncSourceToPages = () => {
+    const src = sourceSurface();
+    const pgs = pagesSurface();
+    if (!src || !pgs) return;
+    const target = computeMirrorTarget(
+      pgs.el.scrollTop,
+      pgs.el,
+      src.el,
+      pgs.getAnchors(),
+      src.getAnchors(),
+    );
+    src.el.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+  };
 
   // When the user moves out of Source and into Outline or Pages, drain
   // any pending re-pagination so they see the latest content. Split
@@ -472,6 +399,10 @@ const BookMode: Component<BookModeProps> = (props) => {
       setBook(out);
       setMathStats(null);
       writeLastBookPath(p);
+      // Tell the Source pane to re-read from disk (it doesn't otherwise
+      // react to same-path reloads). Guarded on its side so it won't
+      // clobber unsaved edits.
+      setReloadToken((t) => t + 1);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       // If pointing at a markdown file with no book.toml, offer to init.
@@ -716,19 +647,18 @@ const BookMode: Component<BookModeProps> = (props) => {
           </div>
           <Show when={viewMode() === "split"}>
             <button
-              classList={{
-                "book-mode-btn": true,
-                "book-mode-btn-settings": true,
-                active: splitScrollSync(),
-              }}
-              onClick={() => setSplitScrollSync(!splitScrollSync())}
-              title={
-                splitScrollSync()
-                  ? "Scroll sync ON — click to scroll panes independently"
-                  : "Scroll sync OFF — click to re-link the panes"
-              }
+              class="book-mode-btn"
+              onClick={syncPagesToSource}
+              title="Scroll Pages to match Source's current position"
             >
-              {splitScrollSync() ? "🔗 Sync" : "⛓ Free"}
+              → Pages
+            </button>
+            <button
+              class="book-mode-btn"
+              onClick={syncSourceToPages}
+              title="Scroll Source to match Pages's current position"
+            >
+              ← Source
             </button>
             <button
               classList={{
@@ -869,6 +799,7 @@ const BookMode: Component<BookModeProps> = (props) => {
           <BookSourceView
             bookPath={path()}
             files={book()!.config.files}
+            reloadToken={reloadToken()}
             currentSectionOrder={currentSectionOrder()}
             onSectionChange={setCurrentSectionOrder}
             active={viewMode() === "source" || viewMode() === "split"}

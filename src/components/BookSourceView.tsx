@@ -11,6 +11,11 @@ import "./BookSourceView.css";
 interface BookSourceViewProps {
   bookPath: string;
   files: string[];
+  /** Bumped by the parent on every book (re)load. The source pane
+   *  re-reads its file from disk when this changes (unless there are
+   *  unsaved edits), so on-disk changes — external edits, version
+   *  bumps — show up instead of the stale buffer. */
+  reloadToken?: number;
   /** 1-based BookSection.order to jump to on mount/prop change. */
   currentSectionOrder?: number;
   /** Reports the topmost visible section's order as the user scrolls. */
@@ -340,13 +345,16 @@ const BookSourceView: Component<BookSourceViewProps> = (props) => {
     setError(null);
     try {
       const text = await typesetterService.readBookFile(props.bookPath, activeIndex());
-      setContent(text);
-      // The textarea is uncontrolled (no `value={content()}` binding) —
-      // we set its value imperatively here on programmatic load so
-      // user-typing doesn't pay the cost of a value re-assignment
-      // through Solid on every keystroke (which can reset scroll
-      // position on a 200KB textarea).
-      if (editorRef) editorRef.value = text;
+      // Only touch the textarea when the content actually differs —
+      // re-assigning `.value` resets the cursor/scroll, so a no-op
+      // reload (e.g. the post-save auto-paginate) must not disturb the
+      // writer. The textarea is uncontrolled (no `value={content()}`
+      // binding) for the same reason: a 200KB re-assign on every
+      // keystroke is expensive and scroll-resetting.
+      if (text !== content()) {
+        setContent(text);
+        if (editorRef) editorRef.value = text;
+      }
       setDirty(false);
     } catch (e) {
       setError(`Failed to load: ${e instanceof Error ? e.message : String(e)}`);
@@ -499,6 +507,23 @@ const BookSourceView: Component<BookSourceViewProps> = (props) => {
   createEffect(() => {
     void activeIndex();
     void loadActive();
+  });
+
+  // Re-read from disk when the parent reloads the book (reloadToken
+  // bumps). Covers on-disk changes the switch effect above can't see —
+  // external edits, version bumps, a re-open of the same path. Skips
+  // the first run (handled by the switch effect) and never overwrites
+  // unsaved edits. loadActive itself no-ops the textarea when the disk
+  // content matches the buffer, so post-save reloads don't disturb the
+  // cursor.
+  let reloadInitialized = false;
+  createEffect(() => {
+    void props.reloadToken;
+    if (!reloadInitialized) {
+      reloadInitialized = true;
+      return;
+    }
+    if (!dirty()) void loadActive();
   });
 
   // Jump to the parent-shared current section whenever:
