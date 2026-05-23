@@ -121,6 +121,16 @@ export interface BookConfig {
      *  drop cap, smaller title, more top whitespace, small-caps
      *  lead-in. */
     chapter_opener_style: string;
+    /** Body page-number style. One of:
+     *    "arabic" (default) — 1, 2, 3
+     *    "roman"            — I, II, III
+     *    "lower-roman"      — i, ii, iii
+     *    "none"             — page number hidden
+     *  Front matter always uses lower-roman per print convention. */
+    page_number_style: string;
+    /** Front-matter page-number style: "lower-roman" | "upper-roman" |
+     *  "arabic" (arabic = one continuous sequence through the book). */
+    front_matter_page_number_style?: string;
   };
   export: { color_mode: string };
   files: string[];

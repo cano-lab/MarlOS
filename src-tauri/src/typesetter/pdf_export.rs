@@ -102,6 +102,21 @@ pub fn build_export_css(config: &BookConfig, structure: &BookStructure) -> Strin
         _ => "counter(page)",
     };
 
+    // Front-matter page-number style. "arabic" makes the whole book one
+    // continuous arabic sequence (no restart at chapter 1); roman keeps
+    // the traditional split (front matter roman, body restarts at 1).
+    let fm_style = config.typography.front_matter_page_number_style.as_str();
+    let front_matter_folio: &str = match fm_style {
+        "upper-roman" => "counter(page, upper-roman)",
+        "arabic" => "counter(page)",
+        _ => "counter(page, lower-roman)",
+    };
+    let body_reset_css: &str = if fm_style == "arabic" {
+        "" // continuous numbering — don't restart at chapter 1
+    } else {
+        "counter-reset: page 1;"
+    };
+
     // Chapter-opener preset overrides. "modern" is the baseline; the
     // earlier rules already implement it. "traditional" appends an
     // override block (larger drop cap, smaller centered title, more
@@ -251,7 +266,7 @@ section[data-section-type="chapter"][data-section-number="{n}"] {{
         let head_lit = css_string_literal(&head);
         let order = section.order;
         let folio: &str = if section.kind == SectionKind::FrontMatter {
-            "counter(page, lower-roman)"
+            front_matter_folio
         } else {
             page_number_content
         };
@@ -330,7 +345,7 @@ section[data-section-order="{order}"] {{ page: sec-{order}; }}
 @page front-matter {{
   @top-center {{ content: none; }}
   @bottom-center {{
-    content: counter(page, lower-roman);
+    content: {fm_folio};
     font-size: 9pt;
     color: #444;
   }}
@@ -456,7 +471,7 @@ section[data-section-type="interlude"] > h1 {{
 }}
 
 section[data-section-type="chapter"][data-section-number="1"] {{
-  counter-reset: page 1;
+  {body_reset}
 }}
 
 /* Drop cap is now a structure-parser span (.drop-cap) instead of a
@@ -896,6 +911,8 @@ figcaption {{
         chapter_opener_extra = chapter_opener_extra_css,
         font_faces = font_face_block,
         pgnum = page_number_content,
+        fm_folio = front_matter_folio,
+        body_reset = body_reset_css,
     )
 }
 

@@ -441,6 +441,53 @@ const BookConfigEditor: Component<BookConfigEditorProps> = (props) => {
             the V1 default; traditional is the novel-style large
             initial cap with the first few words in small caps.
           </p>
+          <label class="bce-field">
+            <span>Page numbers</span>
+            <select
+              value={draft().typography.page_number_style ?? "arabic"}
+              onChange={(e) =>
+                update(
+                  (d) =>
+                    (d.typography.page_number_style =
+                      e.currentTarget.value),
+                )
+              }
+            >
+              <option value="arabic">Arabic — 1, 2, 3</option>
+              <option value="roman">Roman — I, II, III</option>
+              <option value="lower-roman">Lower roman — i, ii, iii</option>
+              <option value="none">None — hide page numbers</option>
+            </select>
+          </label>
+          <p class="bce-help">
+            Applies to body pages (chapters, interludes, back matter).
+          </p>
+          <label class="bce-field">
+            <span>Front-matter page numbers</span>
+            <select
+              value={
+                draft().typography.front_matter_page_number_style ?? "lower-roman"
+              }
+              onChange={(e) =>
+                update(
+                  (d) =>
+                    (d.typography.front_matter_page_number_style =
+                      e.currentTarget.value),
+                )
+              }
+            >
+              <option value="lower-roman">Lower roman — i, ii, iii</option>
+              <option value="upper-roman">Upper roman — I, II, III</option>
+              <option value="arabic">
+                Arabic everywhere — one continuous sequence
+              </option>
+            </select>
+          </label>
+          <p class="bce-help">
+            Numbering for front matter (Author's Note, Glossary, etc.).
+            "Arabic everywhere" makes the whole book one continuous arabic
+            sequence — the body does not restart at 1 at chapter 1.
+          </p>
         </section>
 
         <section class="bce-section">

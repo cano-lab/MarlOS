@@ -151,6 +151,21 @@ pub struct TypographyConfig {
     /// structure parser; this preset only changes which CSS targets
     /// them.
     pub chapter_opener_style: String,
+    /// Page number style for the body pages (chapters / interludes /
+    /// back matter). One of: "arabic" (default) / "roman" / "lower-roman"
+    /// / "none".
+    pub page_number_style: String,
+    /// Page number style for FRONT MATTER. One of:
+    ///   "lower-roman" (default) — i, ii, iii; body restarts arabic at ch1
+    ///   "upper-roman"           — I, II, III; body restarts arabic at ch1
+    ///   "arabic"                — front matter arabic, continuous into the
+    ///                             body (no restart) — "arabic for all"
+    #[serde(default = "default_front_matter_page_number_style")]
+    pub front_matter_page_number_style: String,
+}
+
+fn default_front_matter_page_number_style() -> String {
+    "lower-roman".to_string()
 }
 
 impl Default for TypographyConfig {
@@ -163,6 +178,8 @@ impl Default for TypographyConfig {
             running_header_style: "title".to_string(),
             lead_in_word_count: 5,
             chapter_opener_style: "modern".to_string(),
+            page_number_style: "arabic".to_string(),
+            front_matter_page_number_style: "lower-roman".to_string(),
         }
     }
 }
@@ -373,6 +390,14 @@ impl BookConfig {
         out.push_str(&format!(
             "chapter_opener_style = {}\n",
             toml_string_literal(&self.typography.chapter_opener_style)
+        ));
+        out.push_str(&format!(
+            "page_number_style = {}\n",
+            toml_string_literal(&self.typography.page_number_style)
+        ));
+        out.push_str(&format!(
+            "front_matter_page_number_style = {}\n",
+            toml_string_literal(&self.typography.front_matter_page_number_style)
         ));
         out.push('\n');
 
