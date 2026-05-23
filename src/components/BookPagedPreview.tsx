@@ -60,6 +60,9 @@ const BookPagedPreview: Component<BookPagedPreviewProps> = (props) => {
   let pagingActive = false;
   let pendingRequest = false;
   let renderedHtml = "";
+  // The html whose pagination already got one automatic retry, so a
+  // persistent (non-transient) failure doesn't loop.
+  let retriedHtml = "";
   let mountRef: HTMLDivElement | undefined;
   let cancelled = false;
   let suppressReportUntil = 0;
@@ -296,40 +299,56 @@ const BookPagedPreview: Component<BookPagedPreviewProps> = (props) => {
 
       setupScrollListener();
       renderedHtml = htmlForThisRun;
+      retriedHtml = ""; // success — let a future html retry if it needs to
       invalidateAnchors(); // fresh DOM → fresh positions
       // Restore the user's view: prefer the most recent edit anchor
       // (so a freshly-inserted snippet stays in view), fall back to
       // the parent-shared currentSectionOrder.
       queueMicrotask(restoreScrollAfterPagination);
     } catch (e) {
-      if (!cancelled) {
-        // ProgressEvent (from a failed fetch inside Paged.js) stringifies
-        // as "[object ProgressEvent]" by default — extract the failing
-        // URL from target so the error message points at the cause.
-        let msg: string;
-        if (e instanceof Error) {
-          msg = e.message;
-        } else if (e && typeof e === "object" && "target" in e) {
-          const target = (e as { target?: unknown }).target as
-            | { url?: string; src?: string; href?: string; tagName?: string }
-            | undefined;
-          const url =
-            target?.url ?? target?.src ?? target?.href ?? "(unknown URL)";
-          const tag = target?.tagName ?? "fetch";
-          msg = `${e.constructor.name} from ${tag} loading ${url}`;
-        } else {
-          msg = String(e);
+      // Paged.js occasionally throws a transient layout race
+      // ("Cannot read properties of null (reading 'getBoundingClientRect')")
+      // that succeeds on a second pass once layout settles. Auto-retry
+      // such a failure ONCE (per html) before surfacing it.
+      const transient =
+        e instanceof Error && /getBoundingClientRect/.test(e.message);
+      if (!cancelled && transient && retriedHtml !== htmlForThisRun) {
+        retriedHtml = htmlForThisRun;
+        // Don't let the drain also fire; we schedule the retry ourselves
+        // after a short delay so the DOM/layout can settle.
+        renderedHtml = htmlForThisRun;
+        console.warn("Paged.js layout race — retrying pagination once");
+        setTimeout(() => {
+          if (!cancelled) void renderPaged();
+        }, 80);
+      } else {
+        if (!cancelled) {
+          // ProgressEvent (from a failed fetch inside Paged.js) stringifies
+          // as "[object ProgressEvent]" by default — extract the failing
+          // URL from target so the error message points at the cause.
+          let msg: string;
+          if (e instanceof Error) {
+            msg = e.message;
+          } else if (e && typeof e === "object" && "target" in e) {
+            const target = (e as { target?: unknown }).target as
+              | { url?: string; src?: string; href?: string; tagName?: string }
+              | undefined;
+            const url =
+              target?.url ?? target?.src ?? target?.href ?? "(unknown URL)";
+            const tag = target?.tagName ?? "fetch";
+            msg = `${e.constructor.name} from ${tag} loading ${url}`;
+          } else {
+            msg = String(e);
+          }
+          setError(msg);
+          setStatus("error");
+          console.error("Pagination error:", e);
         }
-        setError(msg);
-        setStatus("error");
-        console.error("Pagination error:", e);
+        // Mark this html as "attempted (failed)" so the drain doesn't
+        // queue another doomed attempt (the old pagination-loop source).
+        // A NEW enrichedHtml from a future edit still triggers a fresh try.
+        renderedHtml = htmlForThisRun;
       }
-      // Mark this html as "attempted (failed)" so the drain check at
-      // the end of `finally` doesn't see enrichedHtml !== renderedHtml
-      // and queue another doomed attempt — that was the source of the
-      // pagination loop on persistent errors. A NEW enrichedHtml from
-      // a future edit will still trigger a fresh attempt.
-      renderedHtml = htmlForThisRun;
     } finally {
       setElapsedMs(Math.round(performance.now() - t0));
       pagingActive = false;

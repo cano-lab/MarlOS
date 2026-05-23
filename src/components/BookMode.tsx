@@ -13,7 +13,7 @@ import {
 } from "../services/typesetter-service";
 import BookPagedPreview from "./BookPagedPreview";
 import BookConfigEditor from "./BookConfigEditor";
-import BookSourceView from "./BookSourceView";
+import BookEditorPane from "./BookEditorPane";
 import RelevantSources from "./RelevantSources";
 import "./BookMode.css";
 
@@ -796,7 +796,7 @@ const BookMode: Component<BookModeProps> = (props) => {
             hidden: viewMode() !== "source" && viewMode() !== "split",
           }}
         >
-          <BookSourceView
+          <BookEditorPane
             bookPath={path()}
             files={book()!.config.files}
             reloadToken={reloadToken()}
