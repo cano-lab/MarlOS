@@ -911,6 +911,11 @@ figure.fig-bleed {{
 }}
 figure.fig-bleed img {{ width: 100%; }}
 
+/* Float modes — image sits in the text, paragraphs wrap around it. */
+figure.fig-float-left {{ float: left; max-width: 48%; margin: 0.2em 1.2em 0.6em 0; }}
+figure.fig-float-right {{ float: right; max-width: 48%; margin: 0.2em 0 0.6em 1.2em; }}
+figure.fig-float-left img, figure.fig-float-right img {{ width: 100%; }}
+
 /* Per-chapter named pages with literal headers — generated below */
 {per_chapter}
 "#,

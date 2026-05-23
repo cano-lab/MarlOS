@@ -527,6 +527,11 @@ figure.fig-bleed {
 }
 figure.fig-bleed img { width: 100%; }
 
+/* Float modes — image sits in the text, paragraphs wrap around it. */
+figure.fig-float-left { float: left; max-width: 48%; margin: 0.2em 1.2em 0.6em 0; }
+figure.fig-float-right { float: right; max-width: 48%; margin: 0.2em 0 0.6em 1.2em; }
+figure.fig-float-left img, figure.fig-float-right img { width: 100%; }
+
 
 /* Manual paragraph-spacing utility classes — use raw HTML in markdown:
      <div class="space-small"></div>      ~half line

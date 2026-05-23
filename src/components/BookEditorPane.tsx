@@ -202,6 +202,46 @@ const BookEditorPane: Component<BookEditorPaneProps> = (props) => {
     insertAtCursor(`\n\n${snippet}\n\n`);
   };
 
+  // --- Image insert modal -------------------------------------------------
+  const [showImage, setShowImage] = createSignal(false);
+  const [imgPath, setImgPath] = createSignal("");
+  const [imgCaption, setImgCaption] = createSignal("");
+  // inline | text | bleed | float-left | float-right
+  const [imgMode, setImgMode] = createSignal("inline");
+  const [imgWidth, setImgWidth] = createSignal("60%");
+  const [imgInset, setImgInset] = createSignal("0.25in");
+
+  const insertImage = () => {
+    const path = imgPath().trim();
+    if (!path) {
+      setError("Enter an image path (relative to the manuscript).");
+      return;
+    }
+    const cap = imgCaption().trim();
+    // Stable id so the (future) right-click margin editor can find this
+    // figure and write its inset back here.
+    const id = "fig-" + Date.now().toString(36);
+    const mode = imgMode();
+    let attrs = `#${id}`;
+    if (mode === "text") {
+      attrs += " .fig-text";
+    } else if (mode === "bleed") {
+      attrs += ` .fig-bleed style="--fig-inset:${imgInset().trim() || "0.25in"}"`;
+    } else if (mode === "float-left") {
+      attrs += ` .fig-float-left width="${imgWidth().trim() || "40%"}"`;
+    } else if (mode === "float-right") {
+      attrs += ` .fig-float-right width="${imgWidth().trim() || "40%"}"`;
+    } else {
+      attrs += ` width="${imgWidth().trim() || "60%"}"`; // inline block
+    }
+    // Image alone in a paragraph → pandoc implicit_figures wraps it in a
+    // <figure> with the caption as <figcaption>.
+    insertAtCursor(`\n\n![${cap}](${path}){${attrs}}\n\n`);
+    setShowImage(false);
+    setImgPath("");
+    setImgCaption("");
+  };
+
   /** Set (or clear) the running-header override on the heading the cursor
    *  is on, by editing its `{header="..."}` attribute — so the writer
    *  doesn't have to remember the markdown syntax. */
@@ -298,6 +338,13 @@ const BookEditorPane: Component<BookEditorPaneProps> = (props) => {
           >
             ⊤ Header
           </button>
+          <button
+            class="book-editor-snippet-btn"
+            title="Insert an image (figure) with a caption and layout"
+            onClick={() => setShowImage(true)}
+          >
+            🖼 Image
+          </button>
         </div>
         <div class="book-editor-zoom">
           <button class="book-editor-zoom-btn" title="Zoom out" onClick={zoomOut} disabled={zoom() <= ZOOM_MIN + 1e-6}>
@@ -313,6 +360,65 @@ const BookEditorPane: Component<BookEditorPaneProps> = (props) => {
       </div>
       <Show when={error()}>
         <div class="book-editor-error">{error()}</div>
+      </Show>
+      <Show when={showImage()}>
+        <div class="book-editor-modal-backdrop" onClick={() => setShowImage(false)}>
+          <div class="book-editor-modal" onClick={(e) => e.stopPropagation()}>
+            <div class="bem-title">Insert image</div>
+            <label class="bem-field">
+              <span>Path (relative to the manuscript)</span>
+              <input
+                value={imgPath()}
+                onInput={(e) => setImgPath(e.currentTarget.value)}
+                placeholder="images/diagram.png"
+              />
+            </label>
+            <label class="bem-field">
+              <span>Caption</span>
+              <input
+                value={imgCaption()}
+                onInput={(e) => setImgCaption(e.currentTarget.value)}
+                placeholder="Caption (also used in the List of Figures)"
+              />
+            </label>
+            <label class="bem-field">
+              <span>Layout</span>
+              <select value={imgMode()} onChange={(e) => setImgMode(e.currentTarget.value)}>
+                <option value="inline">Inline block — centered, sized</option>
+                <option value="text">Text block — full text width</option>
+                <option value="bleed">Near-bleed — escapes the margins</option>
+                <option value="float-left">Float left — text wraps</option>
+                <option value="float-right">Float right — text wraps</option>
+              </select>
+            </label>
+            <Show when={["inline", "float-left", "float-right"].includes(imgMode())}>
+              <label class="bem-field">
+                <span>Width</span>
+                <input
+                  value={imgWidth()}
+                  onInput={(e) => setImgWidth(e.currentTarget.value)}
+                  placeholder="60%"
+                />
+              </label>
+            </Show>
+            <Show when={imgMode() === "bleed"}>
+              <label class="bem-field">
+                <span>Inset from edge (0 = full bleed)</span>
+                <input
+                  value={imgInset()}
+                  onInput={(e) => setImgInset(e.currentTarget.value)}
+                  placeholder="0.25in"
+                />
+              </label>
+            </Show>
+            <div class="bem-actions">
+              <button onClick={() => setShowImage(false)}>Cancel</button>
+              <button class="bem-primary" onClick={insertImage}>
+                Insert
+              </button>
+            </div>
+          </div>
+        </div>
       </Show>
       <div class="book-editor-host" style={{ "--cm-zoom": String(zoom()) }}>
         <MarkdownEditor
