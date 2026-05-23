@@ -1,7 +1,7 @@
 import { Component, createSignal, createEffect, onCleanup, For, Show } from "solid-js";
 import type { EditorView } from "@codemirror/view";
 import MarkdownEditor from "./MarkdownEditor";
-import { typesetterService, BookConfig, ScrollSurface } from "../services/typesetter-service";
+import { typesetterService, BookConfig, ScrollSurface, SectionAnchor } from "../services/typesetter-service";
 import "./BookEditorPane.css";
 
 /**
@@ -159,6 +159,30 @@ const BookEditorPane: Component<BookEditorPaneProps> = (props) => {
     scheduleSave();
   };
 
+  /** H1 anchors for synchronized scrolling: each `# ` heading's vertical
+   *  offset in the editor, keyed by 1-based H1 index (which matches the
+   *  pages' data-section-order — the parser numbers top-level sections in
+   *  document order). The parent interpolates scroll position between
+   *  consecutive H1s. paraIndex 0 = the heading line. */
+  const getAnchors = (): SectionAnchor[] => {
+    if (!view) return [];
+    const doc = view.state.doc;
+    const out: SectionAnchor[] = [];
+    let order = 0;
+    for (let i = 1; i <= doc.lines; i++) {
+      const line = doc.line(i);
+      if (/^#[ \t]/.test(line.text)) {
+        order++;
+        try {
+          out.push({ order, paraIndex: 0, top: view.lineBlockAt(line.from).top });
+        } catch {
+          /* line not measured yet — skip */
+        }
+      }
+    }
+    return out;
+  };
+
   /** Splice text at the cursor (replacing any selection) via a CodeMirror
    *  transaction — keeps scroll/undo intact, unlike a textarea value reset. */
   const insertAtCursor = (text: string, caretOffset?: number) => {
@@ -297,9 +321,9 @@ const BookEditorPane: Component<BookEditorPaneProps> = (props) => {
           onSave={() => void flushSave()}
           onEditorView={(v) => {
             view = v;
-            // Expose the scroll element so the parent can mirror scroll.
-            // getAnchors is stubbed until H1-anchor sync lands.
-            props.onScrollSurfaceReady?.({ el: v.scrollDOM, getAnchors: () => [] });
+            // Expose the scroll element + H1 anchors so the parent can
+            // mirror scrolling with the Pages preview.
+            props.onScrollSurfaceReady?.({ el: v.scrollDOM, getAnchors });
           }}
         />
       </div>

@@ -1,4 +1,4 @@
-import { Component, createEffect, createSignal, For, onMount, Show } from "solid-js";
+import { Component, createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import katex from "katex";
 import "katex/dist/katex.min.css";
@@ -243,6 +243,52 @@ const BookMode: Component<BookModeProps> = (props) => {
     );
     src.el.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
   };
+
+  // Continuous synchronized scrolling (split mode). Scrolling either pane
+  // mirrors the other via the H1-anchor interpolation above. Per-direction
+  // echo suppression: when we programmatically scroll B to mirror A, B's
+  // own scroll handler is muted for a short window so it doesn't bounce
+  // back. rAF-throttled so we recompute at most once per frame.
+  let suppressSrcUntil = 0;
+  let suppressPgsUntil = 0;
+  let srcSyncRaf: number | null = null;
+  let pgsSyncRaf: number | null = null;
+  createEffect(() => {
+    const src = sourceSurface();
+    const pgs = pagesSurface();
+    if (!src || !pgs || viewMode() !== "split") return;
+
+    const onSrc = () => {
+      if (performance.now() < suppressSrcUntil || srcSyncRaf !== null) return;
+      srcSyncRaf = requestAnimationFrame(() => {
+        srcSyncRaf = null;
+        const target = computeMirrorTarget(
+          src.el.scrollTop, src.el, pgs.el, src.getAnchors(), pgs.getAnchors(),
+        );
+        suppressPgsUntil = performance.now() + 150;
+        pgs.el.scrollTop = Math.max(0, target);
+      });
+    };
+    const onPgs = () => {
+      if (performance.now() < suppressPgsUntil || pgsSyncRaf !== null) return;
+      pgsSyncRaf = requestAnimationFrame(() => {
+        pgsSyncRaf = null;
+        const target = computeMirrorTarget(
+          pgs.el.scrollTop, pgs.el, src.el, pgs.getAnchors(), src.getAnchors(),
+        );
+        suppressSrcUntil = performance.now() + 150;
+        src.el.scrollTop = Math.max(0, target);
+      });
+    };
+    src.el.addEventListener("scroll", onSrc, { passive: true });
+    pgs.el.addEventListener("scroll", onPgs, { passive: true });
+    onCleanup(() => {
+      src.el.removeEventListener("scroll", onSrc);
+      pgs.el.removeEventListener("scroll", onPgs);
+      if (srcSyncRaf !== null) cancelAnimationFrame(srcSyncRaf);
+      if (pgsSyncRaf !== null) cancelAnimationFrame(pgsSyncRaf);
+    });
+  });
 
   // When the user moves out of Source and into Outline or Pages, drain
   // any pending re-pagination so they see the latest content. Split
