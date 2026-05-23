@@ -228,6 +228,11 @@ fn parse_number(s: &str) -> Option<u32> {
 struct RawHeading {
     h1_raw: String,
     html_id: String,
+    /// Space-separated CSS classes on the `<section>` (from pandoc
+    /// header attributes, e.g. `# Title {.chapter}`). Lets the writer
+    /// force a section to count as a numbered chapter / interlude even
+    /// when its heading text doesn't start with "Chapter" / "Interlude".
+    classes: String,
 }
 
 /// Walk the pandoc HTML and extract one entry per top-level section.
@@ -239,6 +244,7 @@ fn extract_top_level_sections(html: &str) -> Vec<RawHeading> {
     let mut out = Vec::new();
     for section in doc.select(&section_sel) {
         let id = section.value().attr("id").unwrap_or("").to_string();
+        let classes = section.value().attr("class").unwrap_or("").to_string();
         let h1 = section
             .select(&h1_sel)
             .next()
@@ -247,6 +253,7 @@ fn extract_top_level_sections(html: &str) -> Vec<RawHeading> {
         out.push(RawHeading {
             h1_raw: h1,
             html_id: id,
+            classes,
         });
     }
     out
@@ -272,6 +279,7 @@ pub fn classify_sections(headings: &[RawHeading]) -> Vec<BookSection> {
 
     for (i, h) in headings.iter().enumerate() {
         let normalized = normalize_h1(&h.h1_raw);
+        let has_class = |c: &str| h.classes.split_whitespace().any(|x| x == c);
         if let Some(caps) = chapter_re.captures(&normalized) {
             let num = caps
                 .name("num")
@@ -284,6 +292,13 @@ pub fn classify_sections(headings: &[RawHeading]) -> Vec<BookSection> {
             tentative.push(Tentative::Chapter(num, title));
             first_chapter_idx.get_or_insert(i);
             last_chapter_idx = Some(i);
+        } else if has_class("chapter") {
+            // Forced chapter via `# Title {.chapter}` — no "Chapter N"
+            // prefix, so it takes the next sequential number and the
+            // whole heading is the title.
+            tentative.push(Tentative::Chapter(0, normalized));
+            first_chapter_idx.get_or_insert(i);
+            last_chapter_idx = Some(i);
         } else if let Some(caps) = interlude_re.captures(&normalized) {
             let num = caps
                 .name("num")
@@ -294,6 +309,8 @@ pub fn classify_sections(headings: &[RawHeading]) -> Vec<BookSection> {
                 .map(|m| normalize_h1(m.as_str()))
                 .unwrap_or_default();
             tentative.push(Tentative::Interlude(num, title));
+        } else if has_class("interlude") {
+            tentative.push(Tentative::Interlude(0, normalized));
         } else {
             tentative.push(Tentative::Plain(normalized));
         }
@@ -562,6 +579,65 @@ fn escape_html(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// Build a Table of Contents page from the parsed structure.
+///
+/// Chapters get a `N.` number prefix; every other section (front
+/// matter, interludes, back matter) renders italic with no number
+/// (styled via the `toc-other` class). Each entry links to the
+/// section's `html_id` so the preview pipeline can fill page numbers
+/// with `target-counter`; front-matter entries also carry `toc-fm` so
+/// their (lower-roman) folios can be styled distinctly from body pages.
+/// The book-title H1 is skipped — it lives on the generated title page.
+/// Returns "" when there are no sections.
+///
+/// The caller inserts this right after the generated front matter
+/// (title / copyright / dedication) and before the body.
+pub fn build_toc(structure: &BookStructure, book_title: &str) -> String {
+    let title_norm = normalize_h1(book_title);
+    let mut entries = String::new();
+    for sec in &structure.sections {
+        // Skip the book-title section — it's the title page, not an entry.
+        if !title_norm.is_empty() && normalize_h1(&sec.h1_raw) == title_norm {
+            continue;
+        }
+        let href = escape_html(&sec.html_id);
+        match (&sec.kind, sec.number) {
+            (SectionKind::Chapter, Some(n)) => entries.push_str(&format!(
+                "    <a class=\"toc-entry toc-chapter\" href=\"#{}\">\
+                 <span class=\"toc-num\">{}.</span>\
+                 <span class=\"toc-text\">{}</span></a>\n",
+                href,
+                n,
+                escape_html(&sec.title),
+            )),
+            // Front matter, interludes, back matter — italic, no number.
+            _ => {
+                let fm = if sec.kind == SectionKind::FrontMatter {
+                    " toc-fm"
+                } else {
+                    ""
+                };
+                entries.push_str(&format!(
+                    "    <a class=\"toc-entry toc-other{}\" href=\"#{}\">\
+                     <span class=\"toc-text\">{}</span></a>\n",
+                    fm,
+                    href,
+                    escape_html(&sec.h1_raw),
+                ));
+            }
+        }
+    }
+    if entries.is_empty() {
+        return String::new();
+    }
+    format!(
+        "<section data-section-type=\"front-matter\" data-front-page=\"toc\" \
+         class=\"generated-toc-page\">\n  <h1 class=\"gen-toc-title\">Contents</h1>\n  \
+         <nav class=\"toc\">\n{}  </nav>\n</section>\n",
+        entries,
+    )
 }
 
 /// Wrap the first letter of every chapter's opening paragraph in a

@@ -24,6 +24,6 @@ pub use pandoc::{PandocConverter, PandocConvertResult, PandocError};
 pub use pdf_export::{build_export_html, html_to_pdf, paper_size_from_trim, PdfExportError};
 pub use structure::{
     analyze as analyze_structure, analyze_with_options as analyze_structure_with_options,
-    build_generated_back_matter, build_generated_front_matter, BookSection, BookStructure,
-    SectionKind, StructuredHtml,
+    build_generated_back_matter, build_generated_front_matter, build_toc, BookSection,
+    BookStructure, SectionKind, StructuredHtml,
 };

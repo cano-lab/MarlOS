@@ -412,6 +412,13 @@ h3 {{ font-size: 1.05em; margin: 1.2em 0 0.4em; font-style: italic; font-weight:
 
 blockquote {{ margin: 1em 1.5em; font-style: italic; }}
 
+/* Centered line/block, written as a pandoc fenced div (:::center …
+   :::). Inserted by the "Center" toolbar button. */
+.center, .center > p, .center > h1, .center > h2, .center > h3 {{
+  text-align: center;
+  text-indent: 0;
+}}
+
 /* "Math Anchor" callout boxes — the equations/derivations the writer
    flags inline. Tagged with class="math-anchor" by the structure
    pipeline. A bordered, lightly tinted box that stays on one page. */
@@ -603,6 +610,37 @@ sup.note-ref a {{
   @bottom-left {{ content: none; }}
   @bottom-right {{ content: none; }}
 }}
+
+/* Table of Contents (generated). Chapters carry a "N." prefix; other
+   sections are italic with no number. Page numbers + leaders are NOT
+   emitted here — Chromium's print engine ignores target-counter /
+   leader(), so the folios are injected by the two-pass PDF page-number
+   step instead. */
+.generated-toc-page {{
+  break-before: right;
+  page-break-before: right;
+  /* Force the body that follows the TOC onto a fresh page. */
+  break-after: page;
+  page-break-after: always;
+}}
+.gen-toc-title {{
+  text-align: center;
+  font-variant: small-caps;
+  letter-spacing: 0.08em;
+  font-size: 1.4em;
+  /* Tight top margin so the 20+ entries fit on one page. */
+  margin: 0 0 1em;
+}}
+.toc-entry {{
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  text-indent: 0;
+  margin: 0.45em 0;
+  line-height: 1.3;
+}}
+.toc-num {{ display: inline-block; min-width: 1.9em; }}
+.toc-other {{ font-style: italic; padding-left: 1.9em; }}
 
 .generated-title-page,
 .generated-copyright-page,

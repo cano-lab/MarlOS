@@ -273,6 +273,17 @@ section[data-section-type="interlude"] > h1 {
 
 blockquote { margin: 1em 1.5em; font-style: italic; }
 
+/* Centered line/block. Written in markdown as a pandoc fenced div:
+     :::center
+     $\vec{F} = m\vec{a}$
+     :::
+   The "⊟ Center" toolbar button wraps the current line(s) in this.
+   Works for equations, single lines, or whole paragraphs. */
+.center, .center > p, .center > h1, .center > h2, .center > h3 {
+  text-align: center;
+  text-indent: 0;
+}
+
 /* "Math Anchor" callout boxes — tagged with class="math-anchor" by the
    structure pipeline. Bordered, lightly tinted box that stays on one
    page. Mirrors pdf_export.rs::build_export_css. */
@@ -306,6 +317,44 @@ hr {
   @bottom-center { content: none; }
   @bottom-left { content: none; }
   @bottom-right { content: none; }
+}
+
+/* Table of Contents (generated). Chapters carry a "N." prefix; other
+   sections (front matter, interludes, back matter) are italic with no
+   number. Dot leaders + page numbers come from target-counter, which
+   Paged.js supports — the Chromium PDF path fills these via a separate
+   pass and so omits them here. Front-matter entries use lower-roman
+   folios to match their pages. */
+.generated-toc-page {
+  break-before: right;
+  page-break-before: right;
+  /* Force the body that follows the TOC onto a fresh page. */
+  break-after: page;
+  page-break-after: always;
+}
+.gen-toc-title {
+  text-align: center;
+  font-variant: small-caps;
+  letter-spacing: 0.08em;
+  font-size: 1.4em;
+  /* Tight top margin so the 20+ entries fit on one page. */
+  margin: 0 0 1em;
+}
+.toc-entry {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  text-indent: 0;
+  margin: 0.45em 0;
+  line-height: 1.3;
+}
+.toc-num { display: inline-block; min-width: 1.9em; }
+.toc-other { font-style: italic; padding-left: 1.9em; }
+.toc-entry::after {
+  content: leader('.') target-counter(attr(href), page);
+}
+.toc-fm.toc-entry::after {
+  content: leader('.') target-counter(attr(href), page, lower-roman);
 }
 
 .generated-title-page,

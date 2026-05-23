@@ -9937,11 +9937,13 @@ pub async fn typesetter_book_load(book_path: String) -> Result<LoadedBook, Strin
     .map_err(|e| e.to_string())?;
 
     // Prepend generated title / copyright / dedication pages drawn
-    // from book.toml metadata. Empty pages are omitted automatically.
+    // from book.toml metadata, then the Table of Contents (chapters
+    // numbered, other sections italic). Empty pieces are omitted.
     let generated_front =
         crate::typesetter::build_generated_front_matter(&config.book);
-    if !generated_front.is_empty() {
-        enriched_html = format!("{}{}", generated_front, enriched_html);
+    let toc = crate::typesetter::build_toc(&structure, &config.book.title);
+    if !generated_front.is_empty() || !toc.is_empty() {
+        enriched_html = format!("{}{}{}", generated_front, toc, enriched_html);
     }
     // Append generated back-matter — acknowledgements page.
     let generated_back =
@@ -10115,12 +10117,14 @@ pub async fn typesetter_export_pdf(
     )
     .map_err(|e| e.to_string())?;
 
-    // Prepend generated title / copyright / dedication pages.
+    // Prepend generated title / copyright / dedication pages + the
+    // Table of Contents.
     let generated_front =
         crate::typesetter::build_generated_front_matter(&config.book);
-    if !generated_front.is_empty() {
+    let toc = crate::typesetter::build_toc(&structured.structure, &config.book.title);
+    if !generated_front.is_empty() || !toc.is_empty() {
         structured.enriched_html =
-            format!("{}{}", generated_front, structured.enriched_html);
+            format!("{}{}{}", generated_front, toc, structured.enriched_html);
     }
     // Append generated back-matter — acknowledgements page.
     let generated_back =

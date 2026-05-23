@@ -581,6 +581,41 @@ const BookSourceView: Component<BookSourceViewProps> = (props) => {
     reportEditAt();
   };
 
+  /** Wrap the current line(s) / selection in a pandoc `:::center` fenced
+   *  div so the block renders centered (works for equations and text).
+   *  Expands a bare cursor to the whole line, ensures blank-line padding
+   *  so pandoc parses the fence as a block, and uses setRangeText so the
+   *  view doesn't jump. */
+  const centerSelection = () => {
+    if (!editorRef) return;
+    const ta = editorRef;
+    const value = ta.value;
+    const selStart = ta.selectionStart ?? 0;
+    const selEnd = ta.selectionEnd ?? selStart;
+    // Expand to whole lines.
+    const lineStart = value.lastIndexOf("\n", selStart - 1) + 1;
+    let lineEnd = value.indexOf("\n", selEnd);
+    if (lineEnd === -1) lineEnd = value.length;
+    const selected = value.slice(lineStart, lineEnd).trim();
+    if (!selected) return;
+    const before = value.slice(0, lineStart);
+    const after = value.slice(lineEnd);
+    const pre = before.length > 0 && !before.endsWith("\n\n")
+      ? (before.endsWith("\n") ? "\n" : "\n\n")
+      : "";
+    const post = after.length > 0 && !after.startsWith("\n\n")
+      ? (after.startsWith("\n") ? "\n" : "\n\n")
+      : "";
+    const wrapped = `${pre}:::center\n${selected}\n:::${post}`;
+    ta.focus();
+    ta.setRangeText(wrapped, lineStart, lineEnd, "end");
+    setContent(ta.value);
+    setDirty(true);
+    invalidateAnchors();
+    scheduleSave();
+    reportEditAt();
+  };
+
   // ----- Image insertion popover -------------------------------------------
   const [showImagePicker, setShowImagePicker] = createSignal(false);
   const [imagePath, setImagePath] = createSignal("");
@@ -922,6 +957,13 @@ const BookSourceView: Component<BookSourceViewProps> = (props) => {
           onClick={openImagePicker}
         >
           🖼 Image
+        </button>
+        <button
+          class="book-source-snippet-btn"
+          title="Center the current line(s) — wraps them in a :::center fenced div (works for equations and text)"
+          onClick={centerSelection}
+        >
+          ⊟ Center
         </button>
       </div>
 
