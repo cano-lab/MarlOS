@@ -108,7 +108,17 @@ impl PandocConverter {
         let from = opts
             .from_format
             .clone()
-            .unwrap_or_else(|| "markdown+smart+footnotes+pipe_tables".to_string());
+            .unwrap_or_else(|| {
+                // link_attributes lets the writer add `{.class width=4in}`
+                // to images for figure layout/sizing (Phase J/K).
+                // Implicitly on for plain markdown but pinned here so
+                // a future from_format override doesn't drop it.
+                // lists_without_preceding_blankline: the manuscript writes
+                // breakdown lists right under a lead-in line ("What's in
+                // it:") with no blank line; without this they get swallowed
+                // into the paragraph instead of rendering as a list.
+                "markdown+smart+footnotes+pipe_tables+link_attributes+lists_without_preceding_blankline".to_string()
+            });
         let to = opts.to_format.clone().unwrap_or_else(|| "html5".to_string());
         let id_prefix = opts.id_prefix.clone().unwrap_or_else(|| "ch".to_string());
 
@@ -178,7 +188,17 @@ impl PandocConverter {
         let from = opts
             .from_format
             .clone()
-            .unwrap_or_else(|| "markdown+smart+footnotes+pipe_tables".to_string());
+            .unwrap_or_else(|| {
+                // link_attributes lets the writer add `{.class width=4in}`
+                // to images for figure layout/sizing (Phase J/K).
+                // Implicitly on for plain markdown but pinned here so
+                // a future from_format override doesn't drop it.
+                // lists_without_preceding_blankline: the manuscript writes
+                // breakdown lists right under a lead-in line ("What's in
+                // it:") with no blank line; without this they get swallowed
+                // into the paragraph instead of rendering as a list.
+                "markdown+smart+footnotes+pipe_tables+link_attributes+lists_without_preceding_blankline".to_string()
+            });
         let to = opts.to_format.clone().unwrap_or_else(|| "html5".to_string());
         let id_prefix = opts.id_prefix.clone().unwrap_or_else(|| "ch".to_string());
 

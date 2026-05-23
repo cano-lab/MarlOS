@@ -85,6 +85,25 @@ blockquote {{
   font-style: italic;
 }}
 
+/* Centered blocks: pandoc `:::center` fenced divs (the "Center" tool /
+   centered equations) and display math. EPUB reflows, so this is just
+   text-align + auto margins — no page rules. Matches the PDF/preview. */
+.center, .center > p {{
+  text-align: center;
+  text-indent: 0;
+}}
+.math.display {{
+  display: block;
+  text-align: center;
+  text-indent: 0;
+  margin: 1em 0;
+}}
+math[display="block"] {{
+  display: block;
+  margin: 1em auto;
+  text-align: center;
+}}
+
 ul, ol {{
   margin: 0.5em 0 0.5em 1.5em;
   padding: 0;
@@ -285,7 +304,10 @@ pub async fn export_epub(
 
     cmd.args([
         "--from",
-        "markdown+smart+footnotes+pipe_tables",
+        // lists_without_preceding_blankline: match the PDF/preview reader
+        // so breakdown lists under a lead-in line ("What's in it:") render
+        // as lists instead of being folded into the paragraph.
+        "markdown+smart+footnotes+pipe_tables+lists_without_preceding_blankline",
         "--to",
         "epub3",
     ])
