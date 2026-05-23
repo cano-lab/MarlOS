@@ -1,4 +1,4 @@
-import { Component, createEffect, createSignal, For, onCleanup, Show } from "solid-js";
+import { Component, createEffect, createSignal, For, onCleanup, Show, untrack } from "solid-js";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   typesetterService,
@@ -340,20 +340,41 @@ const BookSourceView: Component<BookSourceViewProps> = (props) => {
     });
   };
 
-  const loadActive = async () => {
+  // `preserveView` true = keep the textarea's scroll + cursor across the
+  // re-read (used for same-file reloads, e.g. the post-save auto-paginate,
+  // so saving never jumps the view). false = let it reset (a real file
+  // switch should land at the top of the new file).
+  const loadActive = async (preserveView = false) => {
     setLoading(true);
     setError(null);
     try {
       const text = await typesetterService.readBookFile(props.bookPath, activeIndex());
       // Only touch the textarea when the content actually differs —
-      // re-assigning `.value` resets the cursor/scroll, so a no-op
-      // reload (e.g. the post-save auto-paginate) must not disturb the
-      // writer. The textarea is uncontrolled (no `value={content()}`
-      // binding) for the same reason: a 200KB re-assign on every
-      // keystroke is expensive and scroll-resetting.
+      // re-assigning `.value` resets the cursor/scroll. Even when it does
+      // differ (e.g. line-ending normalization on a reload), restore the
+      // scroll + selection so an autosave never jumps the writer's view.
       if (text !== content()) {
+        const ta = editorRef;
+        const sTop = ta ? ta.scrollTop : 0;
+        const selStart = ta ? ta.selectionStart : 0;
+        const selEnd = ta ? ta.selectionEnd : 0;
         setContent(text);
-        if (editorRef) editorRef.value = text;
+        if (ta) {
+          ta.value = text;
+          if (preserveView) {
+            ta.scrollTop = sTop;
+            try {
+              ta.setSelectionRange(selStart, selEnd);
+            } catch {
+              /* selection out of range after content change — ignore */
+            }
+            // A debounced gutter re-render / layout pass can land after
+            // this tick and reset scroll — re-assert next frame.
+            requestAnimationFrame(() => {
+              if (editorRef) editorRef.scrollTop = sTop;
+            });
+          }
+        }
       }
       setDirty(false);
     } catch (e) {
@@ -504,6 +525,13 @@ const BookSourceView: Component<BookSourceViewProps> = (props) => {
   };
 
   // Reload when file selection changes
+  // DIAGNOSIS FLAG: when true, all automatic source-view sync is off
+  // (auto re-read on reload, auto scroll-to-section). Editing should be
+  // dead-simple: type → debounced save, nothing touches scroll/value.
+  // Flip to false to re-enable the sync behaviors once the edit-jump is
+  // understood.
+  const AUTO_SYNC_DISABLED = true;
+
   createEffect(() => {
     void activeIndex();
     void loadActive();
@@ -523,7 +551,12 @@ const BookSourceView: Component<BookSourceViewProps> = (props) => {
       reloadInitialized = true;
       return;
     }
-    if (!dirty()) void loadActive();
+    if (AUTO_SYNC_DISABLED) return; // DIAGNOSIS: no auto re-read on reload
+    // Read `dirty` untracked so this effect only fires on a real reload
+    // (reloadToken bump) — not on every edit/save that toggles dirty,
+    // which was re-reading the file mid-edit and snapping to the top.
+    // preserveView=true so a same-file reload keeps the writer's scroll.
+    if (!untrack(dirty)) void loadActive(true);
   });
 
   // Jump to the parent-shared current section whenever:
@@ -543,6 +576,7 @@ const BookSourceView: Component<BookSourceViewProps> = (props) => {
     if (!active) return;
     if (loading()) return;
     if (props.disableSectionScrollSync) return;
+    if (AUTO_SYNC_DISABLED) return; // DIAGNOSIS: no auto scroll-to-section
     if (order === lastReportedOrder) return;
     lastReportedOrder = order;
     queueMicrotask(() => scrollToOrder(order));
