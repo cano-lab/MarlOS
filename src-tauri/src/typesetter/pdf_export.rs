@@ -210,6 +210,12 @@ section[data-section-type="chapter"][data-section-number="{n}"] {{
     max-width: 100%;
   }}
 }}
+/* Chapter-opener page (first page of this chapter): no running header,
+   so the big centered title stands alone. The chapter still lives on
+   one named page, so there is no blank page before it. */
+@page chap-{n}:first {{
+  @top-center {{ content: none; }}
+}}
 "#,
             n = n,
             header_lit = header_lit,
@@ -357,7 +363,10 @@ section[data-section-type="chapter"] {{
 }}
 
 section[data-section-type="chapter"] > h1 {{
-  page: chapter-opener;
+  /* No `page: chapter-opener` here — assigning the h1 a different named
+     page than its section forced a break, leaving a blank page before
+     every chapter. The opener's no-header treatment is now done via
+     `@page chap-N:first` above. */
   font-size: 2em;
   text-align: center;
   margin: 4em 0 2em;
@@ -632,15 +641,22 @@ sup.note-ref a {{
   margin: 0 0 1em;
 }}
 .toc-entry {{
-  display: block;
+  display: flex;
+  align-items: baseline;
   text-decoration: none;
   color: inherit;
   text-indent: 0;
   margin: 0.45em 0;
   line-height: 1.3;
 }}
-.toc-num {{ display: inline-block; min-width: 1.9em; }}
+.toc-num {{ flex: 0 0 1.9em; }}
 .toc-other {{ font-style: italic; padding-left: 1.9em; }}
+.toc-text {{ flex: 0 1 auto; }}
+/* Dot leader filling the gap to the page number (folios injected by the
+   two-pass step; a flexbox leader works in Chromium where leader() does
+   not). */
+.toc-leader {{ flex: 1 1 auto; border-bottom: 0.75pt dotted #999; margin: 0 0.4em 0.28em; }}
+.toc-folio {{ flex: 0 0 auto; padding-left: 0.3em; }}
 
 .generated-title-page,
 .generated-copyright-page,
@@ -998,6 +1014,110 @@ fn html_escape(s: &str) -> String {
 
 /// Render a standalone HTML document to PDF via headless Chromium.
 /// `paper_size` is `(width_inches, height_inches)`.
+// ============================================================================
+// Two-pass TOC page numbers
+// ----------------------------------------------------------------------------
+// Chromium's print engine ignores `target-counter` / `leader()`, so the PDF
+// TOC can't generate its own page numbers. Instead we render once with
+// machine-readable markers, read back where each section landed and the
+// folio printed on that page, inject the folios into the TOC, and render
+// the final PDF. Section markers are present in BOTH passes (out-of-flow,
+// 1px transparent) so body pagination is identical; the footer markers and
+// the TOC folios live in fixed-size regions (margin box / the TOC's own
+// lines) so they don't shift any page break either.
+// ============================================================================
+
+/// Tag every `<section id="…">` with a unique, near-invisible marker so a
+/// later pdfium text scan can tell which physical page the section starts
+/// on. Applied to both the measurement and the final HTML.
+pub fn inject_section_markers(html: &str) -> String {
+    let re = regex::Regex::new(r#"(<section\b[^>]*\bid="([^"]+)"[^>]*>)"#).unwrap();
+    re.replace_all(html, |c: &regex::Captures| {
+        format!(
+            "{}<span class=\"tocmark\" style=\"font-size:1px;color:transparent\">@@S:{}@@</span>",
+            &c[1], &c[2]
+        )
+    })
+    .into_owned()
+}
+
+/// Wrap the page-number margin-box content in delimiters so the printed
+/// folio (already lower-roman for front matter / arabic for body, as
+/// Chromium computed it) can be read straight out of the page text.
+/// Measurement pass only — never goes in the final PDF.
+pub fn wrap_footer_markers(html: &str) -> String {
+    html.replace(
+        "content: counter(page, lower-roman);",
+        "content: \"@@PG@@\" counter(page, lower-roman) \"@@PGEND@@\";",
+    )
+    .replace(
+        "content: counter(page, upper-roman);",
+        "content: \"@@PG@@\" counter(page, upper-roman) \"@@PGEND@@\";",
+    )
+    .replace(
+        "content: counter(page);",
+        "content: \"@@PG@@\" counter(page) \"@@PGEND@@\";",
+    )
+}
+
+/// Read the measurement PDF: for each page, pull its printed folio and the
+/// section markers it carries, mapping section id → folio string. Returns
+/// None if pdfium can't be bound (caller falls back to a TOC with no page
+/// numbers rather than failing the export).
+pub fn extract_section_folios(
+    pdf_path: &Path,
+) -> Option<std::collections::HashMap<String, String>> {
+    use pdfium_render::prelude::*;
+    let bindings = Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
+        .or_else(|_| {
+            Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./lib/"))
+        })
+        .or_else(|_| Pdfium::bind_to_system_library())
+        .ok()?;
+    let pdfium = Pdfium::new(bindings);
+    let bytes = std::fs::read(pdf_path).ok()?;
+    let doc = pdfium.load_pdf_from_byte_slice(&bytes, None).ok()?;
+
+    let pg_re = regex::Regex::new(r"@@PG@@(.*?)@@PGEND@@").unwrap();
+    let sec_re = regex::Regex::new(r"@@S:(.+?)@@").unwrap();
+    let mut map = std::collections::HashMap::new();
+    for page in doc.pages().iter() {
+        let text = match page.text() {
+            Ok(t) => t.all(),
+            Err(_) => continue,
+        };
+        let folio = match pg_re.captures(&text).and_then(|c| c.get(1)) {
+            Some(m) => m.as_str().trim().to_string(),
+            None => continue,
+        };
+        for cap in sec_re.captures_iter(&text) {
+            if let Some(id) = cap.get(1) {
+                map.entry(id.as_str().to_string())
+                    .or_insert_with(|| folio.clone());
+            }
+        }
+    }
+    Some(map)
+}
+
+/// Splice the resolved folio (and a dot-leader span) into each TOC entry.
+/// Entries whose section wasn't found just get no folio (blank leader).
+pub fn inject_toc_folios(
+    html: &str,
+    folios: &std::collections::HashMap<String, String>,
+) -> String {
+    let re = regex::Regex::new(r##"(?s)(<a class="toc-entry[^"]*" href="#([^"]+)">)(.*?)(</a>)"##)
+        .unwrap();
+    re.replace_all(html, |c: &regex::Captures| {
+        let folio = folios.get(&c[2]).map(|s| s.as_str()).unwrap_or("");
+        format!(
+            "{}{}<span class=\"toc-leader\"></span><span class=\"toc-folio\">{}</span>{}",
+            &c[1], &c[3], folio, &c[4]
+        )
+    })
+    .into_owned()
+}
+
 pub fn html_to_pdf(
     html: &str,
     output: &Path,

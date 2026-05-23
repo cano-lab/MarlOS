@@ -10143,7 +10143,7 @@ pub async fn typesetter_export_pdf(
     let front = resolve_cover(&config.book.cover_image);
     let back = resolve_cover(&config.book.back_cover_image);
 
-    let html = build_export_html(
+    let base_html = build_export_html(
         &config,
         &structured.enriched_html,
         &structured.structure,
@@ -10154,8 +10154,43 @@ pub async fn typesetter_export_pdf(
     let paper = paper_size_from_trim(&config.trim.size);
     let output = std::path::PathBuf::from(&output_path);
 
+    // Two-pass TOC page numbers. Chromium can't generate them via CSS, so
+    // render once with markers, read where each section landed + the folio
+    // on that page, and splice the folios into the TOC. Section markers
+    // sit in both passes (out-of-flow, invisible) so body pagination is
+    // identical; the measurement footer markers and the injected folios
+    // live in fixed-size regions, so no page break moves between passes.
+    let final_html = if !toc.is_empty() {
+        let marked = crate::typesetter::pdf_export::inject_section_markers(&base_html);
+        let measure_html = crate::typesetter::pdf_export::wrap_footer_markers(&marked);
+        let tmp_pdf = std::env::temp_dir()
+            .join(format!("marlos-toc-measure-{}.pdf", uuid::Uuid::new_v4()));
+        let mh = measure_html;
+        let tp = tmp_pdf.clone();
+        let measure = tokio::task::spawn_blocking(move || html_to_pdf(&mh, &tp, paper))
+            .await
+            .map_err(|e| format!("toc measure task: {}", e))?;
+        match measure {
+            Ok(()) => {
+                let folios = crate::typesetter::pdf_export::extract_section_folios(&tmp_pdf)
+                    .unwrap_or_default();
+                let _ = std::fs::remove_file(&tmp_pdf);
+                crate::typesetter::pdf_export::inject_toc_folios(&marked, &folios)
+            }
+            Err(e) => {
+                // Measurement render failed — still export, just without
+                // TOC folios, rather than failing the whole job.
+                log::warn!("TOC page-number pass failed: {e}; exporting without folios");
+                let _ = std::fs::remove_file(&tmp_pdf);
+                marked
+            }
+        }
+    } else {
+        base_html
+    };
+
     // Headless Chromium is blocking; spawn on a blocking task.
-    let html_owned = html;
+    let html_owned = final_html;
     let output_for_thread = output.clone();
     tokio::task::spawn_blocking(move || html_to_pdf(&html_owned, &output_for_thread, paper))
         .await
