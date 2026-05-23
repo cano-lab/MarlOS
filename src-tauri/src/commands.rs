@@ -9901,8 +9901,10 @@ pub async fn typesetter_book_load(book_path: String) -> Result<LoadedBook, Strin
     // into <sup>/<sub> with ASCII glyphs so they render in the embedded
     // body font instead of falling back to a mismatched system font,
     // then tag "Math Anchor" blockquotes so they render as boxed asides.
-    let combined_html = crate::typesetter::tag_math_anchors(
-        &crate::typesetter::normalize_unicode_scripts(&pandoc_result.html),
+    let combined_html = crate::typesetter::hoist_figure_classes(
+        &crate::typesetter::tag_math_anchors(
+            &crate::typesetter::normalize_unicode_scripts(&pandoc_result.html),
+        ),
     );
     let pandoc_version = pandoc_result.pandoc_version;
 
@@ -9950,6 +9952,13 @@ pub async fn typesetter_book_load(book_path: String) -> Result<LoadedBook, Strin
         crate::typesetter::build_generated_back_matter(&config.book);
     if !generated_back.is_empty() {
         enriched_html.push_str(&generated_back);
+    }
+    // Number captioned figures and append the List of Figures (its folios
+    // come from Paged.js target-counter in the preview).
+    let (numbered_html, lof) = crate::typesetter::build_list_of_figures(&enriched_html);
+    enriched_html = numbered_html;
+    if !lof.is_empty() {
+        enriched_html.push_str(&lof);
     }
 
     let resolve_cover = |rel: &Option<String>| -> Option<String> {
@@ -10104,11 +10113,13 @@ pub async fn typesetter_export_pdf(
     };
     let pandoc_outcome = PandocConverter::convert_file(&temp_md, &opts).await;
     crate::typesetter::cleanup_temp_markdown(&temp_md);
-    let combined_html = crate::typesetter::tag_math_anchors(
-        &crate::typesetter::normalize_unicode_scripts(
-            &pandoc_outcome
-                .map_err(|e| format!("pandoc failed: {}", e))?
-                .html,
+    let combined_html = crate::typesetter::hoist_figure_classes(
+        &crate::typesetter::tag_math_anchors(
+            &crate::typesetter::normalize_unicode_scripts(
+                &pandoc_outcome
+                    .map_err(|e| format!("pandoc failed: {}", e))?
+                    .html,
+            ),
         ),
     );
     let mut structured = crate::typesetter::analyze_structure_with_options(
@@ -10131,6 +10142,14 @@ pub async fn typesetter_export_pdf(
         crate::typesetter::build_generated_back_matter(&config.book);
     if !generated_back.is_empty() {
         structured.enriched_html.push_str(&generated_back);
+    }
+    // Number captioned figures and append the List of Figures. Its folios
+    // are filled by the same two-pass step as the TOC (below).
+    let (numbered_html, lof) =
+        crate::typesetter::build_list_of_figures(&structured.enriched_html);
+    structured.enriched_html = numbered_html;
+    if !lof.is_empty() {
+        structured.enriched_html.push_str(&lof);
     }
 
     // Resolve cover paths
@@ -10160,8 +10179,10 @@ pub async fn typesetter_export_pdf(
     // sit in both passes (out-of-flow, invisible) so body pagination is
     // identical; the measurement footer markers and the injected folios
     // live in fixed-size regions, so no page break moves between passes.
-    let final_html = if !toc.is_empty() {
-        let marked = crate::typesetter::pdf_export::inject_section_markers(&base_html);
+    let final_html = if !toc.is_empty() || !lof.is_empty() {
+        let marked = crate::typesetter::pdf_export::inject_figure_markers(
+            &crate::typesetter::pdf_export::inject_section_markers(&base_html),
+        );
         let measure_html = crate::typesetter::pdf_export::wrap_footer_markers(&marked);
         let tmp_pdf = std::env::temp_dir()
             .join(format!("marlos-toc-measure-{}.pdf", uuid::Uuid::new_v4()));

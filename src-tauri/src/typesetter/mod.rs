@@ -16,14 +16,15 @@ pub mod structure;
 
 pub use book_config::{BookConfig, BookConfigError, BookMeta};
 pub use citations::{
-    cleanup_temp_markdown, normalize_unicode_scripts, prepare_book_markdown,
-    tag_math_anchors, transform_citations, CitationError, CitationTransformResult,
+    cleanup_temp_markdown, hoist_figure_classes, normalize_unicode_scripts,
+    prepare_book_markdown, tag_math_anchors, transform_citations, CitationError,
+    CitationTransformResult,
 };
 pub use epub_export::{export_epub, EpubExportError};
 pub use pandoc::{PandocConverter, PandocConvertResult, PandocError};
 pub use pdf_export::{build_export_html, html_to_pdf, paper_size_from_trim, PdfExportError};
 pub use structure::{
     analyze as analyze_structure, analyze_with_options as analyze_structure_with_options,
-    build_generated_back_matter, build_generated_front_matter, build_toc, BookSection,
-    BookStructure, SectionKind, StructuredHtml,
+    build_generated_back_matter, build_generated_front_matter, build_list_of_figures,
+    build_toc, BookSection, BookStructure, SectionKind, StructuredHtml,
 };

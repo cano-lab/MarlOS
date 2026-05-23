@@ -740,6 +740,24 @@ sup.note-ref a {{
 .toc-leader {{ flex: 1 1 auto; border-bottom: 0.75pt dotted #999; margin: 0 0.4em 0.28em; }}
 .toc-folio {{ flex: 0 0 auto; padding-left: 0.3em; }}
 
+/* List of Figures (generated back matter). Reuses the .toc / .toc-entry
+   machinery (folios injected by the two-pass step); starts on its own
+   page. .lof-num is the "Fig. N." label inside each entry. */
+.generated-lof-page {{
+  break-before: page;
+  page-break-before: always;
+}}
+.gen-lof-title {{
+  text-align: center;
+  font-variant: small-caps;
+  letter-spacing: 0.08em;
+  font-size: 1.4em;
+  margin: 0 0 1em;
+}}
+.lof-num {{ font-variant: small-caps; padding-right: 0.3em; }}
+/* "Fig. N." prefix on the in-body caption. */
+.fig-num {{ font-style: normal; font-variant: small-caps; padding-right: 0.25em; }}
+
 .generated-title-page,
 .generated-copyright-page,
 .generated-dedication-page {{
@@ -1175,6 +1193,21 @@ fn html_escape(s: &str) -> String {
 /// on. Applied to both the measurement and the final HTML.
 pub fn inject_section_markers(html: &str) -> String {
     let re = regex::Regex::new(r#"(<section\b[^>]*\bid="([^"]+)"[^>]*>)"#).unwrap();
+    re.replace_all(html, |c: &regex::Captures| {
+        format!(
+            "{}<span class=\"tocmark\" style=\"font-size:1px;color:transparent\">@@S:{}@@</span>",
+            &c[1], &c[2]
+        )
+    })
+    .into_owned()
+}
+
+/// Tag every `<figure id="…">` with the same near-invisible marker the
+/// sections use, so the page-folio scan also resolves figure positions
+/// for the List of Figures. Reuses the `@@S:id@@` format → no change to
+/// `extract_section_folios`. Applied to both passes.
+pub fn inject_figure_markers(html: &str) -> String {
+    let re = regex::Regex::new(r#"(<figure\b[^>]*\bid="([^"]+)"[^>]*>)"#).unwrap();
     re.replace_all(html, |c: &regex::Captures| {
         format!(
             "{}<span class=\"tocmark\" style=\"font-size:1px;color:transparent\">@@S:{}@@</span>",

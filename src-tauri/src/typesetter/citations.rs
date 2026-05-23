@@ -581,9 +581,87 @@ pub fn tag_math_anchors(html: &str) -> String {
         .into_owned()
 }
 
+/// Pandoc's `implicit_figures` puts the image's attributes (classes,
+/// inline style) on the inner `<img>`, but the figure-layout CSS targets
+/// the `<figure>` wrapper — block-level margin escapes, page breaks, and
+/// the `--fig-*` custom properties only work there. Hoist the `fig-*`
+/// classes and `--fig-*` style declarations from the `<img>` up onto its
+/// parent `<figure>` so `figure.fig-bleed`, `figure.fig-fullpage`,
+/// `figure.fig-crop`, etc. match. Width and other img styles stay put.
+pub fn hoist_figure_classes(html: &str) -> String {
+    static FIG_RE: OnceLock<Regex> = OnceLock::new();
+    static CLASS_RE: OnceLock<Regex> = OnceLock::new();
+    static STYLE_RE: OnceLock<Regex> = OnceLock::new();
+    let fig_re = FIG_RE
+        .get_or_init(|| Regex::new(r#"(?s)(<figure\b)([^>]*)(>\s*<img\b)([^>]*?)(/?>)"#).unwrap());
+    let class_re = CLASS_RE.get_or_init(|| Regex::new(r#"class="([^"]*)""#).unwrap());
+    let style_re = STYLE_RE.get_or_init(|| Regex::new(r#"style="([^"]*)""#).unwrap());
+
+    fig_re
+        .replace_all(html, |c: &regex::Captures| {
+            let img_attrs = &c[4];
+            let classes: Vec<&str> = class_re
+                .captures(img_attrs)
+                .map(|m| {
+                    m.get(1)
+                        .unwrap()
+                        .as_str()
+                        .split_whitespace()
+                        .filter(|cls| cls.starts_with("fig-"))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let props: Vec<&str> = style_re
+                .captures(img_attrs)
+                .map(|m| {
+                    m.get(1)
+                        .unwrap()
+                        .as_str()
+                        .split(';')
+                        .map(|d| d.trim())
+                        .filter(|d| d.starts_with("--fig-"))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if classes.is_empty() && props.is_empty() {
+                return c[0].to_string();
+            }
+            // Figure normally carries only an id; append class/style.
+            let mut fig_attrs = c[2].trim_end().to_string();
+            if !classes.is_empty() {
+                fig_attrs.push_str(&format!(" class=\"{}\"", classes.join(" ")));
+            }
+            if !props.is_empty() {
+                fig_attrs.push_str(&format!(" style=\"{}\"", props.join("; ")));
+            }
+            format!("{}{}{}{}{}", &c[1], fig_attrs, &c[3], img_attrs, &c[5])
+        })
+        .into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hoists_fig_class_and_props_to_figure() {
+        // Exactly the shape pandoc's implicit_figures emits: layout class
+        // + custom props on the <img>, only id on the <figure>.
+        let html = "<figure id=\"chfig-a\">\n<img src=\"x.png\" class=\"fig-bleed\"\n\
+style=\"--fig-inset:0.25in;width:60.0%\"\nalt=\"cap\" />\n\
+<figcaption>cap</figcaption>\n</figure>";
+        let out = hoist_figure_classes(html);
+        // Class + custom prop now on the figure (so figure.fig-bleed matches).
+        assert!(out.contains("<figure id=\"chfig-a\" class=\"fig-bleed\" style=\"--fig-inset:0.25in\">"));
+        // width stays an img concern.
+        assert!(out.contains("width:60.0%"));
+    }
+
+    #[test]
+    fn hoist_leaves_plain_figures_alone() {
+        let html = "<figure id=\"chfig-z\">\n<img src=\"x.png\" alt=\"cap\" />\n</figure>";
+        assert_eq!(hoist_figure_classes(html), html);
+    }
 
     #[test]
     fn replaces_single_marker() {

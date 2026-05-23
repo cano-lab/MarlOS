@@ -591,6 +591,63 @@ pub fn build_generated_back_matter(book: &BookMeta) -> String {
     out
 }
 
+/// Scan the body HTML for captioned figures, number them in document
+/// order, prefix each `<figcaption>` with "Fig. N." (so body and back-
+/// matter numbering agree), and build the generated "List of Figures"
+/// back-matter section. Entries link to each figure's id; page folios are
+/// filled by the two-pass step (they reuse the `toc-entry` machinery).
+///
+/// Returns `(numbered_html, lof_section)`. `lof_section` is "" when the
+/// document has no captioned figures. The caller appends `lof_section`
+/// after the other generated back matter.
+pub fn build_list_of_figures(html: &str) -> (String, String) {
+    use std::cell::RefCell;
+    static FIG_RE: OnceLock<Regex> = OnceLock::new();
+    // 1: "<figure …id=\""  2: id  3: "\"…><…><figcaption…>"  4: caption  5: "</figcaption>"
+    let re = FIG_RE.get_or_init(|| {
+        Regex::new(
+            r#"(?s)(<figure\b[^>]*\bid=")([^"]+)("[^>]*>.*?<figcaption\b[^>]*>)(.*?)(</figcaption>)"#,
+        )
+        .unwrap()
+    });
+
+    let entries = RefCell::new(String::new());
+    let counter = RefCell::new(0usize);
+
+    let numbered = re
+        .replace_all(html, |c: &regex::Captures| {
+            let mut n = counter.borrow_mut();
+            *n += 1;
+            let num = *n;
+            let id = &c[2];
+            let caption = c[4].trim();
+            // Back-matter entry: caption HTML preserved (it may carry <em>).
+            entries.borrow_mut().push_str(&format!(
+                "    <a class=\"toc-entry lof-entry\" href=\"#{}\">\
+                 <span class=\"toc-text\"><span class=\"lof-num\">Fig. {}.</span> {}</span></a>\n",
+                id, num, caption,
+            ));
+            // Body caption gets the matching number prefix.
+            format!(
+                "{}{}{}<span class=\"fig-num\">Fig. {}.</span> {}{}",
+                &c[1], id, &c[3], num, caption, &c[5],
+            )
+        })
+        .into_owned();
+
+    let entries = entries.into_inner();
+    if entries.is_empty() {
+        return (numbered, String::new());
+    }
+    let lof = format!(
+        "<section data-section-type=\"back-matter\" data-back-page=\"list-of-figures\" \
+         class=\"generated-lof-page\">\n  <h1 class=\"gen-lof-title\">List of Figures</h1>\n  \
+         <nav class=\"toc lof\">\n{}  </nav>\n</section>\n",
+        entries,
+    );
+    (numbered, lof)
+}
+
 fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -791,6 +848,34 @@ mod tests {
         for n in [1, 4, 9, 14, 40, 90, 400, 1994] {
             assert_eq!(parse_roman(&to_roman(n)), Some(n));
         }
+    }
+
+    #[test]
+    fn list_of_figures_numbers_and_links() {
+        // Shape pandoc's implicit_figures emits (id on <figure>, after
+        // hoist the layout class sits on the figure too).
+        let html = "\
+<figure id=\"chfig-a\" class=\"fig-bleed\">\n<img src=\"x.png\" alt=\"First\" />\n\
+<figcaption aria-hidden=\"true\">First <em>caption</em></figcaption>\n</figure>\n\
+<p>Body.</p>\n\
+<figure id=\"chfig-b\">\n<img src=\"y.png\" alt=\"Second\" />\n\
+<figcaption aria-hidden=\"true\">Second caption</figcaption>\n</figure>\n";
+        let (numbered, lof) = build_list_of_figures(html);
+        // Body captions get the matching number prefix.
+        assert!(numbered.contains("<span class=\"fig-num\">Fig. 1.</span> First <em>caption</em>"));
+        assert!(numbered.contains("<span class=\"fig-num\">Fig. 2.</span> Second caption"));
+        // LoF lists both, in order, linking to the figure ids.
+        assert!(lof.contains("List of Figures"));
+        assert!(lof.contains("href=\"#chfig-a\""));
+        assert!(lof.contains("href=\"#chfig-b\""));
+        assert!(lof.contains("<span class=\"lof-num\">Fig. 1.</span> First <em>caption</em>"));
+    }
+
+    #[test]
+    fn list_of_figures_empty_when_no_figures() {
+        let (numbered, lof) = build_list_of_figures("<p>No figures here.</p>");
+        assert_eq!(numbered, "<p>No figures here.</p>");
+        assert!(lof.is_empty());
     }
 
     #[test]

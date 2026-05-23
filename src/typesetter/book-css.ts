@@ -368,6 +368,23 @@ hr {
   content: leader('.') target-counter(attr(href), page, lower-roman);
 }
 
+/* List of Figures (generated back matter) — reuses .toc-entry, so the
+   leader + folio come from the ::after rule above. Starts on its own
+   page; .lof-num / .fig-num are the "Fig. N." labels. */
+.generated-lof-page {
+  break-before: page;
+  page-break-before: always;
+}
+.gen-lof-title {
+  text-align: center;
+  font-variant: small-caps;
+  letter-spacing: 0.08em;
+  font-size: 1.4em;
+  margin: 0 0 1em;
+}
+.lof-num { font-variant: small-caps; padding-right: 0.3em; }
+.fig-num { font-style: normal; font-variant: small-caps; padding-right: 0.25em; }
+
 .generated-title-page,
 .generated-copyright-page,
 .generated-dedication-page {
