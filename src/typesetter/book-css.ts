@@ -514,6 +514,19 @@ figcaption {
   color: #333;
 }
 
+/* Phase K: figure layout modes — mirrors pdf_export.rs.
+   .fig-text fills the text block; .fig-bleed escapes toward the page edge
+   (symmetric outside-margin negative margins), with --fig-inset pulling it
+   back for a gutter-safe near-bleed. */
+figure.fig-text { max-width: 100%; }
+figure.fig-text img { width: 100%; }
+figure.fig-bleed {
+  margin-left: calc(-1 * (${mOut} - var(--fig-inset, 0in)));
+  margin-right: calc(-1 * (${mOut} - var(--fig-inset, 0in)));
+  max-width: none;
+}
+figure.fig-bleed img { width: 100%; }
+
 
 /* Manual paragraph-spacing utility classes — use raw HTML in markdown:
      <div class="space-small"></div>      ~half line

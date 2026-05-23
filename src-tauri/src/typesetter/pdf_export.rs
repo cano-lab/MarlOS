@@ -894,6 +894,23 @@ figcaption {{
   color: #333;
 }}
 
+/* === Phase K: figure layout modes ===
+   .fig-text  — fills the full text block (body width).
+   .fig-bleed — escapes the text block toward the page edge via symmetric
+                negative margins (the outside margin). --fig-inset, set per
+                image, pulls it back from the edge for a gutter-safe
+                near-bleed; 0 = full bleed to the outside edge. Symmetric so
+                the wider inside (gutter) margin keeps extra room and the
+                binding seam never distorts the image. */
+figure.fig-text {{ max-width: 100%; }}
+figure.fig-text img {{ width: 100%; }}
+figure.fig-bleed {{
+  margin-left: calc(-1 * ({mout}in - var(--fig-inset, 0in)));
+  margin-right: calc(-1 * ({mout}in - var(--fig-inset, 0in)));
+  max-width: none;
+}}
+figure.fig-bleed img {{ width: 100%; }}
+
 /* Per-chapter named pages with literal headers — generated below */
 {per_chapter}
 "#,
