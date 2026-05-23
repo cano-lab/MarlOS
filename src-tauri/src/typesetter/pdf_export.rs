@@ -223,6 +223,73 @@ section[data-section-type="chapter"][data-section-number="{n}"] {{
         ));
     }
 
+    // Per-section running headers for non-chapter sections (front matter,
+    // interludes, back matter). Same literal-content-in-a-named-page trick
+    // as chapters, keyed by data-section-order. Header text = the section's
+    // {header="..."} override, else its title. Front matter keeps its
+    // lower-roman folio; everything else uses the configured page-number
+    // style. The section's first page suppresses the header so the opener
+    // reads clean (matching chapters).
+    let book_title_norm = config.book.title.trim().to_lowercase();
+    for section in &structure.sections {
+        if section.kind == SectionKind::Chapter {
+            continue;
+        }
+        // Skip the book-title section — it's the title page, not a header.
+        if !book_title_norm.is_empty()
+            && section.title.trim().to_lowercase() == book_title_norm
+        {
+            continue;
+        }
+        let head = section
+            .running_header
+            .clone()
+            .unwrap_or_else(|| section.title.clone());
+        if head.trim().is_empty() {
+            continue;
+        }
+        let head_lit = css_string_literal(&head);
+        let order = section.order;
+        let folio: &str = if section.kind == SectionKind::FrontMatter {
+            "counter(page, lower-roman)"
+        } else {
+            page_number_content
+        };
+        per_chapter_css.push_str(&format!(
+            r#"
+section[data-section-order="{order}"] {{ page: sec-{order}; }}
+@page sec-{order} {{
+  @top-center {{
+    content: {head_lit};
+    font-family: {bf};
+    font-size: 9pt;
+    font-variant: small-caps;
+    letter-spacing: 0.08em;
+    color: #444;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+  }}
+  @bottom-center {{
+    content: {folio};
+    font-family: {bf};
+    font-size: 9pt;
+    color: #444;
+    padding-top: 6pt;
+  }}
+}}
+@page sec-{order}:first {{
+  @top-center {{ content: none; }}
+}}
+"#,
+            order = order,
+            head_lit = head_lit,
+            bf = body_font,
+            folio = folio,
+        ));
+    }
+
     format!(
         r#"
 {font_faces}

@@ -63,6 +63,11 @@ pub struct BookSection {
     pub h1_raw: String,
     /// Pandoc's section id, e.g. `chchapter-1-the-questions...`.
     pub html_id: String,
+    /// Optional running-header override from a `{header="..."}` heading
+    /// attribute (pandoc emits it as `data-header`). When None, the
+    /// running header falls back to the section title.
+    #[serde(default)]
+    pub running_header: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -233,6 +238,9 @@ struct RawHeading {
     /// force a section to count as a numbered chapter / interlude even
     /// when its heading text doesn't start with "Chapter" / "Interlude".
     classes: String,
+    /// `data-header` attribute (from `{header="..."}`) — a running-header
+    /// override for this section.
+    data_header: Option<String>,
 }
 
 /// Walk the pandoc HTML and extract one entry per top-level section.
@@ -245,6 +253,11 @@ fn extract_top_level_sections(html: &str) -> Vec<RawHeading> {
     for section in doc.select(&section_sel) {
         let id = section.value().attr("id").unwrap_or("").to_string();
         let classes = section.value().attr("class").unwrap_or("").to_string();
+        let data_header = section
+            .value()
+            .attr("data-header")
+            .map(|s| s.to_string())
+            .filter(|s| !s.trim().is_empty());
         let h1 = section
             .select(&h1_sel)
             .next()
@@ -254,6 +267,7 @@ fn extract_top_level_sections(html: &str) -> Vec<RawHeading> {
             h1_raw: h1,
             html_id: id,
             classes,
+            data_header,
         });
     }
     out
@@ -333,6 +347,7 @@ pub fn classify_sections(headings: &[RawHeading]) -> Vec<BookSection> {
                     title,
                     h1_raw: raw.h1_raw.clone(),
                     html_id: raw.html_id.clone(),
+                    running_header: raw.data_header.clone(),
                 });
             }
             Tentative::Interlude(num, title) => {
@@ -346,6 +361,7 @@ pub fn classify_sections(headings: &[RawHeading]) -> Vec<BookSection> {
                     title,
                     h1_raw: raw.h1_raw.clone(),
                     html_id: raw.html_id.clone(),
+                    running_header: raw.data_header.clone(),
                 });
             }
             Tentative::Plain(title) => {
@@ -364,6 +380,7 @@ pub fn classify_sections(headings: &[RawHeading]) -> Vec<BookSection> {
                     title,
                     h1_raw: raw.h1_raw.clone(),
                     html_id: raw.html_id.clone(),
+                    running_header: raw.data_header.clone(),
                 });
             }
         }

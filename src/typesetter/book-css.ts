@@ -221,6 +221,17 @@ section[data-section-type="chapter"] > h1 {
   line-height: 1.2;
 }
 
+/* Running header for non-chapter sections (Author's Note, Glossary,
+   interludes, back matter): feed the section's title into the same
+   chapter-name string the @top-center header reads, so those pages get
+   a running header too (the PDF pipeline also honors a {header="..."}
+   override per section; the preview uses the title). */
+section[data-section-type="front-matter"] > h1,
+section[data-section-type="interlude"] > h1,
+section[data-section-type="back-matter"] > h1 {
+  string-set: chapter-name content();
+}
+
 /* Body-level font/size/leading — pulled from book.toml typography so
    preview density matches PDF body. */
 html, body {
