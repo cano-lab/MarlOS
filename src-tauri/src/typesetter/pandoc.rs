@@ -117,7 +117,11 @@ impl PandocConverter {
                 // breakdown lists right under a lead-in line ("What's in
                 // it:") with no blank line; without this they get swallowed
                 // into the paragraph instead of rendering as a list.
-                "markdown+smart+footnotes+pipe_tables+link_attributes+lists_without_preceding_blankline".to_string()
+                // -yaml_metadata_block: the manuscript uses `---` as
+                // thematic-break dividers; without this, pandoc reads a
+                // `---` after a blank line as a YAML metadata block and
+                // fails parsing the prose (or an image's `!`) as YAML.
+                "markdown+smart+footnotes+pipe_tables+link_attributes+lists_without_preceding_blankline-yaml_metadata_block".to_string()
             });
         let to = opts.to_format.clone().unwrap_or_else(|| "html5".to_string());
         let id_prefix = opts.id_prefix.clone().unwrap_or_else(|| "ch".to_string());
@@ -197,7 +201,11 @@ impl PandocConverter {
                 // breakdown lists right under a lead-in line ("What's in
                 // it:") with no blank line; without this they get swallowed
                 // into the paragraph instead of rendering as a list.
-                "markdown+smart+footnotes+pipe_tables+link_attributes+lists_without_preceding_blankline".to_string()
+                // -yaml_metadata_block: the manuscript uses `---` as
+                // thematic-break dividers; without this, pandoc reads a
+                // `---` after a blank line as a YAML metadata block and
+                // fails parsing the prose (or an image's `!`) as YAML.
+                "markdown+smart+footnotes+pipe_tables+link_attributes+lists_without_preceding_blankline-yaml_metadata_block".to_string()
             });
         let to = opts.to_format.clone().unwrap_or_else(|| "html5".to_string());
         let id_prefix = opts.id_prefix.clone().unwrap_or_else(|| "ch".to_string());

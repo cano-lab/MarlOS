@@ -53,6 +53,31 @@
   font-size: 13px;
 }
 
+.bem-path-row {
+  display: flex;
+  gap: 6px;
+}
+
+.bem-path-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.bem-browse {
+  background: #3a3a3a;
+  color: #ddd;
+  border: 1px solid #4a4a4a;
+  border-radius: 3px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.bem-browse:hover {
+  background: #4a4a4a;
+}
+
 .bem-actions {
   display: flex;
   justify-content: flex-end;

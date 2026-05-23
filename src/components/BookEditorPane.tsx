@@ -1,5 +1,6 @@
 import { Component, createSignal, createEffect, onCleanup, For, Show } from "solid-js";
 import type { EditorView } from "@codemirror/view";
+import { open } from "@tauri-apps/plugin-dialog";
 import MarkdownEditor from "./MarkdownEditor";
 import { typesetterService, BookConfig, ScrollSurface, SectionAnchor } from "../services/typesetter-service";
 import "./BookEditorPane.css";
@@ -242,6 +243,35 @@ const BookEditorPane: Component<BookEditorPaneProps> = (props) => {
     setImgCaption("");
   };
 
+  /** Native file picker for the image — no need to remember/type paths.
+   *  Stores it relative to the manuscript dir when possible (portable),
+   *  else absolute. Seeds the caption from the filename. */
+  const browseForImage = async () => {
+    try {
+      const picked = await open({
+        multiple: false,
+        directory: false,
+        filters: [
+          { name: "Image", extensions: ["png", "jpg", "jpeg", "gif", "webp", "svg", "tiff", "tif"] },
+        ],
+      });
+      if (typeof picked !== "string") return;
+      const dir = props.bookPath.replace(/[\\/][^\\/]+$/, "").replace(/\\/g, "/");
+      const abs = picked.replace(/\\/g, "/");
+      const relative =
+        dir && abs.toLowerCase().startsWith(dir.toLowerCase() + "/")
+          ? abs.slice(dir.length + 1)
+          : picked;
+      setImgPath(relative);
+      if (imgCaption().trim() === "") {
+        const base = picked.split(/[\\/]/).pop() ?? "";
+        setImgCaption(base.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ").trim());
+      }
+    } catch (e) {
+      setError(`Image picker failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
   /** Set (or clear) the running-header override on the heading the cursor
    *  is on, by editing its `{header="..."}` attribute — so the writer
    *  doesn't have to remember the markdown syntax. */
@@ -366,12 +396,17 @@ const BookEditorPane: Component<BookEditorPaneProps> = (props) => {
           <div class="book-editor-modal" onClick={(e) => e.stopPropagation()}>
             <div class="bem-title">Insert image</div>
             <label class="bem-field">
-              <span>Path (relative to the manuscript)</span>
-              <input
-                value={imgPath()}
-                onInput={(e) => setImgPath(e.currentTarget.value)}
-                placeholder="images/diagram.png"
-              />
+              <span>Image file</span>
+              <div class="bem-path-row">
+                <input
+                  value={imgPath()}
+                  onInput={(e) => setImgPath(e.currentTarget.value)}
+                  placeholder="images/diagram.png"
+                />
+                <button type="button" class="bem-browse" onClick={browseForImage}>
+                  Browse…
+                </button>
+              </div>
             </label>
             <label class="bem-field">
               <span>Caption</span>

@@ -307,7 +307,9 @@ pub async fn export_epub(
         // lists_without_preceding_blankline: match the PDF/preview reader
         // so breakdown lists under a lead-in line ("What's in it:") render
         // as lists instead of being folded into the paragraph.
-        "markdown+smart+footnotes+pipe_tables+lists_without_preceding_blankline",
+        // -yaml_metadata_block: treat `---` as a thematic break, not a
+        // YAML block (matches the PDF/preview reader).
+        "markdown+smart+footnotes+pipe_tables+lists_without_preceding_blankline-yaml_metadata_block",
         "--to",
         "epub3",
     ])
