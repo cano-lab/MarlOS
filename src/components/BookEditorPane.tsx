@@ -207,10 +207,16 @@ const BookEditorPane: Component<BookEditorPaneProps> = (props) => {
   const [showImage, setShowImage] = createSignal(false);
   const [imgPath, setImgPath] = createSignal("");
   const [imgCaption, setImgCaption] = createSignal("");
-  // inline | text | bleed | float-left | float-right
+  // inline | text | bleed | full-page | float-left | float-right
   const [imgMode, setImgMode] = createSignal("inline");
   const [imgWidth, setImgWidth] = createSignal("60%");
   const [imgInset, setImgInset] = createSignal("0.25in");
+  // Full-page fill: cover (fill+crop) vs contain (whole image, letterbox).
+  const [imgFit, setImgFit] = createSignal("cover");
+  // Crop: a fixed aspect ratio (blank = no crop) + focal point. The image
+  // fills the cropped box and pans to the focal point. Works on any mode.
+  const [imgCropAR, setImgCropAR] = createSignal("");
+  const [imgFocal, setImgFocal] = createSignal("center");
 
   const insertImage = () => {
     const path = imgPath().trim();
@@ -223,18 +229,42 @@ const BookEditorPane: Component<BookEditorPaneProps> = (props) => {
     // figure and write its inset back here.
     const id = "fig-" + Date.now().toString(36);
     const mode = imgMode();
-    let attrs = `#${id}`;
+    const classes: string[] = [];
+    const styles: string[] = [];
+    let dims = "";
     if (mode === "text") {
-      attrs += " .fig-text";
+      classes.push("fig-text");
     } else if (mode === "bleed") {
-      attrs += ` .fig-bleed style="--fig-inset:${imgInset().trim() || "0.25in"}"`;
+      classes.push("fig-bleed");
+      styles.push(`--fig-inset:${imgInset().trim() || "0.25in"}`);
+    } else if (mode === "full-page") {
+      classes.push("fig-fullpage");
+      styles.push(`--fig-fit:${imgFit()}`);
     } else if (mode === "float-left") {
-      attrs += ` .fig-float-left width="${imgWidth().trim() || "40%"}"`;
+      classes.push("fig-float-left");
+      dims = ` width="${imgWidth().trim() || "40%"}"`;
     } else if (mode === "float-right") {
-      attrs += ` .fig-float-right width="${imgWidth().trim() || "40%"}"`;
+      classes.push("fig-float-right");
+      dims = ` width="${imgWidth().trim() || "40%"}"`;
     } else {
-      attrs += ` width="${imgWidth().trim() || "60%"}"`; // inline block
+      dims = ` width="${imgWidth().trim() || "60%"}"`; // inline block
     }
+    // Crop to a fixed aspect ratio (any mode except full-page, which
+    // already crops to the page via --fig-fit).
+    const ar = imgCropAR().trim();
+    if (ar && mode !== "full-page") {
+      classes.push("fig-crop");
+      styles.push(`--fig-crop-ar:${ar}`);
+    }
+    // Focal point drives crop panning and full-page positioning.
+    const focal = imgFocal().trim();
+    if (focal && focal !== "center" && ((ar && mode !== "full-page") || mode === "full-page")) {
+      styles.push(`--fig-crop-pos:${focal}`);
+    }
+    let attrs = `#${id}`;
+    for (const c of classes) attrs += ` .${c}`;
+    attrs += dims;
+    if (styles.length) attrs += ` style="${styles.join("; ")}"`;
     // Image alone in a paragraph → pandoc implicit_figures wraps it in a
     // <figure> with the caption as <figcaption>.
     insertAtCursor(`\n\n![${cap}](${path}){${attrs}}\n\n`);
@@ -422,6 +452,7 @@ const BookEditorPane: Component<BookEditorPaneProps> = (props) => {
                 <option value="inline">Inline block — centered, sized</option>
                 <option value="text">Text block — full text width</option>
                 <option value="bleed">Near-bleed — escapes the margins</option>
+                <option value="full-page">Full page — fills the whole page (bleed)</option>
                 <option value="float-left">Float left — text wraps</option>
                 <option value="float-right">Float right — text wraps</option>
               </select>
@@ -444,6 +475,41 @@ const BookEditorPane: Component<BookEditorPaneProps> = (props) => {
                   onInput={(e) => setImgInset(e.currentTarget.value)}
                   placeholder="0.25in"
                 />
+              </label>
+            </Show>
+            <Show when={imgMode() === "full-page"}>
+              <label class="bem-field">
+                <span>Fill</span>
+                <select value={imgFit()} onChange={(e) => setImgFit(e.currentTarget.value)}>
+                  <option value="cover">Cover — fills the page, crops overflow</option>
+                  <option value="contain">Contain — whole image, may letterbox</option>
+                </select>
+              </label>
+            </Show>
+            <Show when={imgMode() !== "full-page"}>
+              <label class="bem-field">
+                <span>Crop to aspect ratio (blank = no crop)</span>
+                <input
+                  value={imgCropAR()}
+                  onInput={(e) => setImgCropAR(e.currentTarget.value)}
+                  placeholder="e.g. 3/2, 1/1, 16/9"
+                />
+              </label>
+            </Show>
+            <Show when={imgCropAR().trim() !== "" || imgMode() === "full-page"}>
+              <label class="bem-field">
+                <span>Focal point (which part to keep)</span>
+                <select value={imgFocal()} onChange={(e) => setImgFocal(e.currentTarget.value)}>
+                  <option value="center">Center</option>
+                  <option value="top">Top</option>
+                  <option value="bottom">Bottom</option>
+                  <option value="left">Left</option>
+                  <option value="right">Right</option>
+                  <option value="top left">Top-left</option>
+                  <option value="top right">Top-right</option>
+                  <option value="bottom left">Bottom-left</option>
+                  <option value="bottom right">Bottom-right</option>
+                </select>
               </label>
             </Show>
             <div class="bem-actions">

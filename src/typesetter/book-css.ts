@@ -532,6 +532,35 @@ figure.fig-float-left { float: left; max-width: 48%; margin: 0.2em 1.2em 0.6em 0
 figure.fig-float-right { float: right; max-width: 48%; margin: 0.2em 0 0.6em 1.2em; }
 figure.fig-float-left img, figure.fig-float-right img { width: 100%; }
 
+/* .fig-fullpage — full-bleed plate on its own page; .fig-crop — crop to a
+   fixed aspect ratio. Mirrors pdf_export.rs. */
+figure.fig-fullpage {
+  margin: calc(-1 * ${mTop}) calc(-1 * ${mIn}) calc(-1 * ${mBot});
+  width: calc(${trim.width} + ${mIn} - ${mOut});
+  height: ${trim.height};
+  max-width: none;
+  overflow: hidden;
+  break-before: page;
+  break-after: page;
+  page-break-before: always;
+  page-break-after: always;
+}
+figure.fig-fullpage img {
+  width: 100%;
+  height: 100%;
+  object-fit: var(--fig-fit, cover);
+  object-position: var(--fig-crop-pos, center);
+}
+figure.fig-fullpage figcaption { display: none; }
+
+figure.fig-crop img {
+  aspect-ratio: var(--fig-crop-ar, auto);
+  width: 100%;
+  height: auto;
+  object-fit: cover;
+  object-position: var(--fig-crop-pos, center);
+}
+
 
 /* Manual paragraph-spacing utility classes — use raw HTML in markdown:
      <div class="space-small"></div>      ~half line

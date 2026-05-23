@@ -104,6 +104,33 @@ math[display="block"] {{
   text-align: center;
 }}
 
+/* Figures. EPUB reflows, so the print-only bleed/page mechanics don't
+   apply: .fig-fullpage just becomes a full-width image. .fig-crop still
+   crops to a fixed aspect ratio (object-fit needs the constrained box
+   that --fig-crop-ar supplies). */
+figure {{
+  margin: 1em auto;
+  text-align: center;
+}}
+figure img {{
+  max-width: 100%;
+  height: auto;
+}}
+figcaption {{
+  font-size: 0.9em;
+  font-style: italic;
+  margin-top: 0.4em;
+  text-align: center;
+}}
+figure.fig-fullpage img {{ width: 100%; }}
+figure.fig-crop img {{
+  aspect-ratio: var(--fig-crop-ar, auto);
+  width: 100%;
+  height: auto;
+  object-fit: cover;
+  object-position: var(--fig-crop-pos, center);
+}}
+
 ul, ol {{
   margin: 0.5em 0 0.5em 1.5em;
   padding: 0;

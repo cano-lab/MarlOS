@@ -916,6 +916,43 @@ figure.fig-float-left {{ float: left; max-width: 48%; margin: 0.2em 1.2em 0.6em 
 figure.fig-float-right {{ float: right; max-width: 48%; margin: 0.2em 0 0.6em 1.2em; }}
 figure.fig-float-left img, figure.fig-float-right img {{ width: 100%; }}
 
+/* .fig-fullpage — a full-bleed plate on its own page. Negative margins
+   reach past the page margins to the trim edge; pulling both left/right
+   by the larger (inside/gutter) margin guarantees coverage on recto and
+   verso, with harmless over-bleed on the outside (the printer trims it).
+   --fig-fit picks cover (fill + crop) vs contain (whole image). */
+figure.fig-fullpage {{
+  margin: calc(-1 * {mt}in) calc(-1 * {min}in) calc(-1 * {mb}in);
+  width: calc({tw}in + {min}in - {mout}in);
+  height: {th}in;
+  max-width: none;
+  overflow: hidden;
+  break-before: page;
+  break-after: page;
+  page-break-before: always;
+  page-break-after: always;
+}}
+figure.fig-fullpage img {{
+  width: 100%;
+  height: 100%;
+  object-fit: var(--fig-fit, cover);
+  object-position: var(--fig-crop-pos, center);
+}}
+/* Caption would fall off the bleed; hide it on the page (the figure id +
+   alt text still feed the List of Figures). */
+figure.fig-fullpage figcaption {{ display: none; }}
+
+/* .fig-crop — crop a figure to a fixed aspect ratio, filling the box and
+   panning to the focal point. object-fit only bites once the img has a
+   constrained box, which --fig-crop-ar supplies via aspect-ratio. */
+figure.fig-crop img {{
+  aspect-ratio: var(--fig-crop-ar, auto);
+  width: 100%;
+  height: auto;
+  object-fit: cover;
+  object-position: var(--fig-crop-pos, center);
+}}
+
 /* Per-chapter named pages with literal headers — generated below */
 {per_chapter}
 "#,
