@@ -123,12 +123,12 @@ const BookMode: Component<BookModeProps> = (props) => {
   // mode with per-section interpolation.
   const [sourceSurface, setSourceSurface] = createSignal<ScrollSurface | null>(null);
   const [pagesSurface, setPagesSurface] = createSignal<ScrollSurface | null>(null);
-  // Sync is now on-demand only — two buttons in the split toolbar
-  // jump one pane to the other's position when clicked. The old
-  // continuous mirror was removed because the constant scroll-event
-  // ping-pong made small movements feel jumpy and re-firing
-  // getBoundingClientRect on every scroll was a perf hot path.
-  // When off, autosaves don't trigger an immediate loadBook +
+  // Scroll sync is leader-based and continuous (see the effect below):
+  // the pane you're scrolling drives the other, with auto re-sync to
+  // Source after every re-paginate. The two split-toolbar buttons remain
+  // as manual overrides to force either direction.
+  //
+  // autoPaginate: when off, autosaves don't trigger an immediate loadBook +
   // re-pagination. Edits still save to disk; Pages just stays on
   // whatever was rendered last. Useful when typing fast and the
   // re-paginate flicker is distracting. A "Re-paginate" button
@@ -214,11 +214,28 @@ const BookMode: Component<BookModeProps> = (props) => {
     );
   };
 
-  /** Jump Pages to the position matching Source's current scrollTop. */
-  const syncPagesToSource = () => {
+  // Leader-based scroll-sync state (split mode). `scrollLeader` is the
+  // pane the user is actively scrolling; only it drives the other. A
+  // short timer releases leadership after the user stops, letting the
+  // other pane take over on its next user scroll. See the effect below.
+  let scrollLeader: "src" | "pgs" | null = null;
+  let leaderReleaseTimer: number | undefined;
+  const holdLeader = (who: "src" | "pgs") => {
+    scrollLeader = who;
+    clearTimeout(leaderReleaseTimer);
+    leaderReleaseTimer = window.setTimeout(() => {
+      scrollLeader = null;
+    }, 220);
+  };
+
+  /** Snap Pages to Source's current position. Source is the source of
+   *  truth, so this is also the automatic re-sync after a re-paginate
+   *  (the reflow shifts the Pages anchors out from under the reader). */
+  const syncPagesToSource = (behavior: ScrollBehavior = "smooth") => {
     const src = sourceSurface();
     const pgs = pagesSurface();
     if (!src || !pgs) return;
+    holdLeader("src"); // mute the follower echo from this programmatic scroll
     const target = computeMirrorTarget(
       src.el.scrollTop,
       src.el,
@@ -226,7 +243,7 @@ const BookMode: Component<BookModeProps> = (props) => {
       src.getAnchors(),
       pgs.getAnchors(),
     );
-    pgs.el.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+    pgs.el.scrollTo({ top: Math.max(0, target), behavior });
   };
 
   /** Jump Source to the position matching Pages's current scrollTop. */
@@ -234,6 +251,7 @@ const BookMode: Component<BookModeProps> = (props) => {
     const src = sourceSurface();
     const pgs = pagesSurface();
     if (!src || !pgs) return;
+    holdLeader("pgs");
     const target = computeMirrorTarget(
       pgs.el.scrollTop,
       pgs.el,
@@ -244,13 +262,15 @@ const BookMode: Component<BookModeProps> = (props) => {
     src.el.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
   };
 
-  // Continuous synchronized scrolling (split mode). Scrolling either pane
-  // mirrors the other via the H1-anchor interpolation above. Per-direction
-  // echo suppression: when we programmatically scroll B to mirror A, B's
-  // own scroll handler is muted for a short window so it doesn't bounce
-  // back. rAF-throttled so we recompute at most once per frame.
-  let suppressSrcUntil = 0;
-  let suppressPgsUntil = 0;
+  // Leader-based synchronized scrolling (split mode). Only the pane the
+  // user is actively scrolling (the leader) drives the other (the
+  // follower); the follower's own scroll events are ignored while the
+  // leader holds. This kills the bidirectional ping-pong that caused
+  // drift: the follower's position is recomputed fresh from the leader's
+  // absolute scrollTop each frame, so errors never accumulate. The first
+  // pane to fire a *user* scroll claims leadership; it releases ~220ms
+  // after scrolling stops (see holdLeader), letting the other pane lead
+  // on its next user scroll. rAF-throttled to once per frame.
   let srcSyncRaf: number | null = null;
   let pgsSyncRaf: number | null = null;
   createEffect(() => {
@@ -259,24 +279,26 @@ const BookMode: Component<BookModeProps> = (props) => {
     if (!src || !pgs || viewMode() !== "split") return;
 
     const onSrc = () => {
-      if (performance.now() < suppressSrcUntil || srcSyncRaf !== null) return;
+      if (scrollLeader === "pgs") return; // Pages leads — this is our echo
+      holdLeader("src");
+      if (srcSyncRaf !== null) return;
       srcSyncRaf = requestAnimationFrame(() => {
         srcSyncRaf = null;
         const target = computeMirrorTarget(
           src.el.scrollTop, src.el, pgs.el, src.getAnchors(), pgs.getAnchors(),
         );
-        suppressPgsUntil = performance.now() + 150;
         pgs.el.scrollTop = Math.max(0, target);
       });
     };
     const onPgs = () => {
-      if (performance.now() < suppressPgsUntil || pgsSyncRaf !== null) return;
+      if (scrollLeader === "src") return; // Source leads — this is our echo
+      holdLeader("pgs");
+      if (pgsSyncRaf !== null) return;
       pgsSyncRaf = requestAnimationFrame(() => {
         pgsSyncRaf = null;
         const target = computeMirrorTarget(
           pgs.el.scrollTop, pgs.el, src.el, pgs.getAnchors(), src.getAnchors(),
         );
-        suppressSrcUntil = performance.now() + 150;
         src.el.scrollTop = Math.max(0, target);
       });
     };
@@ -287,6 +309,7 @@ const BookMode: Component<BookModeProps> = (props) => {
       pgs.el.removeEventListener("scroll", onPgs);
       if (srcSyncRaf !== null) cancelAnimationFrame(srcSyncRaf);
       if (pgsSyncRaf !== null) cancelAnimationFrame(pgsSyncRaf);
+      clearTimeout(leaderReleaseTimer);
     });
   });
 
@@ -694,7 +717,7 @@ const BookMode: Component<BookModeProps> = (props) => {
           <Show when={viewMode() === "split"}>
             <button
               class="book-mode-btn"
-              onClick={syncPagesToSource}
+              onClick={() => syncPagesToSource()}
               title="Scroll Pages to match Source's current position"
             >
               → Pages
@@ -890,6 +913,15 @@ const BookMode: Component<BookModeProps> = (props) => {
             disableSectionScrollSync={viewMode() === "split"}
             onScrollSurfaceReady={setPagesSurface}
             flashAnchor={flashAnchor()}
+            onPaginated={() => {
+              // Re-pagination reflows the Pages anchors, so the reader's
+              // position drifts. Source is the source of truth — snap
+              // Pages back to it once layout settles, unless the user is
+              // actively scrolling Pages themselves.
+              if (viewMode() === "split" && scrollLeader !== "pgs") {
+                requestAnimationFrame(() => syncPagesToSource("auto"));
+              }
+            }}
           />
         </div>
 

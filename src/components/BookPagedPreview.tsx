@@ -36,6 +36,10 @@ interface BookPagedPreviewProps {
    *  paginated DOM. `ts` is a freshness token so consecutive edits in
    *  the same paragraph still re-trigger the animation. */
   flashAnchor?: { order: number; paraIndex: number; ts: number } | null;
+  /** Fired after each successful pagination, once the DOM is mounted and
+   *  the scroll position restored. Lets the parent re-sync the split
+   *  panes (the reflow moves the anchors). */
+  onPaginated?: () => void;
 }
 
 /**
@@ -303,8 +307,12 @@ const BookPagedPreview: Component<BookPagedPreviewProps> = (props) => {
       invalidateAnchors(); // fresh DOM → fresh positions
       // Restore the user's view: prefer the most recent edit anchor
       // (so a freshly-inserted snippet stays in view), fall back to
-      // the parent-shared currentSectionOrder.
-      queueMicrotask(restoreScrollAfterPagination);
+      // the parent-shared currentSectionOrder. Then notify the parent so
+      // it can re-sync the split panes against the fresh anchors.
+      queueMicrotask(() => {
+        restoreScrollAfterPagination();
+        props.onPaginated?.();
+      });
     } catch (e) {
       // Paged.js occasionally throws a transient layout race
       // ("Cannot read properties of null (reading 'getBoundingClientRect')")
