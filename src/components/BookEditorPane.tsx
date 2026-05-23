@@ -61,6 +61,32 @@ const BookEditorPane: Component<BookEditorPaneProps> = (props) => {
   let view: EditorView | undefined;
   let saveTimer: number | null = null;
 
+  // Editor zoom — scales the CodeMirror font-size (and gutter) via a CSS
+  // variable on the host. Persisted across sessions.
+  const ZOOM_KEY = "marlos-book-editor-zoom";
+  const ZOOM_MIN = 0.6;
+  const ZOOM_MAX = 2.5;
+  const readZoom = (): number => {
+    try {
+      const v = parseFloat(localStorage.getItem(ZOOM_KEY) ?? "");
+      return Number.isFinite(v) && v >= ZOOM_MIN && v <= ZOOM_MAX ? v : 1;
+    } catch {
+      return 1;
+    }
+  };
+  const [zoom, setZoom] = createSignal<number>(readZoom());
+  createEffect(() => {
+    try {
+      localStorage.setItem(ZOOM_KEY, String(zoom()));
+    } catch {
+      /* localStorage unavailable — ignore */
+    }
+  });
+  const round1 = (n: number) => Math.round(n * 10) / 10;
+  const zoomIn = () => setZoom((z) => Math.min(ZOOM_MAX, round1(z + 0.1)));
+  const zoomOut = () => setZoom((z) => Math.max(ZOOM_MIN, round1(z - 0.1)));
+  const zoomReset = () => setZoom(1);
+
   const loadActive = async () => {
     setError(null);
     try {
@@ -152,6 +178,36 @@ const BookEditorPane: Component<BookEditorPaneProps> = (props) => {
     insertAtCursor(`\n\n${snippet}\n\n`);
   };
 
+  /** Set (or clear) the running-header override on the heading the cursor
+   *  is on, by editing its `{header="..."}` attribute — so the writer
+   *  doesn't have to remember the markdown syntax. */
+  const setRunningHeader = () => {
+    if (!view) return;
+    const line = view.state.doc.lineAt(view.state.selection.main.head);
+    const text = line.text;
+    if (!/^#{1,6}\s+/.test(text)) {
+      setError("Put the cursor on a heading line (# …) to set its running header.");
+      return;
+    }
+    // Split heading text from a trailing { ...attributes... } block.
+    const m = text.match(/^(.*?)\s*\{([^}]*)\}\s*$/);
+    const base = m ? m[1] : text.replace(/\s+$/, "");
+    let attrs = m ? m[2] : "";
+    const cur = attrs.match(/header\s*=\s*"([^"]*)"/);
+    const input = window.prompt(
+      "Running header for this section (leave blank to use the section title):",
+      cur ? cur[1] : "",
+    );
+    if (input === null) return; // cancelled
+    // Drop any existing header=… then re-add it if non-empty.
+    attrs = attrs.replace(/\s*header\s*=\s*("[^"]*"|[^\s}]+)/, "").trim();
+    const value = input.trim().replace(/"/g, "");
+    if (value) attrs = `${attrs} header="${value}"`.trim();
+    const newLine = attrs ? `${base} {${attrs}}` : base;
+    view.dispatch({ changes: { from: line.from, to: line.to, insert: newLine } });
+    view.focus();
+  };
+
   /** Wrap the current selection (or an empty placeholder) in a pandoc
    *  `:::center` fenced div so the block renders centered. */
   const centerSelection = () => {
@@ -211,12 +267,30 @@ const BookEditorPane: Component<BookEditorPaneProps> = (props) => {
           >
             ⊟ Center
           </button>
+          <button
+            class="book-editor-snippet-btn"
+            title="Set this section's running header (the repeating line at the top of its pages)"
+            onClick={setRunningHeader}
+          >
+            ⊤ Header
+          </button>
+        </div>
+        <div class="book-editor-zoom">
+          <button class="book-editor-zoom-btn" title="Zoom out" onClick={zoomOut} disabled={zoom() <= ZOOM_MIN + 1e-6}>
+            −
+          </button>
+          <button class="book-editor-zoom-btn book-editor-zoom-pct" title="Reset zoom" onClick={zoomReset}>
+            {Math.round(zoom() * 100)}%
+          </button>
+          <button class="book-editor-zoom-btn" title="Zoom in" onClick={zoomIn} disabled={zoom() >= ZOOM_MAX - 1e-6}>
+            +
+          </button>
         </div>
       </div>
       <Show when={error()}>
         <div class="book-editor-error">{error()}</div>
       </Show>
-      <div class="book-editor-host">
+      <div class="book-editor-host" style={{ "--cm-zoom": String(zoom()) }}>
         <MarkdownEditor
           content={content()}
           onChange={handleChange}

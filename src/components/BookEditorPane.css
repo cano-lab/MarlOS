@@ -43,7 +43,45 @@
 .book-editor-status {
   color: #888;
   font-size: 11px;
+}
+
+.book-editor-zoom {
+  display: flex;
+  align-items: center;
+  gap: 2px;
   margin-left: auto;
+}
+
+.book-editor-zoom-btn {
+  background: #3a3a3a;
+  color: #ddd;
+  border: 1px solid #4a4a4a;
+  padding: 2px 7px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.book-editor-zoom-btn:hover:not(:disabled) {
+  background: #4a4a4a;
+}
+
+.book-editor-zoom-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.book-editor-zoom-pct {
+  min-width: 3.2em;
+}
+
+/* Editor zoom: override the CodeMirror theme's fixed font-size via a host
+   CSS variable. The descendant selector outranks the theme's `.cm-content`
+   single-class rule, so this wins. line-height is unitless in the theme,
+   so it scales with the font-size. */
+.book-editor-host .cm-content,
+.book-editor-host .cm-gutters {
+  font-size: calc(14px * var(--cm-zoom, 1));
 }
 
 .book-editor-snippets {
