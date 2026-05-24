@@ -132,7 +132,7 @@ export interface BookConfig {
      *  "arabic" (arabic = one continuous sequence through the book). */
     front_matter_page_number_style?: string;
   };
-  export: { color_mode: string };
+  export: { color_mode: string; include_list_of_figures?: boolean };
   files: string[];
   root_dir?: string;
   config_path?: string;

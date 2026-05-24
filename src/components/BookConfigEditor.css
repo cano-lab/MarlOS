@@ -73,6 +73,22 @@
   font-size: 12px;
 }
 
+.bce-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.bce-check input {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
 .bce-field span {
   color: var(--text-secondary);
   font-size: 11px;

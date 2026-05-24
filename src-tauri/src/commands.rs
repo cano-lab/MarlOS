@@ -9954,8 +9954,12 @@ pub async fn typesetter_book_load(book_path: String) -> Result<LoadedBook, Strin
         enriched_html.push_str(&generated_back);
     }
     // Number captioned figures and append the List of Figures (its folios
-    // come from Paged.js target-counter in the preview).
-    let (numbered_html, lof) = crate::typesetter::build_list_of_figures(&enriched_html);
+    // come from Paged.js target-counter in the preview). Gated by the
+    // [export] include_list_of_figures toggle.
+    let (numbered_html, lof) = crate::typesetter::build_list_of_figures(
+        &enriched_html,
+        config.export.include_list_of_figures,
+    );
     enriched_html = numbered_html;
     if !lof.is_empty() {
         enriched_html.push_str(&lof);
@@ -10144,9 +10148,12 @@ pub async fn typesetter_export_pdf(
         structured.enriched_html.push_str(&generated_back);
     }
     // Number captioned figures and append the List of Figures. Its folios
-    // are filled by the same two-pass step as the TOC (below).
-    let (numbered_html, lof) =
-        crate::typesetter::build_list_of_figures(&structured.enriched_html);
+    // are filled by the same two-pass step as the TOC (below). Gated by
+    // the [export] include_list_of_figures toggle.
+    let (numbered_html, lof) = crate::typesetter::build_list_of_figures(
+        &structured.enriched_html,
+        config.export.include_list_of_figures,
+    );
     structured.enriched_html = numbered_html;
     if !lof.is_empty() {
         structured.enriched_html.push_str(&lof);

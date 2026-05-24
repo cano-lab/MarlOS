@@ -600,8 +600,14 @@ pub fn build_generated_back_matter(book: &BookMeta) -> String {
 /// Returns `(numbered_html, lof_section)`. `lof_section` is "" when the
 /// document has no captioned figures. The caller appends `lof_section`
 /// after the other generated back matter.
-pub fn build_list_of_figures(html: &str) -> (String, String) {
+///
+/// When `include` is false the document is returned unchanged (no caption
+/// numbering, no list) — the `[export] include_list_of_figures` toggle.
+pub fn build_list_of_figures(html: &str, include: bool) -> (String, String) {
     use std::cell::RefCell;
+    if !include {
+        return (html.to_string(), String::new());
+    }
     static FIG_RE: OnceLock<Regex> = OnceLock::new();
     // 1: "<figure …id=\""  2: id  3: "\"…><…><figcaption…>"  4: caption  5: "</figcaption>"
     let re = FIG_RE.get_or_init(|| {
@@ -860,7 +866,7 @@ mod tests {
 <p>Body.</p>\n\
 <figure id=\"chfig-b\">\n<img src=\"y.png\" alt=\"Second\" />\n\
 <figcaption aria-hidden=\"true\">Second caption</figcaption>\n</figure>\n";
-        let (numbered, lof) = build_list_of_figures(html);
+        let (numbered, lof) = build_list_of_figures(html, true);
         // Body captions get the matching number prefix.
         assert!(numbered.contains("<span class=\"fig-num\">Fig. 1.</span> First <em>caption</em>"));
         assert!(numbered.contains("<span class=\"fig-num\">Fig. 2.</span> Second caption"));
@@ -873,8 +879,17 @@ mod tests {
 
     #[test]
     fn list_of_figures_empty_when_no_figures() {
-        let (numbered, lof) = build_list_of_figures("<p>No figures here.</p>");
+        let (numbered, lof) = build_list_of_figures("<p>No figures here.</p>", true);
         assert_eq!(numbered, "<p>No figures here.</p>");
+        assert!(lof.is_empty());
+    }
+
+    #[test]
+    fn list_of_figures_toggle_off_is_noop() {
+        let html = "<figure id=\"chfig-a\">\n<img src=\"x.png\" alt=\"c\" />\n\
+<figcaption>Cap</figcaption>\n</figure>";
+        let (numbered, lof) = build_list_of_figures(html, false);
+        assert_eq!(numbered, html); // no caption numbering
         assert!(lof.is_empty());
     }
 

@@ -184,12 +184,25 @@ impl Default for TypographyConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ExportConfig {
     /// Color mode flag. V1 supports "bw" only; field exists so V2 can flip
     /// without a pipeline change.
     pub color_mode: String,
+    /// Whether to generate the "List of Figures" back-matter section and
+    /// number the figure captions ("Fig. N."). Default true. Turn off for
+    /// books where the figures shouldn't be enumerated or listed.
+    pub include_list_of_figures: bool,
+}
+
+impl Default for ExportConfig {
+    fn default() -> Self {
+        Self {
+            color_mode: String::new(),
+            include_list_of_figures: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -405,6 +418,10 @@ impl BookConfig {
         out.push_str(&format!(
             "color_mode = {}\n",
             toml_string_literal(&self.export.color_mode)
+        ));
+        out.push_str(&format!(
+            "include_list_of_figures = {}\n",
+            self.export.include_list_of_figures
         ));
 
         out

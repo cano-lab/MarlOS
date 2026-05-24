@@ -491,6 +491,28 @@ const BookConfigEditor: Component<BookConfigEditorProps> = (props) => {
         </section>
 
         <section class="bce-section">
+          <h4>Back matter</h4>
+          <label class="bce-check">
+            <input
+              type="checkbox"
+              checked={draft().export.include_list_of_figures ?? true}
+              onChange={(e) =>
+                update(
+                  (d) =>
+                    (d.export.include_list_of_figures = e.currentTarget.checked),
+                )
+              }
+            />
+            <span>Include “List of Figures” &amp; number figure captions</span>
+          </label>
+          <p class="bce-help">
+            Adds a “List of Figures” page at the back and prefixes each
+            captioned figure with “Fig. N.”. Turn off for books that
+            shouldn’t enumerate their figures.
+          </p>
+        </section>
+
+        <section class="bce-section">
           <h4>Trim & margins</h4>
           <label class="bce-field">
             <span>Trim size</span>
