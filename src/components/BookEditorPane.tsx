@@ -1,4 +1,4 @@
-import { Component, createSignal, createEffect, onCleanup, For, Show } from "solid-js";
+import { Component, createSignal, createEffect, onCleanup, onMount, For, Show } from "solid-js";
 import type { EditorView } from "@codemirror/view";
 import { open } from "@tauri-apps/plugin-dialog";
 import MarkdownEditor from "./MarkdownEditor";
@@ -34,6 +34,53 @@ interface BookEditorPaneProps {
   disableSectionScrollSync?: boolean;
   pageStyled?: boolean;
   onEditAt?: (order: number, paraIndex: number) => void;
+  /** Hands an imperative API to the parent once mounted, so BookMode can
+   *  drive source edits triggered from the Pages preview (e.g. the
+   *  right-click figure margin editor). */
+  onReady?: (api: BookEditorApi) => void;
+}
+
+/** Patch applied to a figure's markdown attribute block. */
+export interface FigurePatch {
+  /** "inline" | "text" | "bleed" | "full-page" */
+  mode?: string;
+  /** Bleed inset, e.g. "0.25in" (only meaningful when mode === "bleed"). */
+  inset?: string;
+}
+
+export interface BookEditorApi {
+  /** Rewrite the layout class + `--fig-inset` of the figure whose markdown
+   *  id matches `domId` (the pandoc-prefixed DOM id is mapped back to the
+   *  `#fig-…` source id). Returns false if the figure isn't in the active
+   *  file. Saves immediately so the preview re-paginates. */
+  updateFigureAttr: (domId: string, patch: FigurePatch) => boolean;
+}
+
+/** Pandoc figure-layout classes (one at a time). Other classes — e.g.
+ *  fig-crop — are preserved when the layout changes. */
+const LAYOUT_CLASSES = ["fig-text", "fig-bleed", "fig-fullpage", "fig-float-left", "fig-float-right"];
+
+/** Tokenize a pandoc attribute block (`#id .class key="value with spaces"`)
+ *  into whitespace-separated tokens, keeping quoted values intact. */
+function tokenizeAttrs(s: string): string[] {
+  const toks: string[] = [];
+  let i = 0;
+  while (i < s.length) {
+    while (i < s.length && /\s/.test(s[i])) i++;
+    if (i >= s.length) break;
+    let tok = "";
+    while (i < s.length && !/\s/.test(s[i])) {
+      if (s[i] === '"') {
+        tok += s[i++];
+        while (i < s.length && s[i] !== '"') tok += s[i++];
+        if (i < s.length) tok += s[i++]; // closing quote
+      } else {
+        tok += s[i++];
+      }
+    }
+    toks.push(tok);
+  }
+  return toks;
 }
 
 interface Snippet {
@@ -201,6 +248,91 @@ const BookEditorPane: Component<BookEditorPaneProps> = (props) => {
     // Block-level divs need blank lines around them so pandoc treats them
     // as their own block rather than folding into a paragraph.
     insertAtCursor(`\n\n${snippet}\n\n`);
+  };
+
+  /** Rebuild a figure's attribute block from a patch: swap the layout
+   *  class and set/clear `--fig-inset`, preserving id, width, other
+   *  classes (fig-crop), and unrelated style props. */
+  const applyFigurePatch = (attrs: string, patch: FigurePatch): string => {
+    let id: string | undefined;
+    const classes: string[] = [];
+    const kv: [string, string][] = [];
+    for (const t of tokenizeAttrs(attrs)) {
+      if (t.startsWith("#")) id = t.slice(1);
+      else if (t.startsWith(".")) classes.push(t.slice(1));
+      else {
+        const eq = t.indexOf("=");
+        if (eq > 0) kv.push([t.slice(0, eq), t.slice(eq + 1)]);
+      }
+    }
+    // Layout class: drop the old one, add the new (inline = none).
+    const others = classes.filter((c) => !LAYOUT_CLASSES.includes(c));
+    const layout =
+      patch.mode === "text"
+        ? ["fig-text"]
+        : patch.mode === "bleed"
+          ? ["fig-bleed"]
+          : patch.mode === "full-page"
+            ? ["fig-fullpage"]
+            : [];
+    const newClasses = [...others, ...layout];
+
+    // Style custom properties (parse "k:v; k:v" inside the quoted value).
+    const styleIdx = kv.findIndex(([k]) => k === "style");
+    const rawStyle = styleIdx >= 0 ? kv[styleIdx][1].replace(/^"|"$/g, "") : "";
+    const props = new Map<string, string>();
+    for (const decl of rawStyle.split(";")) {
+      const c = decl.indexOf(":");
+      if (c > 0) props.set(decl.slice(0, c).trim(), decl.slice(c + 1).trim());
+    }
+    if (patch.mode === "bleed" && patch.inset != null) {
+      props.set("--fig-inset", patch.inset);
+    } else if (patch.mode !== "bleed") {
+      props.delete("--fig-inset");
+    }
+    const newStyle = [...props].map(([k, v]) => `${k}:${v}`).join("; ");
+    if (newStyle) {
+      const entry: [string, string] = ["style", `"${newStyle}"`];
+      if (styleIdx >= 0) kv[styleIdx] = entry;
+      else kv.push(entry);
+    } else if (styleIdx >= 0) {
+      kv.splice(styleIdx, 1);
+    }
+
+    const parts: string[] = [];
+    if (id) parts.push(`#${id}`);
+    for (const c of newClasses) parts.push(`.${c}`);
+    for (const [k, v] of kv) parts.push(`${k}=${v}`);
+    return parts.join(" ");
+  };
+
+  onMount(() => {
+    props.onReady?.({ updateFigureAttr });
+  });
+
+  const updateFigureAttr = (domId: string, patch: FigurePatch): boolean => {
+    if (!view) return false;
+    // DOM ids are pandoc-prefixed with the id-prefix "ch"; the markdown
+    // source id is the rest (e.g. "chfig-abc" → "fig-abc").
+    const mdId = domId.replace(/^ch/, "");
+    const text = view.state.doc.toString();
+    // Each image-with-attrs: ![alt](path){ …attrs… }
+    const re = /!\[[^\]]*\]\([^)]*\)\{([^}]*)\}/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const attrs = m[1];
+      if (!tokenizeAttrs(attrs).includes(`#${mdId}`)) continue;
+      const from = m.index + m[0].indexOf("{") + 1;
+      const to = from + attrs.length;
+      view.dispatch({
+        changes: { from, to, insert: applyFigurePatch(attrs, patch) },
+      });
+      handleChange(view.state.doc.toString());
+      void flushSave(); // save now so the preview re-paginates promptly
+      return true;
+    }
+    setError(`Couldn't find figure ${mdId} in this file to update.`);
+    return false;
   };
 
   // --- Image insert modal -------------------------------------------------

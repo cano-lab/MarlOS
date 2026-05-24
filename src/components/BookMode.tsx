@@ -14,6 +14,7 @@ import {
 import BookPagedPreview from "./BookPagedPreview";
 import BookConfigEditor from "./BookConfigEditor";
 import BookEditorPane from "./BookEditorPane";
+import type { BookEditorApi } from "./BookEditorPane";
 import RelevantSources from "./RelevantSources";
 import "./BookMode.css";
 
@@ -123,6 +124,46 @@ const BookMode: Component<BookModeProps> = (props) => {
   // mode with per-section interpolation.
   const [sourceSurface, setSourceSurface] = createSignal<ScrollSurface | null>(null);
   const [pagesSurface, setPagesSurface] = createSignal<ScrollSurface | null>(null);
+  // Imperative handle to the source editor (set via BookEditorPane's
+  // onReady), used by the right-click figure margin editor below.
+  const [editorApi, setEditorApi] = createSignal<BookEditorApi | null>(null);
+  // Right-click figure margin editor popover. Null = closed. Holds the
+  // figure id + the live controls, anchored at the click position.
+  const [figureMenu, setFigureMenu] = createSignal<{
+    id: string;
+    caption: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [figMode, setFigMode] = createSignal("inline");
+  const [figInset, setFigInset] = createSignal(0.25);
+
+  /** Open the margin editor from a preview right-click, seeded with the
+   *  figure's current mode + inset. */
+  const openFigureMenu = (info: {
+    id: string;
+    mode: string;
+    inset: string;
+    caption: string;
+    x: number;
+    y: number;
+  }) => {
+    setFigMode(info.mode);
+    setFigInset(parseFloat(info.inset) || 0);
+    setFigureMenu({ id: info.id, caption: info.caption, x: info.x, y: info.y });
+  };
+
+  /** Push the current popover controls back into the markdown source. */
+  const applyFigureEdit = () => {
+    const menu = figureMenu();
+    const api = editorApi();
+    if (!menu || !api) return;
+    const ok = api.updateFigureAttr(menu.id, {
+      mode: figMode(),
+      inset: `${figInset()}in`,
+    });
+    if (ok) setFigureMenu(null);
+  };
   // Scroll sync is leader-based and continuous (see the effect below):
   // the pane you're scrolling drives the other, with auto re-sync to
   // Source after every re-paginate. The two split-toolbar buttons remain
@@ -874,6 +915,7 @@ const BookMode: Component<BookModeProps> = (props) => {
             active={viewMode() === "source" || viewMode() === "split"}
             disableSectionScrollSync={viewMode() === "split"}
             onScrollSurfaceReady={setSourceSurface}
+            onReady={setEditorApi}
             pageStyled={viewMode() === "split"}
             config={book()?.config ?? null}
             onEditAt={(order, paraIndex) =>
@@ -913,6 +955,7 @@ const BookMode: Component<BookModeProps> = (props) => {
             disableSectionScrollSync={viewMode() === "split"}
             onScrollSurfaceReady={setPagesSurface}
             flashAnchor={flashAnchor()}
+            onFigureContextMenu={openFigureMenu}
             onPaginated={() => {
               // Re-pagination reflows the Pages anchors, so the reader's
               // position drifts. Source is the source of truth — snap
@@ -1019,6 +1062,66 @@ const BookMode: Component<BookModeProps> = (props) => {
             />
           </Show>
         </div>
+      </Show>
+
+      {/* Right-click figure margin editor (anchored at the click). */}
+      <Show when={figureMenu()}>
+        {(menu) => (
+          <>
+            <div
+              class="fig-menu-backdrop"
+              onClick={() => setFigureMenu(null)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setFigureMenu(null);
+              }}
+            />
+            <div
+              class="fig-menu"
+              style={{ left: `${menu().x}px`, top: `${menu().y}px` }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div class="fig-menu-title">Figure layout &amp; margins</div>
+              <Show when={menu().caption}>
+                <div class="fig-menu-caption">{menu().caption}</div>
+              </Show>
+              <label class="fig-menu-field">
+                <span>Layout</span>
+                <select
+                  value={figMode()}
+                  onChange={(e) => setFigMode(e.currentTarget.value)}
+                >
+                  <option value="inline">Inline — centered</option>
+                  <option value="text">Text width</option>
+                  <option value="bleed">Near-bleed — escapes margins</option>
+                  <option value="full-page">Full page</option>
+                </select>
+              </label>
+              <Show when={figMode() === "bleed"}>
+                <label class="fig-menu-field">
+                  <span>
+                    Inset from edge: {figInset().toFixed(2)} in
+                    {figInset() === 0 ? " (full bleed)" : ""}
+                  </span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="0.75"
+                    step="0.05"
+                    value={figInset()}
+                    onInput={(e) => setFigInset(parseFloat(e.currentTarget.value))}
+                  />
+                </label>
+              </Show>
+              <div class="fig-menu-actions">
+                <button onClick={() => setFigureMenu(null)}>Cancel</button>
+                <button class="fig-menu-primary" onClick={applyFigureEdit}>
+                  Apply
+                </button>
+              </div>
+            </div>
+          </>
+        )}
       </Show>
     </div>
   );

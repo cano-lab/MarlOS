@@ -40,6 +40,18 @@ interface BookPagedPreviewProps {
    *  the scroll position restored. Lets the parent re-sync the split
    *  panes (the reflow moves the anchors). */
   onPaginated?: () => void;
+  /** Right-click on a figure in the preview. Carries the figure's DOM id
+   *  (pandoc-prefixed, e.g. "chfig-…"), current layout mode + inset read
+   *  from the element, its caption, and the cursor position so the parent
+   *  can pop up a margin editor that writes back to the markdown source. */
+  onFigureContextMenu?: (info: {
+    id: string;
+    mode: string;
+    inset: string;
+    caption: string;
+    x: number;
+    y: number;
+  }) => void;
 }
 
 /**
@@ -395,11 +407,37 @@ const BookPagedPreview: Component<BookPagedPreviewProps> = (props) => {
   // page geometry depends on viewport width via Paged.js's measured
   // sheet sizing.
   let resizeObserver: ResizeObserver | null = null;
+
+  /** Right-click a figure → ask the parent to pop a margin editor. Read
+   *  the current layout mode + inset straight off the element so the
+   *  popover opens pre-filled. Delegated on the stage so it survives the
+   *  DOM wipe every re-pagination does. */
+  const onFigureRightClick = (e: MouseEvent) => {
+    if (!props.onFigureContextMenu) return;
+    const fig = (e.target as HTMLElement | null)?.closest(
+      "figure[id]",
+    ) as HTMLElement | null;
+    if (!fig) return;
+    e.preventDefault();
+    const cls = fig.className || "";
+    const mode = cls.includes("fig-fullpage")
+      ? "full-page"
+      : cls.includes("fig-bleed")
+        ? "bleed"
+        : cls.includes("fig-text")
+          ? "text"
+          : "inline";
+    const inset = fig.style.getPropertyValue("--fig-inset").trim() || "0.25in";
+    const caption = fig.querySelector("figcaption")?.textContent?.trim() ?? "";
+    props.onFigureContextMenu({ id: fig.id, mode, inset, caption, x: e.clientX, y: e.clientY });
+  };
+
   onMount(() => {
     if (typeof ResizeObserver !== "undefined" && mountRef) {
       resizeObserver = new ResizeObserver(() => invalidateAnchors());
       resizeObserver.observe(mountRef);
     }
+    mountRef?.addEventListener("contextmenu", onFigureRightClick);
   });
 
   onCleanup(() => {
@@ -407,6 +445,7 @@ const BookPagedPreview: Component<BookPagedPreviewProps> = (props) => {
     teardownScrollListener();
     resizeObserver?.disconnect();
     resizeObserver = null;
+    mountRef?.removeEventListener("contextmenu", onFigureRightClick);
   });
 
   // Jump to currentSectionOrder when it changes from the parent (e.g. on
