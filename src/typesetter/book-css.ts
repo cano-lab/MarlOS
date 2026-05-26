@@ -159,6 +159,18 @@ section[data-section-type="chapter"] { counter-increment: chapter-num; }`;
   @bottom-left { content: none; }
   @bottom-right { content: none; }
 }
+/* Override the mirrored @page :left / :right margins so a full-bleed
+   cover/figure page reaches the trim edge on both page sides. */
+@page cover:left {
+  margin: 0;
+  @top-center { content: none; } @top-left { content: none; } @top-right { content: none; }
+  @bottom-center { content: none; } @bottom-left { content: none; } @bottom-right { content: none; }
+}
+@page cover:right {
+  margin: 0;
+  @top-center { content: none; } @top-left { content: none; } @top-right { content: none; }
+  @bottom-center { content: none; } @bottom-left { content: none; } @bottom-right { content: none; }
+}
 
 .book-title-source {
   display: none;

@@ -360,6 +360,20 @@ section[data-section-order="{order}"] {{ page: sec-{order}; }}
   @top-center {{ content: none; }}
   @bottom-center {{ content: none; }}
 }}
+/* The general @page :left / :right rules set mirrored margins; without
+   these named+pseudo overrides a full-bleed cover/figure page on a
+   left- or right-hand sheet inherits those margins (a white strip along
+   the top + binding edge). Pin them to zero for both sides. */
+@page cover:left {{
+  margin: 0;
+  @top-center {{ content: none; }} @top-left {{ content: none; }} @top-right {{ content: none; }}
+  @bottom-center {{ content: none; }} @bottom-left {{ content: none; }} @bottom-right {{ content: none; }}
+}}
+@page cover:right {{
+  margin: 0;
+  @top-center {{ content: none; }} @top-left {{ content: none; }} @top-right {{ content: none; }}
+  @bottom-center {{ content: none; }} @bottom-left {{ content: none; }} @bottom-right {{ content: none; }}
+}}
 
 html, body {{
   margin: 0;
