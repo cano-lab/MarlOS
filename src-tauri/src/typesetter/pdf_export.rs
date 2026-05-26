@@ -128,7 +128,9 @@ pub fn build_export_css(config: &BookConfig, structure: &BookStructure) -> Strin
             r#"
 section[data-section-type="chapter"] > h1 {
   font-size: 1.6em;
-  margin: 6em 0 2em;
+  /* margin stays 0 — the title is centered on its own opener page (set in
+     the base rule); the body's drop cap opens the next page. */
+  margin: 0;
 }
 section[data-section-type="chapter"] > p:first-of-type {
   text-indent: 0;
@@ -211,6 +213,18 @@ section[data-section-type="chapter"] > p:first-of-type {
 section[data-section-type="chapter"][data-section-number="{n}"] {{
   page: chap-{n};
 }}
+/* The opener (h1) gets its own named page with NO running header so the
+   centered title stands alone. The h1 carries the break-before:right
+   (the section does not), so this is the chapter's single page break —
+   no blank page. CSS `:first` only matches the document's first page, so
+   a dedicated named page is the only way to suppress the header on every
+   chapter's opener, not just chapter one's. */
+section[data-section-type="chapter"][data-section-number="{n}"] > h1 {{
+  page: chap-{n}-open;
+}}
+@page chap-{n}-open {{
+  @top-center {{ content: none; }}
+}}
 @page chap-{n} {{
   @top-center {{
     content: {header_lit};
@@ -224,12 +238,6 @@ section[data-section-type="chapter"][data-section-number="{n}"] {{
     text-overflow: ellipsis;
     max-width: 100%;
   }}
-}}
-/* Chapter-opener page (first page of this chapter): no running header,
-   so the big centered title stands alone. The chapter still lives on
-   one named page, so there is no blank page before it. */
-@page chap-{n}:first {{
-  @top-center {{ content: none; }}
 }}
 "#,
             n = n,
@@ -448,24 +456,36 @@ section[data-section-type="front-matter"] {{
   page: front-matter;
 }}
 
-section[data-section-type="chapter"],
 section[data-section-type="interlude"],
 section[data-section-type="back-matter"] {{
   break-before: page;
 }}
 
-section[data-section-type="chapter"] {{
-  break-before: right;
-}}
+/* Chapters do NOT break at the section level — the opener <h1> carries
+   the break-before:right (below). Putting the break on the section AND
+   giving the h1 a different named page is what produced the old blank
+   page before every chapter. */
 
 section[data-section-type="chapter"] > h1 {{
-  /* No `page: chapter-opener` here — assigning the h1 a different named
-     page than its section forced a break, leaving a blank page before
-     every chapter. The opener's no-header treatment is now done via
-     `@page chap-N:first` above. */
+  /* Chapter-opener page: the title gets its own page, vertically centered;
+     the body starts on the NEXT page. We force the break with break-after
+     (not a conflicting named page on the h1), which avoids the old
+     blank-page-before-every-chapter bug. Same centering mechanism as the
+     generated title page. The chapter still opens on a fresh right page
+     (break-before: right on the section) with no running header
+     (@page chap-N:first). */
+  break-before: right;
+  page-break-before: right;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  break-after: page;
+  page-break-after: always;
   font-size: 2em;
   text-align: center;
-  margin: 4em 0 2em;
   font-variant: small-caps;
   letter-spacing: 0.03em;
   font-weight: 600; /* embedded face; 500 would be synthesized */
