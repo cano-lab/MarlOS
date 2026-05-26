@@ -934,15 +934,17 @@ figure.fig-float-left {{ float: left; max-width: 48%; margin: 0.2em 1.2em 0.6em 
 figure.fig-float-right {{ float: right; max-width: 48%; margin: 0.2em 0 0.6em 1.2em; }}
 figure.fig-float-left img, figure.fig-float-right img {{ width: 100%; }}
 
-/* .fig-fullpage — a full-bleed plate on its own page. Negative margins
-   reach past the page margins to the trim edge; pulling both left/right
-   by the larger (inside/gutter) margin guarantees coverage on recto and
-   verso, with harmless over-bleed on the outside (the printer trims it).
-   --fig-fit picks cover (fill + crop) vs contain (whole image). */
+/* .fig-fullpage — a full-bleed plate on its own page. Uses the zero-margin
+   `cover` page (same proven mechanism as the book covers): the figure is
+   exactly the trim size, so it fills one page edge-to-edge without
+   overflowing. --fig-fit picks cover (fill + crop) vs contain (whole
+   image, may letterbox). */
 figure.fig-fullpage {{
-  margin: calc(-1 * {mt}in) calc(-1 * {min}in) calc(-1 * {mb}in);
-  width: calc({tw}in + {min}in - {mout}in);
-  height: {th}in;
+  page: cover;
+  margin: 0;
+  padding: 0;
+  width: {tw};
+  height: {th};
   max-width: none;
   overflow: hidden;
   break-before: page;
@@ -951,6 +953,7 @@ figure.fig-fullpage {{
   page-break-after: always;
 }}
 figure.fig-fullpage img {{
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: var(--fig-fit, cover);

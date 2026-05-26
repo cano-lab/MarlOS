@@ -550,11 +550,13 @@ figure.fig-float-right { float: right; max-width: 48%; margin: 0.2em 0 0.6em 1.2
 figure.fig-float-left img, figure.fig-float-right img { width: 100%; }
 
 /* .fig-fullpage — full-bleed plate on its own page; .fig-crop — crop to a
-   fixed aspect ratio. Mirrors pdf_export.rs. */
+   fixed aspect ratio. Mirrors pdf_export.rs. Uses the zero-margin 'cover'
+   page (same mechanism as the book covers) so the image fills exactly one
+   trim-sized page instead of overflowing onto the next. */
 figure.fig-fullpage {
-  margin: calc(-1 * ${mTop}) calc(-1 * ${mIn}) calc(-1 * ${mBot});
-  width: calc(${trim.width} + ${mIn} - ${mOut});
-  height: ${trim.height};
+  page: cover;
+  margin: 0;
+  padding: 0;
   max-width: none;
   overflow: hidden;
   break-before: page;
@@ -563,6 +565,7 @@ figure.fig-fullpage {
   page-break-after: always;
 }
 figure.fig-fullpage img {
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: var(--fig-fit, cover);
