@@ -10216,6 +10216,11 @@ pub async fn typesetter_export_pdf(
     } else {
         base_html
     };
+    // The @@S:…@@ position markers are only needed during the measurement
+    // pass above; strip them from the final render so they don't sit in the
+    // exported PDF's text layer (selectable / extractable). They're
+    // position:absolute, so removing them shifts no page break.
+    let final_html = crate::typesetter::pdf_export::strip_tocmarks(&final_html);
 
     // Headless Chromium is blocking; spawn on a blocking task.
     let html_owned = final_html;

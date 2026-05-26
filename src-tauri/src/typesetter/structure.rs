@@ -170,7 +170,7 @@ fn section_open_re() -> &'static Regex {
 
 /// Convert a Roman numeral string to u32. Lower- or upper-case. Returns
 /// None for non-Roman input.
-fn parse_roman(s: &str) -> Option<u32> {
+pub(crate) fn parse_roman(s: &str) -> Option<u32> {
     let s = s.trim().to_ascii_uppercase();
     if s.is_empty() || s.chars().any(|c| !"IVXLCDM".contains(c)) {
         return None;
@@ -198,7 +198,7 @@ fn parse_roman(s: &str) -> Option<u32> {
     Some(total)
 }
 
-fn to_roman(n: u32) -> String {
+pub(crate) fn to_roman(n: u32) -> String {
     let mut out = String::new();
     let pairs: &[(u32, &str)] = &[
         (1000, "M"),

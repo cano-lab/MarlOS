@@ -1244,6 +1244,16 @@ pub fn inject_figure_markers(html: &str) -> String {
     .into_owned()
 }
 
+/// Remove the `@@S:…@@` position-marker spans from the FINAL HTML. They're
+/// out-of-flow (position:absolute), so deleting them doesn't shift any page
+/// break — but their transparent text was still landing in the PDF's text
+/// layer (selectable / extractable as "@@S:…@@" gibberish). The measurement
+/// pass keeps them; the final render must not.
+pub fn strip_tocmarks(html: &str) -> String {
+    let re = regex::Regex::new(r#"<span class="tocmark"[^>]*>[^<]*</span>"#).unwrap();
+    re.replace_all(html, "").into_owned()
+}
+
 /// Wrap the page-number margin-box content in delimiters so the printed
 /// folio (already lower-roman for front matter / arabic for body, as
 /// Chromium computed it) can be read straight out of the page text.
@@ -1306,6 +1316,24 @@ pub fn extract_section_folios(
     // folio from the nearest page carrying a numeric (arabic body) folio,
     // offset by the physical-page distance. Pages between resets are
     // contiguous, so neighbour ± distance is exact.
+    // Offset a known folio by `delta` pages, preserving its numbering style
+    // (arabic, or upper/lower roman — the body can use roman page numbers).
+    let offset_folio = |f: &str, delta: i64| -> Option<String> {
+        if let Ok(n) = f.parse::<i64>() {
+            let v = n + delta;
+            return (v >= 0).then(|| v.to_string());
+        }
+        if let Some(r) = crate::typesetter::structure::parse_roman(f) {
+            let v = r as i64 + delta;
+            if v >= 1 {
+                let roman = crate::typesetter::structure::to_roman(v as u32);
+                let lower = !f.chars().any(|c| c.is_ascii_uppercase());
+                return Some(if lower { roman.to_lowercase() } else { roman });
+            }
+        }
+        None
+    };
+
     let folio_at = |i: usize| -> Option<String> {
         if let Some(f) = &pages[i].0 {
             return Some(f.clone());
@@ -1313,15 +1341,15 @@ pub fn extract_section_folios(
         for d in 1..pages.len() {
             if i >= d {
                 if let Some(f) = &pages[i - d].0 {
-                    if let Ok(n) = f.parse::<i64>() {
-                        return Some((n + d as i64).to_string());
+                    if let Some(r) = offset_folio(f, d as i64) {
+                        return Some(r);
                     }
                 }
             }
             if i + d < pages.len() {
                 if let Some(f) = &pages[i + d].0 {
-                    if let Ok(n) = f.parse::<i64>() {
-                        return Some((n - d as i64).to_string());
+                    if let Some(r) = offset_folio(f, -(d as i64)) {
+                        return Some(r);
                     }
                 }
             }
