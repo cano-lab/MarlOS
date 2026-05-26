@@ -521,6 +521,8 @@ pub fn run() {
             // Book typesetter — Source-view live edits
             commands::typesetter_read_book_file,
             commands::typesetter_write_book_file,
+            commands::typesetter_read_custom_css,
+            commands::typesetter_write_custom_css,
             // Research feed
             commands::research_feed_list,
             commands::research_run_daily_fetch,

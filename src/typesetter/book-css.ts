@@ -49,7 +49,7 @@ export function trimDimensions(size: string): TrimDimensions {
  * self-contained `<style>`-able string — fonts are *referenced* via
  * @fontsource which the calling component is responsible for importing.
  */
-export function buildBookCss(config: BookConfig): string {
+export function buildBookCss(config: BookConfig, customCss?: string): string {
   const trim = trimDimensions(config.trim.size);
   const margins = config.trim.margins_in;
   const fontSize = `${config.typography.body_size_pt}pt`;
@@ -677,7 +677,10 @@ sup.note-ref a {
 }
 
 ${chapterCounterCss}
-`.trim();
+`.trim() +
+    (customCss && customCss.trim()
+      ? `\n\n/* ===== custom.css (user) ===== */\n${customCss}`
+      : "");
 }
 
 /**

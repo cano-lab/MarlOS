@@ -202,4 +202,53 @@ export const typesetterService = {
   /** Source-view: write manuscript file `i` from book.toml's files list. */
   writeBookFile: (bookPath: string, fileIndex: number, content: string): Promise<void> =>
     invoke<void>("typesetter_write_book_file", { bookPath, fileIndex, content }),
+
+  /** Read the book's custom stylesheet (custom.css next to book.toml). */
+  readCustomCss: (bookPath: string): Promise<string> =>
+    invoke<string>("typesetter_read_custom_css", { bookPath }),
+
+  /** Write the book's custom stylesheet (empty = delete). */
+  writeCustomCss: (bookPath: string, css: string): Promise<void> =>
+    invoke<void>("typesetter_write_custom_css", { bookPath, css }),
+
+  /** Ask the AI to produce an updated custom.css from a plain-language
+   *  description, given the current CSS and the document's class
+   *  vocabulary. Returns the complete stylesheet (markdown fences stripped). */
+  generateCustomCss: async (description: string, currentCss: string): Promise<string> => {
+    const system = STYLE_SYSTEM_PROMPT;
+    const prompt =
+      `Current custom.css (may be empty):\n\`\`\`css\n${currentCss || ""}\n\`\`\`\n\n` +
+      `Change request: ${description}\n\n` +
+      `Return the COMPLETE updated custom.css — keep existing rules that still apply, ` +
+      `modify or add as needed. Output ONLY CSS, no commentary, no markdown fences.`;
+    const res = await invoke<{ content: string }>("ai_generate", {
+      prompt,
+      systemPrompt: system,
+    });
+    return stripCssFences(res.content);
+  },
 };
+
+/** Strip ```css … ``` fences and stray prose the model sometimes adds. */
+function stripCssFences(s: string): string {
+  const fence = s.match(/```(?:css)?\s*([\s\S]*?)```/i);
+  return (fence ? fence[1] : s).trim();
+}
+
+/** System prompt describing the typeset document's selector vocabulary so
+ *  the model emits valid, correctly-scoped CSS that overrides the defaults. */
+const STYLE_SYSTEM_PROMPT = `You write CSS for a print book typeset with CSS Paged Media (rendered by Chromium for PDF and Paged.js for the on-screen preview). Your CSS is appended AFTER the generated stylesheet, so it overrides defaults by source order — avoid !important unless necessary.
+
+Use only these selectors (this is the document's structure):
+- Text: body, p, h1, h2, h3, blockquote, em, strong, a
+- Chapters: section[data-section-type="chapter"], and its opener title section[data-section-type="chapter"] > h1 (centered on its own page); first body letter .drop-cap, opening words .lead-in
+- Other sections: section[data-section-type="interlude"] > h1, section[data-section-type="front-matter"], section[data-section-type="back-matter"]
+- Table of Contents: .generated-toc-page, .gen-toc-title, .toc-entry, .toc-num, .toc-text, .toc-other, .toc-leader, .toc-folio
+- List of Figures: .generated-lof-page, .gen-lof-title, .lof-entry, .lof-num; in-body figure number .fig-num
+- Figures: figure, figcaption, figure.fig-text, figure.fig-bleed, figure.fig-fullpage, figure.fig-float-left, figure.fig-float-right
+- Title page: .generated-title-page, .gen-book-title, .gen-book-subtitle, .gen-book-author
+- Math: math, .math.display, blockquote.math-anchor
+- Centered blocks: .center
+- Page boxes: @page, @page :left, @page :right (margin boxes @top-center / @bottom-center hold the running header and folio)
+
+Rules: use pt/in/em units (this is print, not screen — avoid px for type). Keep changes minimal and targeted to the request. Do not invent selectors or class names outside this list. Do not include @font-face or external @import. Output ONLY the CSS.`;

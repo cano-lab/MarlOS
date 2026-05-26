@@ -15,6 +15,7 @@ import BookPagedPreview from "./BookPagedPreview";
 import BookConfigEditor from "./BookConfigEditor";
 import BookEditorPane from "./BookEditorPane";
 import type { BookEditorApi } from "./BookEditorPane";
+import BookStylePanel from "./BookStylePanel";
 import RelevantSources from "./RelevantSources";
 import "./BookMode.css";
 
@@ -137,6 +138,10 @@ const BookMode: Component<BookModeProps> = (props) => {
   } | null>(null);
   const [figMode, setFigMode] = createSignal("inline");
   const [figInset, setFigInset] = createSignal(0.25);
+  // Book's custom stylesheet (custom.css), loaded on book load and applied
+  // to both the preview and the PDF export. Edited via the Style panel.
+  const [customCss, setCustomCss] = createSignal("");
+  const [showStyle, setShowStyle] = createSignal(false);
 
   /** Open the margin editor from a preview right-click, seeded with the
    *  figure's current mode + inset. */
@@ -509,6 +514,8 @@ const BookMode: Component<BookModeProps> = (props) => {
       setBook(out);
       setMathStats(null);
       writeLastBookPath(p);
+      // Load the book's custom stylesheet (empty if none).
+      typesetterService.readCustomCss(p).then(setCustomCss).catch(() => setCustomCss(""));
       // Tell the Source pane to re-read from disk (it doesn't otherwise
       // react to same-path reloads). Guarded on its side so it won't
       // clobber unsaved edits.
@@ -844,6 +851,14 @@ const BookMode: Component<BookModeProps> = (props) => {
           >
             🖨 Print
           </button>
+          <button
+            class="book-mode-btn"
+            onClick={() => setShowStyle(true)}
+            title="Custom styling — describe a change and the AI writes the CSS"
+            disabled={!book()}
+          >
+            🎨 Style
+          </button>
         </div>
 
         <div class="book-mode-main-area">
@@ -955,6 +970,7 @@ const BookMode: Component<BookModeProps> = (props) => {
             disableSectionScrollSync={viewMode() === "split"}
             onScrollSurfaceReady={setPagesSurface}
             flashAnchor={flashAnchor()}
+            customCss={customCss()}
             onFigureContextMenu={openFigureMenu}
             onPaginated={() => {
               // Re-pagination reflows the Pages anchors, so the reader's
@@ -1062,6 +1078,20 @@ const BookMode: Component<BookModeProps> = (props) => {
             />
           </Show>
         </div>
+      </Show>
+
+      {/* Custom-CSS chat + editor panel. */}
+      <Show when={showStyle()}>
+        <BookStylePanel
+          bookPath={path()}
+          currentCss={customCss()}
+          onClose={() => setShowStyle(false)}
+          onApply={async (css) => {
+            await typesetterService.writeCustomCss(path(), css);
+            setCustomCss(css); // re-paginates the preview; export reads the file
+            setShowStyle(false);
+          }}
+        />
       </Show>
 
       {/* Right-click figure margin editor (anchored at the click). */}

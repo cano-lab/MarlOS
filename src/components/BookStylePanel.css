@@ -1,0 +1,145 @@
+.book-style-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.book-style-panel {
+  background: #2a2a2a;
+  color: #ddd;
+  border: 1px solid #444;
+  border-radius: 8px;
+  padding: 16px;
+  width: 560px;
+  max-width: 92%;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.book-style-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.book-style-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.book-style-x {
+  background: none;
+  border: none;
+  color: #999;
+  cursor: pointer;
+  font-size: 14px;
+}
+.book-style-x:hover {
+  color: #ddd;
+}
+
+.book-style-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #aaa;
+}
+
+.book-style-css-field {
+  flex: 1;
+  min-height: 0;
+}
+
+.book-style-prompt,
+.book-style-css {
+  background: #1e1e1e;
+  color: #ddd;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 8px;
+  font-size: 13px;
+  resize: vertical;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.book-style-css {
+  flex: 1;
+  min-height: 220px;
+  font-family: "Cascadia Code", "Consolas", "SF Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+  resize: vertical;
+}
+
+.book-style-gen-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.book-style-hint {
+  font-size: 11px;
+  color: #777;
+}
+
+.book-style-gen {
+  background: #3a3a3a;
+  color: #ddd;
+  border: 1px solid #4a4a4a;
+  border-radius: 4px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.book-style-gen:hover:not(:disabled) {
+  background: #4a4a4a;
+}
+.book-style-gen:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.book-style-error {
+  color: #f48771;
+  font-size: 12px;
+  background: #3a2020;
+  padding: 6px 8px;
+  border-radius: 4px;
+}
+
+.book-style-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.book-style-actions button {
+  background: #3a3a3a;
+  color: #ddd;
+  border: 1px solid #4a4a4a;
+  border-radius: 4px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.book-style-primary {
+  background: #094771;
+  border-color: #0a5a8a;
+  color: #fff;
+}
+.book-style-primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

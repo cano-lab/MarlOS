@@ -52,6 +52,9 @@ interface BookPagedPreviewProps {
     x: number;
     y: number;
   }) => void;
+  /** User's custom stylesheet (custom.css), appended after the generated
+   *  CSS. Re-paginates when it changes. */
+  customCss?: string;
 }
 
 /**
@@ -268,7 +271,7 @@ const BookPagedPreview: Component<BookPagedPreviewProps> = (props) => {
       // headings, no break-before, no margin boxes, no named pages,
       // no string-set. If this paginates cleanly, we add features
       // back in chunks.
-      const css = buildBookCss(props.config);
+      const css = buildBookCss(props.config, props.customCss);
 
       // Prepend the book-title marker so future Phase D string-set
       // rules can populate the verso header. Hidden via display:none.
@@ -391,6 +394,7 @@ const BookPagedPreview: Component<BookPagedPreviewProps> = (props) => {
     // pagination. renderPaged itself reads the latest props at call
     // time, so we don't capture them here.
     void props.config;
+    void props.customCss; // re-paginate when the custom stylesheet changes
     const html = props.enrichedHtml;
     const isActive = props.active !== false; // default true if undefined
 

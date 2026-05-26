@@ -10048,6 +10048,28 @@ pub fn typesetter_write_book_file(
     std::fs::write(target, content).map_err(|e| e.to_string())
 }
 
+/// Read the book's custom stylesheet (`custom.css` next to book.toml).
+/// Returns "" when the file doesn't exist yet.
+#[tauri::command]
+pub fn typesetter_read_custom_css(book_path: String) -> Result<String, String> {
+    let config = BookConfig::load(std::path::Path::new(&book_path)).map_err(|e| e.to_string())?;
+    Ok(std::fs::read_to_string(config.root_dir.join("custom.css")).unwrap_or_default())
+}
+
+/// Write the book's custom stylesheet. Empty content deletes the file so
+/// the book falls back to the generated styling.
+#[tauri::command]
+pub fn typesetter_write_custom_css(book_path: String, css: String) -> Result<(), String> {
+    let config = BookConfig::load(std::path::Path::new(&book_path)).map_err(|e| e.to_string())?;
+    let path = config.root_dir.join("custom.css");
+    if css.trim().is_empty() {
+        let _ = std::fs::remove_file(&path);
+        Ok(())
+    } else {
+        std::fs::write(&path, css).map_err(|e| e.to_string())
+    }
+}
+
 /// Render the loaded book to an EPUB3 via pandoc.
 #[tauri::command]
 pub async fn typesetter_export_epub(

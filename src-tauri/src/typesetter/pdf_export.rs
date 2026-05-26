@@ -1163,6 +1163,9 @@ pub fn build_export_html(
     back_cover_path: Option<&Path>,
 ) -> String {
     let css = build_export_css(config, structure);
+    // User's custom stylesheet (next to book.toml), appended AFTER the
+    // generated CSS so its rules win. Absent file = no custom styling.
+    let custom_css = std::fs::read_to_string(config.root_dir.join("custom.css")).unwrap_or_default();
     let title = html_escape(&config.book.title);
     let lang = config.book.language.clone().unwrap_or_else(|| "en".to_string());
 
@@ -1185,6 +1188,7 @@ pub fn build_export_html(
 <meta charset="utf-8" />
 <title>{title}</title>
 <style>{css}</style>
+<style id="marlos-custom-css">{custom_css}</style>
 </head>
 <body>
 <header class="book-title-source">{title}</header>
@@ -1197,6 +1201,7 @@ pub fn build_export_html(
         lang = lang,
         title = title,
         css = css,
+        custom_css = custom_css,
         front_cover = cover_to_html(front_cover_path, "front"),
         body = enriched_html,
         back_cover = cover_to_html(back_cover_path, "back"),
