@@ -1212,7 +1212,12 @@ pub fn inject_section_markers(html: &str) -> String {
     let re = regex::Regex::new(r#"(<section\b[^>]*\bid="([^"]+)"[^>]*>)"#).unwrap();
     re.replace_all(html, |c: &regex::Captures| {
         format!(
-            "{}<span class=\"tocmark\" style=\"font-size:1px;color:transparent\">@@S:{}@@</span>",
+            // position:absolute keeps the marker out of flow so it never
+            // adds a line box (which otherwise pushed full-bleed figures
+            // down by ~1 line, leaving a white strip across the top). The
+            // transparent text still lands in the PDF text layer on the
+            // right page, so the pdfium folio scan reads it fine.
+            "{}<span class=\"tocmark\" style=\"position:absolute;font-size:1px;color:transparent\">@@S:{}@@</span>",
             &c[1], &c[2]
         )
     })
@@ -1227,7 +1232,12 @@ pub fn inject_figure_markers(html: &str) -> String {
     let re = regex::Regex::new(r#"(<figure\b[^>]*\bid="([^"]+)"[^>]*>)"#).unwrap();
     re.replace_all(html, |c: &regex::Captures| {
         format!(
-            "{}<span class=\"tocmark\" style=\"font-size:1px;color:transparent\">@@S:{}@@</span>",
+            // position:absolute keeps the marker out of flow so it never
+            // adds a line box (which otherwise pushed full-bleed figures
+            // down by ~1 line, leaving a white strip across the top). The
+            // transparent text still lands in the PDF text layer on the
+            // right page, so the pdfium folio scan reads it fine.
+            "{}<span class=\"tocmark\" style=\"position:absolute;font-size:1px;color:transparent\">@@S:{}@@</span>",
             &c[1], &c[2]
         )
     })
