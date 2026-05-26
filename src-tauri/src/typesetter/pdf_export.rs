@@ -1283,21 +1283,60 @@ pub fn extract_section_folios(
 
     let pg_re = regex::Regex::new(r"@@PG@@(.*?)@@PGEND@@").unwrap();
     let sec_re = regex::Regex::new(r"@@S:(.+?)@@").unwrap();
-    let mut map = std::collections::HashMap::new();
+
+    // Per page, in document order: the printed folio (if any) and the
+    // marker ids on that page.
+    let mut pages: Vec<(Option<String>, Vec<String>)> = Vec::new();
     for page in doc.pages().iter() {
-        let text = match page.text() {
-            Ok(t) => t.all(),
-            Err(_) => continue,
-        };
-        let folio = match pg_re.captures(&text).and_then(|c| c.get(1)) {
-            Some(m) => m.as_str().trim().to_string(),
+        let text = page.text().map(|t| t.all()).unwrap_or_default();
+        let folio = pg_re
+            .captures(&text)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().trim().to_string())
+            .filter(|s| !s.is_empty());
+        let ids: Vec<String> = sec_re
+            .captures_iter(&text)
+            .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
+            .collect();
+        pages.push((folio, ids));
+    }
+
+    // Full-page figures sit on the zero-margin `cover` page, which prints no
+    // folio — but the page counter still advanced on it. Infer that page's
+    // folio from the nearest page carrying a numeric (arabic body) folio,
+    // offset by the physical-page distance. Pages between resets are
+    // contiguous, so neighbour ± distance is exact.
+    let folio_at = |i: usize| -> Option<String> {
+        if let Some(f) = &pages[i].0 {
+            return Some(f.clone());
+        }
+        for d in 1..pages.len() {
+            if i >= d {
+                if let Some(f) = &pages[i - d].0 {
+                    if let Ok(n) = f.parse::<i64>() {
+                        return Some((n + d as i64).to_string());
+                    }
+                }
+            }
+            if i + d < pages.len() {
+                if let Some(f) = &pages[i + d].0 {
+                    if let Ok(n) = f.parse::<i64>() {
+                        return Some((n - d as i64).to_string());
+                    }
+                }
+            }
+        }
+        None
+    };
+
+    let mut map = std::collections::HashMap::new();
+    for i in 0..pages.len() {
+        let folio = match folio_at(i) {
+            Some(f) => f,
             None => continue,
         };
-        for cap in sec_re.captures_iter(&text) {
-            if let Some(id) = cap.get(1) {
-                map.entry(id.as_str().to_string())
-                    .or_insert_with(|| folio.clone());
-            }
+        for id in &pages[i].1 {
+            map.entry(id.clone()).or_insert_with(|| folio.clone());
         }
     }
     Some(map)
