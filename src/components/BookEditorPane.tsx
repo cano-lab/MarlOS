@@ -100,6 +100,16 @@ const SNIPPETS: Snippet[] = [
   { label: "1 line", title: 'Medium space — <div class="space-medium"></div>', snippet: '<div class="space-medium"></div>' },
   { label: "2 lines", title: 'Large space — <div class="space-large"></div>', snippet: '<div class="space-large"></div>' },
   { label: "Section", title: 'Section break — <div class="space-section"></div>', snippet: '<div class="space-section"></div>' },
+  {
+    label: "ƒ Math anchor",
+    title: "Math Anchor — boxed blockquote with a centered display equation",
+    snippet:
+      "> **Math Anchor — Title**: Lead-in sentence describing what the equation is.\n" +
+      ">\n" +
+      "> $$equation$$\n" +
+      ">\n" +
+      "> Explanation: define the variables, say why the equation matters, what it means in plain language.",
+  },
 ];
 
 const fileBaseName = (path: string) => path.split(/[/\\]/).pop() ?? path;
