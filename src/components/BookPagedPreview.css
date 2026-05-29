@@ -59,6 +59,36 @@
   cursor: pointer;
 }
 
+/* Mirror of the editor's zoom controls so the split view feels symmetric. */
+.book-paged-zoom {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.book-paged-zoom-btn {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  padding: 2px 7px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.book-paged-zoom-btn:hover:not(:disabled) {
+  background: var(--bg-tertiary);
+}
+
+.book-paged-zoom-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.book-paged-zoom-pct {
+  min-width: 3.2em;
+}
+
 .book-paged-stage {
   flex: 1;
   min-height: 0;
@@ -70,9 +100,13 @@
 
 /* Paged.js DOM is .pagedjs_pages > .pagedjs_page > .pagedjs_sheet.
    Pure block layout — pages stack via their own margin, no flex
-   fighting Paged.js's inline width/height styling. */
+   fighting Paged.js's inline width/height styling. The `zoom` here is
+   driven by --paged-zoom on the stage (see toolbar +/-/reset). `zoom`
+   affects layout so scrollbars adjust naturally; transform: scale()
+   would leave the scroll container the wrong size. */
 .book-paged-stage .pagedjs_pages {
   display: block;
+  zoom: var(--paged-zoom, 1);
 }
 
 .book-paged-stage .pagedjs_page {

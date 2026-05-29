@@ -69,6 +69,33 @@ const BookPagedPreview: Component<BookPagedPreviewProps> = (props) => {
   const [pageCount, setPageCount] = createSignal(0);
   const [error, setError] = createSignal<string | null>(null);
   const [elapsedMs, setElapsedMs] = createSignal(0);
+
+  // Visual zoom on the paginated preview — scales the rendered pages via
+  // CSS `zoom` (which affects layout, so scrollbars adjust). Doesn't
+  // re-paginate; the underlying Paged.js layout is unchanged. Persisted.
+  const PZOOM_KEY = "marlos-book-preview-zoom";
+  const PZOOM_MIN = 0.4;
+  const PZOOM_MAX = 2.5;
+  const readPZoom = (): number => {
+    try {
+      const v = parseFloat(localStorage.getItem(PZOOM_KEY) ?? "");
+      return Number.isFinite(v) && v >= PZOOM_MIN && v <= PZOOM_MAX ? v : 1;
+    } catch {
+      return 1;
+    }
+  };
+  const [pZoom, setPZoom] = createSignal<number>(readPZoom());
+  createEffect(() => {
+    try {
+      localStorage.setItem(PZOOM_KEY, String(pZoom()));
+    } catch {
+      /* localStorage unavailable */
+    }
+  });
+  const r1 = (n: number) => Math.round(n * 10) / 10;
+  const pZoomIn = () => setPZoom((z) => Math.min(PZOOM_MAX, r1(z + 0.1)));
+  const pZoomOut = () => setPZoom((z) => Math.max(PZOOM_MIN, r1(z - 0.1)));
+  const pZoomReset = () => setPZoom(1);
   // Pagination is serialized: only one Paged.js preview() can be in
   // flight at a time, otherwise the second's `mountRef.innerHTML = ""`
   // wipes the first's working DOM mid-layout and Paged.js crashes with
@@ -516,6 +543,17 @@ const BookPagedPreview: Component<BookPagedPreviewProps> = (props) => {
         <button class="book-paged-btn" onClick={renderPaged}>
           Re-paginate
         </button>
+        <div class="book-paged-zoom">
+          <button class="book-paged-zoom-btn" title="Zoom out" onClick={pZoomOut} disabled={pZoom() <= PZOOM_MIN + 1e-6}>
+            −
+          </button>
+          <button class="book-paged-zoom-btn book-paged-zoom-pct" title="Reset zoom" onClick={pZoomReset}>
+            {Math.round(pZoom() * 100)}%
+          </button>
+          <button class="book-paged-zoom-btn" title="Zoom in" onClick={pZoomIn} disabled={pZoom() >= PZOOM_MAX - 1e-6}>
+            +
+          </button>
+        </div>
       </div>
 
       <Show when={error()}>
@@ -526,6 +564,7 @@ const BookPagedPreview: Component<BookPagedPreviewProps> = (props) => {
 
       <div
         class="book-paged-stage"
+        style={{ "--paged-zoom": String(pZoom()) }}
         ref={(el) => {
           mountRef = el;
           props.onScrollSurfaceReady?.(el ? { el, getAnchors } : null);
