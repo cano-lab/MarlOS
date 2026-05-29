@@ -34,6 +34,10 @@ interface BookEditorPaneProps {
   disableSectionScrollSync?: boolean;
   pageStyled?: boolean;
   onEditAt?: (order: number, paraIndex: number) => void;
+  /** Fires on every keystroke / doc change. Used by the parent to know
+   *  when the user is actively typing (and suppress scroll-mirror noise
+   *  from CodeMirror's keep-cursor-in-view auto-scroll). */
+  onEdit?: () => void;
   /** Hands an imperative API to the parent once mounted, so BookMode can
    *  drive source edits triggered from the Pages preview (e.g. the
    *  right-click figure margin editor). */
@@ -204,6 +208,7 @@ const BookEditorPane: Component<BookEditorPaneProps> = (props) => {
   const handleChange = (text: string) => {
     setContent(text);
     setDirty(true);
+    props.onEdit?.();
     scheduleSave();
   };
 

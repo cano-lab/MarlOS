@@ -265,6 +265,13 @@ const BookMode: Component<BookModeProps> = (props) => {
   // short timer releases leadership after the user stops, letting the
   // other pane take over on its next user scroll. See the effect below.
   let scrollLeader: "src" | "pgs" | null = null;
+  // Marked on every CodeMirror change. While the user is actively typing,
+  // CodeMirror auto-scrolls the source to keep the cursor in view — that
+  // scroll would otherwise drive Pages, making the preview "jump" on every
+  // keystroke. The onSrc handler ignores source-side scrolls inside this
+  // window so typing never moves Pages (intentional scroll still does,
+  // once typing stops).
+  let lastEditTs = 0;
   let leaderReleaseTimer: number | undefined;
   const holdLeader = (who: "src" | "pgs") => {
     scrollLeader = who;
@@ -326,6 +333,9 @@ const BookMode: Component<BookModeProps> = (props) => {
 
     const onSrc = () => {
       if (scrollLeader === "pgs") return; // Pages leads — this is our echo
+      // Suppress source-driven sync during/just-after typing so CodeMirror's
+      // keep-cursor-in-view auto-scroll doesn't shove Pages around.
+      if (performance.now() - lastEditTs < 800) return;
       holdLeader("src");
       if (srcSyncRaf !== null) return;
       srcSyncRaf = requestAnimationFrame(() => {
@@ -936,6 +946,9 @@ const BookMode: Component<BookModeProps> = (props) => {
             onEditAt={(order, paraIndex) =>
               setFlashAnchor({ order, paraIndex, ts: performance.now() })
             }
+            onEdit={() => {
+              lastEditTs = performance.now();
+            }}
             onSaved={() => {
               if (viewMode() === "split" && autoPaginate()) {
                 // Split + auto: debounced loadBook so rapid saves
