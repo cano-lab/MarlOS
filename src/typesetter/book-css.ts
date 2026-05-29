@@ -191,14 +191,10 @@ section[data-section-type="chapter"] { counter-increment: chapter-num; }`;
   object-fit: cover;
 }
 
-section[data-section-type="chapter"] {
-  /* Forced-recto chapter starts (the page count source-of-truth that
-     the PDF export uses). Paged.js handles the standalone right
-     keyword fine — only the named+pseudo combo (e.g. @page name:left)
-     is what was breaking. */
-  break-before: right;
-  page-break-before: right;
-}
+/* The chapter section has NO break-before — the opener h1 carries
+   break-before:right (below). Putting the break here AND giving the h1
+   a different named page is what produced a blank page before every
+   chapter. Mirrors the PDF pipeline. */
 
 section[data-section-type="interlude"] {
   break-before: page;
@@ -211,11 +207,10 @@ section[data-section-type="back-matter"] {
   break-before: page;
 }
 
-/* Chapter opener: suppress the running chapter-name header on the
-   opener page. The H1 itself carries the 4em top margin — we don't
-   add page-level margin here, otherwise the chapter-opener pages
-   would have less body height and the preview page count would
-   diverge from the PDF. */
+/* Chapter opener: the title alone on its own page (vertically centered),
+   body on the next page. The h1 lives on a no-header named page so the
+   running chapter-name header is suppressed on the opener but appears on
+   every body page. */
 @page chapter-opener {
   @top-center { content: none; }
 }
@@ -223,9 +218,21 @@ section[data-section-type="back-matter"] {
 section[data-section-type="chapter"] > h1 {
   page: chapter-opener;
   string-set: chapter-name ${stringSetExpr};
+  /* The h1 carries the break-before:right (section does NOT — see
+     the section rule above) and break-after:page so the body starts on
+     the next page, no blank page. */
+  break-before: right;
+  page-break-before: right;
+  break-after: page;
+  page-break-after: always;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
   font-size: 2em;
   text-align: center;
-  margin: 4em 0 2em;
   font-variant: small-caps;
   letter-spacing: 0.03em;
   font-weight: 600;
