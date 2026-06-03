@@ -586,6 +586,45 @@ const BookMode: Component<BookModeProps> = (props) => {
     }
   };
 
+  // Pick a PDF and import it as a brand-new book. The conversion to
+  // markdown is intentionally not exposed in the UI — the user picks
+  // a PDF and ends up looking at a loaded book. They can still see
+  // (and edit) the generated .md from the Source view.
+  const importPdf = async () => {
+    setError(null);
+    setInfo(null);
+    let picked: string | null = null;
+    try {
+      const res = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "PDF", extensions: ["pdf"] }],
+      });
+      if (typeof res === "string") picked = res;
+    } catch (e) {
+      setError(`File picker failed: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    if (!picked) return;
+    setBusy(true);
+    setInfo("Importing PDF — extracting text, inferring structure...");
+    try {
+      const summary = await typesetterService.importPdf(picked);
+      setPath(summary.book_toml_path);
+      // Surface non-fatal notes (stripped chrome, blank pages, etc.)
+      // as the info banner so the user knows what the import did.
+      const note = summary.notes.length > 0
+        ? `Imported ${summary.page_count} pages. ${summary.notes.join(" ")} Loading...`
+        : `Imported ${summary.page_count} pages. Loading...`;
+      setInfo(note);
+      await loadBook();
+    } catch (e) {
+      setError(`PDF import failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   // Group sections by kind for the tree pane
   const sectionsByKind = (): Record<SectionKind, BookSection[]> => {
     const acc: Record<SectionKind, BookSection[]> = {
@@ -709,6 +748,14 @@ const BookMode: Component<BookModeProps> = (props) => {
             Init book.toml
           </button>
         </Show>
+        <button
+          class="book-mode-btn"
+          onClick={importPdf}
+          disabled={busy() || !probe()?.available}
+          title="Pick a PDF; we extract the text, infer headings, and open it as a fresh book."
+        >
+          Import PDF…
+        </button>
       </div>
 
       <Show when={error()}>

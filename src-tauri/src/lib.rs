@@ -512,6 +512,7 @@ pub fn run() {
             // Book typesetter (Phase B — book.toml + structure) commands
             commands::typesetter_book_load,
             commands::typesetter_book_init,
+            commands::typesetter_import_pdf,
             commands::typesetter_book_save,
             commands::typesetter_analyze_html,
             // Book typesetter (Phase E — headless Chromium PDF export)

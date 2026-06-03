@@ -12,6 +12,7 @@ pub mod citations;
 pub mod epub_export;
 pub mod pandoc;
 pub mod pdf_export;
+pub mod pdf_import;
 pub mod structure;
 pub mod word_anchors;
 

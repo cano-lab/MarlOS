@@ -10003,6 +10003,73 @@ pub fn typesetter_book_init(markdown_path: String) -> Result<String, String> {
     Ok(written.display().to_string())
 }
 
+#[derive(serde::Serialize)]
+pub struct PdfImportSummary {
+    /// Absolute path to the generated `book.toml`. Pass to
+    /// typesetter_book_load to open the freshly imported book.
+    pub book_toml_path: String,
+    /// Absolute path to the generated markdown file (so the UI can
+    /// open the Source view on it directly if it wants to).
+    pub markdown_path: String,
+    pub page_count: u32,
+    /// Non-fatal warnings ("X pages had no extractable text", "stripped
+    /// N header lines", etc.) for surfacing in the UI.
+    pub notes: Vec<String>,
+}
+
+/// Import a PDF into Book Mode. Pure-Rust pipeline (pdfium-render) so
+/// this stays portable to the bare-metal target. Creates a new
+/// `<pdf_stem>/` directory alongside the source PDF containing the
+/// generated `<pdf_stem>.md` and a starter `book.toml`. The UI then
+/// loads the book via `typesetter_book_load(book_toml_path)`.
+#[tauri::command]
+pub async fn typesetter_import_pdf(pdf_path: String) -> Result<PdfImportSummary, String> {
+    let pdf = std::path::PathBuf::from(&pdf_path);
+    if !pdf.is_file() {
+        return Err(format!("PDF not found: {}", pdf.display()));
+    }
+    let stem = pdf
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| "PDF has no usable file stem".to_string())?
+        .to_string();
+    let parent = pdf
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let book_dir = parent.join(&stem);
+    std::fs::create_dir_all(&book_dir)
+        .map_err(|e| format!("create book dir failed: {e}"))?;
+
+    // Run the conversion on a blocking thread — pdfium is sync and
+    // can take a while on large books.
+    let pdf_for_thread = pdf.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::typesetter::pdf_import::convert(&pdf_for_thread)
+    })
+    .await
+    .map_err(|e| format!("pdf import task: {e}"))?
+    .map_err(|e| format!("pdf import: {e}"))?;
+
+    // Write the markdown into the new book dir.
+    let md_path = book_dir.join(format!("{stem}.md"));
+    std::fs::write(&md_path, &result.markdown)
+        .map_err(|e| format!("write markdown failed: {e}"))?;
+
+    // Generate a starter book.toml next to the markdown. Reuses the
+    // same starter as the "Open a single .md file" flow so the layout
+    // matches what the user would otherwise create by hand.
+    let toml_path =
+        BookConfig::init_from_markdown(&md_path).map_err(|e| e.to_string())?;
+
+    Ok(PdfImportSummary {
+        book_toml_path: toml_path.display().to_string(),
+        markdown_path: md_path.display().to_string(),
+        page_count: result.page_count,
+        notes: result.notes,
+    })
+}
+
 #[tauri::command]
 pub fn typesetter_analyze_html(html: String) -> Result<StructuredHtml, String> {
     analyze_structure(&html).map_err(|e| e.to_string())

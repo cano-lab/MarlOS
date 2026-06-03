@@ -157,6 +157,19 @@ export interface LoadedBook {
   back_cover_path: string | null;
 }
 
+/** Result of `typesetter_import_pdf`. The UI flips to the generated
+ *  book.toml path and calls loadBook — the intermediate markdown is
+ *  visible in the Source view but the import itself is one step. */
+export interface PdfImportSummary {
+  book_toml_path: string;
+  markdown_path: string;
+  page_count: number;
+  /** Non-fatal warnings ("X pages had no extractable text — likely
+   *  scanned images, run OCR before importing", "Stripped N
+   *  header/footer lines", etc.). */
+  notes: string[];
+}
+
 export const typesetterService = {
   probe: (): Promise<PandocProbe> => invoke<PandocProbe>("typesetter_pandoc_probe"),
 
@@ -184,6 +197,16 @@ export const typesetterService = {
 
   initBook: (markdownPath: string): Promise<string> =>
     invoke<string>("typesetter_book_init", { markdownPath }),
+
+  /**
+   * Import a PDF as a new book. Pure-Rust pipeline on the backend
+   * (pdfium-render → text → heading inference → markdown). The user
+   * picks a PDF; we create a sibling directory, write the generated
+   * markdown there, and emit a starter book.toml. Returns paths +
+   * non-fatal warnings (stripped chrome lines, scanned-page count).
+   */
+  importPdf: (pdfPath: string): Promise<PdfImportSummary> =>
+    invoke<PdfImportSummary>("typesetter_import_pdf", { pdfPath }),
 
   saveBook: (bookPath: string, config: BookConfig): Promise<string> =>
     invoke<string>("typesetter_book_save", { bookPath, config }),
