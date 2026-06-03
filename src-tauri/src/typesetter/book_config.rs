@@ -194,6 +194,12 @@ pub struct ExportConfig {
     /// number the figure captions ("Fig. N."). Default true. Turn off for
     /// books where the figures shouldn't be enumerated or listed.
     pub include_list_of_figures: bool,
+    /// Wrap the leading half of every prose word in a "word anchor"
+    /// (boldened fixation point) at render time — PDF, EPUB, preview.
+    /// Math anchors, math, code, and headings are left alone so the
+    /// visual treatment for prose is distinct from formulas. Default
+    /// false; opt-in accessibility mode.
+    pub word_anchors: bool,
 }
 
 impl Default for ExportConfig {
@@ -201,6 +207,7 @@ impl Default for ExportConfig {
         Self {
             color_mode: String::new(),
             include_list_of_figures: true,
+            word_anchors: false,
         }
     }
 }
@@ -422,6 +429,10 @@ impl BookConfig {
         out.push_str(&format!(
             "include_list_of_figures = {}\n",
             self.export.include_list_of_figures
+        ));
+        out.push_str(&format!(
+            "word_anchors = {}\n",
+            self.export.word_anchors
         ));
 
         out

@@ -427,6 +427,14 @@ section > p:first-of-type {{
   display: none;
 }}
 
+/* Word-anchor fixation emphasis. The HTML transform wraps the
+   leading ~half of each prose word in <b class="word-anchor"> —
+   render as strong weight without changing color so the unstressed
+   second half is visually anchored by the leading bold "stem". */
+b.word-anchor {{
+  font-weight: 700;
+}}
+
 /* Cover pages: full-page IMAGE that fits within the trim, no cropping.
    object-fit: contain preserves the cover art aspect ratio. */
 .book-cover {{
@@ -1079,6 +1087,44 @@ const EBG_GREEK_400_ITALIC: &[u8] = ebg!("greek", "400", "italic");
 const EBG_GREEK_600_NORMAL: &[u8] = ebg!("greek", "600", "normal");
 const EBG_GREEK_600_ITALIC: &[u8] = ebg!("greek", "600", "italic");
 
+// Accessibility fonts: OpenDyslexic, Atkinson Hyperlegible, Lexend.
+// All three are SIL OFL — we ship them in-binary so the picker works
+// offline at export time. Latin subset only to keep the binary small;
+// extend to latin-ext if a translation needs it.
+const OPENDYS_400_NORMAL: &[u8] = include_bytes!(
+    "../../../node_modules/@fontsource/opendyslexic/files/opendyslexic-latin-400-normal.woff2"
+);
+const OPENDYS_400_ITALIC: &[u8] = include_bytes!(
+    "../../../node_modules/@fontsource/opendyslexic/files/opendyslexic-latin-400-italic.woff2"
+);
+const OPENDYS_700_NORMAL: &[u8] = include_bytes!(
+    "../../../node_modules/@fontsource/opendyslexic/files/opendyslexic-latin-700-normal.woff2"
+);
+const OPENDYS_700_ITALIC: &[u8] = include_bytes!(
+    "../../../node_modules/@fontsource/opendyslexic/files/opendyslexic-latin-700-italic.woff2"
+);
+const ATKINSON_400_NORMAL: &[u8] = include_bytes!(
+    "../../../node_modules/@fontsource/atkinson-hyperlegible/files/atkinson-hyperlegible-latin-400-normal.woff2"
+);
+const ATKINSON_400_ITALIC: &[u8] = include_bytes!(
+    "../../../node_modules/@fontsource/atkinson-hyperlegible/files/atkinson-hyperlegible-latin-400-italic.woff2"
+);
+const ATKINSON_700_NORMAL: &[u8] = include_bytes!(
+    "../../../node_modules/@fontsource/atkinson-hyperlegible/files/atkinson-hyperlegible-latin-700-normal.woff2"
+);
+const ATKINSON_700_ITALIC: &[u8] = include_bytes!(
+    "../../../node_modules/@fontsource/atkinson-hyperlegible/files/atkinson-hyperlegible-latin-700-italic.woff2"
+);
+const LEXEND_400_NORMAL: &[u8] = include_bytes!(
+    "../../../node_modules/@fontsource/lexend/files/lexend-latin-400-normal.woff2"
+);
+const LEXEND_600_NORMAL: &[u8] = include_bytes!(
+    "../../../node_modules/@fontsource/lexend/files/lexend-latin-600-normal.woff2"
+);
+const LEXEND_700_NORMAL: &[u8] = include_bytes!(
+    "../../../node_modules/@fontsource/lexend/files/lexend-latin-700-normal.woff2"
+);
+
 /// `unicode-range` per @fontsource subset definitions. Telling
 /// Chromium which characters belong to which file lets the engine
 /// pick the right subset per glyph and embed only what's used —
@@ -1106,32 +1152,60 @@ fn build_font_face_block() -> String {
         ))
     };
 
-    let face = |url: Option<String>, weight: u32, style: &str, range: &str| -> String {
+    let face = |family: &str,
+                url: Option<String>,
+                weight: u32,
+                style: &str,
+                range: Option<&str>|
+     -> String {
         match url {
-            Some(u) => format!(
-                "@font-face {{ font-family: 'EB Garamond'; src: url('{}') format('woff2'); font-weight: {}; font-style: {}; font-display: swap; unicode-range: {}; }}\n",
-                u, weight, style, range,
-            ),
+            Some(u) => {
+                let range_clause = range
+                    .map(|r| format!(" unicode-range: {};", r))
+                    .unwrap_or_default();
+                format!(
+                    "@font-face {{ font-family: '{}'; src: url('{}') format('woff2'); font-weight: {}; font-style: {}; font-display: swap;{} }}\n",
+                    family, u, weight, style, range_clause,
+                )
+            }
             None => String::new(),
         }
     };
 
     let mut out = String::new();
-    // latin
-    out.push_str(&face(write("ebg-latin-400.woff2", EBG_LATIN_400_NORMAL), 400, "normal", UNICODE_LATIN));
-    out.push_str(&face(write("ebg-latin-400i.woff2", EBG_LATIN_400_ITALIC), 400, "italic", UNICODE_LATIN));
-    out.push_str(&face(write("ebg-latin-600.woff2", EBG_LATIN_600_NORMAL), 600, "normal", UNICODE_LATIN));
-    out.push_str(&face(write("ebg-latin-600i.woff2", EBG_LATIN_600_ITALIC), 600, "italic", UNICODE_LATIN));
-    // latin-ext
-    out.push_str(&face(write("ebg-latext-400.woff2", EBG_LATEXT_400_NORMAL), 400, "normal", UNICODE_LATIN_EXT));
-    out.push_str(&face(write("ebg-latext-400i.woff2", EBG_LATEXT_400_ITALIC), 400, "italic", UNICODE_LATIN_EXT));
-    out.push_str(&face(write("ebg-latext-600.woff2", EBG_LATEXT_600_NORMAL), 600, "normal", UNICODE_LATIN_EXT));
-    out.push_str(&face(write("ebg-latext-600i.woff2", EBG_LATEXT_600_ITALIC), 600, "italic", UNICODE_LATIN_EXT));
-    // greek
-    out.push_str(&face(write("ebg-greek-400.woff2", EBG_GREEK_400_NORMAL), 400, "normal", UNICODE_GREEK));
-    out.push_str(&face(write("ebg-greek-400i.woff2", EBG_GREEK_400_ITALIC), 400, "italic", UNICODE_GREEK));
-    out.push_str(&face(write("ebg-greek-600.woff2", EBG_GREEK_600_NORMAL), 600, "normal", UNICODE_GREEK));
-    out.push_str(&face(write("ebg-greek-600i.woff2", EBG_GREEK_600_ITALIC), 600, "italic", UNICODE_GREEK));
+    // EB Garamond — latin
+    out.push_str(&face("EB Garamond", write("ebg-latin-400.woff2", EBG_LATIN_400_NORMAL), 400, "normal", Some(UNICODE_LATIN)));
+    out.push_str(&face("EB Garamond", write("ebg-latin-400i.woff2", EBG_LATIN_400_ITALIC), 400, "italic", Some(UNICODE_LATIN)));
+    out.push_str(&face("EB Garamond", write("ebg-latin-600.woff2", EBG_LATIN_600_NORMAL), 600, "normal", Some(UNICODE_LATIN)));
+    out.push_str(&face("EB Garamond", write("ebg-latin-600i.woff2", EBG_LATIN_600_ITALIC), 600, "italic", Some(UNICODE_LATIN)));
+    // EB Garamond — latin-ext
+    out.push_str(&face("EB Garamond", write("ebg-latext-400.woff2", EBG_LATEXT_400_NORMAL), 400, "normal", Some(UNICODE_LATIN_EXT)));
+    out.push_str(&face("EB Garamond", write("ebg-latext-400i.woff2", EBG_LATEXT_400_ITALIC), 400, "italic", Some(UNICODE_LATIN_EXT)));
+    out.push_str(&face("EB Garamond", write("ebg-latext-600.woff2", EBG_LATEXT_600_NORMAL), 600, "normal", Some(UNICODE_LATIN_EXT)));
+    out.push_str(&face("EB Garamond", write("ebg-latext-600i.woff2", EBG_LATEXT_600_ITALIC), 600, "italic", Some(UNICODE_LATIN_EXT)));
+    // EB Garamond — greek
+    out.push_str(&face("EB Garamond", write("ebg-greek-400.woff2", EBG_GREEK_400_NORMAL), 400, "normal", Some(UNICODE_GREEK)));
+    out.push_str(&face("EB Garamond", write("ebg-greek-400i.woff2", EBG_GREEK_400_ITALIC), 400, "italic", Some(UNICODE_GREEK)));
+    out.push_str(&face("EB Garamond", write("ebg-greek-600.woff2", EBG_GREEK_600_NORMAL), 600, "normal", Some(UNICODE_GREEK)));
+    out.push_str(&face("EB Garamond", write("ebg-greek-600i.woff2", EBG_GREEK_600_ITALIC), 600, "italic", Some(UNICODE_GREEK)));
+
+    // Accessibility fonts. No unicode-range so the file covers whatever
+    // the manuscript actually uses — latin only, OK for English prose.
+    out.push_str(&face("OpenDyslexic", write("od-400.woff2", OPENDYS_400_NORMAL), 400, "normal", None));
+    out.push_str(&face("OpenDyslexic", write("od-400i.woff2", OPENDYS_400_ITALIC), 400, "italic", None));
+    out.push_str(&face("OpenDyslexic", write("od-700.woff2", OPENDYS_700_NORMAL), 700, "normal", None));
+    out.push_str(&face("OpenDyslexic", write("od-700i.woff2", OPENDYS_700_ITALIC), 700, "italic", None));
+
+    out.push_str(&face("Atkinson Hyperlegible", write("ah-400.woff2", ATKINSON_400_NORMAL), 400, "normal", None));
+    out.push_str(&face("Atkinson Hyperlegible", write("ah-400i.woff2", ATKINSON_400_ITALIC), 400, "italic", None));
+    out.push_str(&face("Atkinson Hyperlegible", write("ah-700.woff2", ATKINSON_700_NORMAL), 700, "normal", None));
+    out.push_str(&face("Atkinson Hyperlegible", write("ah-700i.woff2", ATKINSON_700_ITALIC), 700, "italic", None));
+
+    // Lexend ships normal-only weights (it's a sans variable-weight
+    // family designed for reading). Italics fall back via synthesis.
+    out.push_str(&face("Lexend", write("lx-400.woff2", LEXEND_400_NORMAL), 400, "normal", None));
+    out.push_str(&face("Lexend", write("lx-600.woff2", LEXEND_600_NORMAL), 600, "normal", None));
+    out.push_str(&face("Lexend", write("lx-700.woff2", LEXEND_700_NORMAL), 700, "normal", None));
     out
 }
 

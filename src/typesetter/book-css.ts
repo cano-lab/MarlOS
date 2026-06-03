@@ -264,6 +264,15 @@ p {
   text-indent: 1em;
 }
 
+/* Word-anchor fixation emphasis. The Rust transform wraps the
+   leading half of each prose word in <b class="word-anchor"> — render
+   strong-weight without changing color so the unstressed second half
+   is visually anchored by the bold stem. Off by default; only
+   present when the [export] word_anchors toggle is on. */
+b.word-anchor {
+  font-weight: 700;
+}
+
 /* Display equations ($$...$$) — pandoc emits an inline <span class="math
    display"> that KaTeX renders into. Without making the wrapper a block,
    KaTeX's own centering has nothing to center against and the equation

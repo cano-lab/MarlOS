@@ -13,6 +13,7 @@ pub mod epub_export;
 pub mod pandoc;
 pub mod pdf_export;
 pub mod structure;
+pub mod word_anchors;
 
 pub use book_config::{BookConfig, BookConfigError, BookMeta};
 pub use citations::{

@@ -15,7 +15,7 @@ use std::process::Stdio;
 use tokio::process::Command;
 
 use super::book_config::BookConfig;
-use super::pandoc::PandocConverter;
+use super::pandoc::{PandocConvertOptions, PandocConverter};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EpubExportError {
@@ -163,6 +163,12 @@ a {{ color: #1a5490; }}
 
 em, i {{ font-style: italic; }}
 strong, b {{ font-weight: 600; }}
+
+/* Word-anchor fixation emphasis — see the Rust transform. The
+   leading half of each prose word gets <b class="word-anchor"> so the
+   eye anchors faster. Math, code, headings, and math-anchor callouts
+   are excluded by the transform. */
+b.word-anchor {{ font-weight: 700; }}
 
 /* Hide headings marked with .hidden-heading — used for the back-
    cover chapter so it doesn't show "Back Cover" text on the page. */
@@ -323,32 +329,72 @@ pub async fn export_epub(
         std::fs::create_dir_all(parent)?;
     }
 
+    // Word-anchor detour: render to HTML first so we can apply the
+    // same post-pandoc transforms the PDF uses (math-anchor tagging,
+    // figure-class hoisting, word emphasis), then convert that HTML to
+    // EPUB. Without this we'd have to do the anchor pass at the
+    // markdown level, which can't see math anchors as a block class.
+    let intermediate_html_path: Option<PathBuf> = if config.export.word_anchors {
+        let opts = PandocConvertOptions::default();
+        let pandoc_html = PandocConverter::convert_file(&temp_md, &opts)
+            .await
+            .map_err(|e| EpubExportError::Invalid(format!("pandoc md→html failed: {}", e)))?;
+        let mut html = super::citations::hoist_figure_classes(
+            &super::citations::tag_math_anchors(
+                &super::citations::normalize_unicode_scripts(&pandoc_html.html),
+            ),
+        );
+        // Wrap the whole document in a chapter section so the
+        // word_anchors transform's body_depth gate fires — EPUB
+        // doesn't use the structure analysis that PDF does, so there's
+        // no per-chapter wrapping in the pandoc output. This is
+        // harmless: it just marks "everything is body prose" for
+        // the transform.
+        html = format!(
+            r#"<section data-section-type="chapter">{}</section>"#,
+            html
+        );
+        html = super::word_anchors::apply(&html);
+        let html_path = temp_dir.join(format!("epub-html-{}.html", uuid::Uuid::new_v4()));
+        std::fs::write(&html_path, &html)?;
+        Some(html_path)
+    } else {
+        None
+    };
+
     let mut cmd = Command::new(&pandoc);
 
-    // Single combined+transformed input (instead of looping over
-    // config.resolved_files()).
-    cmd.arg(&temp_md);
+    // Pick input + from-format based on whether the word-anchor pass
+    // re-routed us through HTML.
+    if let Some(html_path) = &intermediate_html_path {
+        cmd.arg(html_path);
+        cmd.args(["--from", "html", "--to", "epub3"]);
+    } else {
+        // Single combined+transformed input (instead of looping over
+        // config.resolved_files()).
+        cmd.arg(&temp_md);
+        cmd.args([
+            "--from",
+            // lists_without_preceding_blankline: match the PDF/preview reader
+            // so breakdown lists under a lead-in line ("What's in it:") render
+            // as lists instead of being folded into the paragraph.
+            // -yaml_metadata_block: treat `---` as a thematic break, not a
+            // YAML block (matches the PDF/preview reader).
+            "markdown+smart+footnotes+pipe_tables+lists_without_preceding_blankline-yaml_metadata_block",
+            "--to",
+            "epub3",
+        ]);
+    }
 
-    cmd.args([
-        "--from",
-        // lists_without_preceding_blankline: match the PDF/preview reader
-        // so breakdown lists under a lead-in line ("What's in it:") render
-        // as lists instead of being folded into the paragraph.
-        // -yaml_metadata_block: treat `---` as a thematic break, not a
-        // YAML block (matches the PDF/preview reader).
-        "markdown+smart+footnotes+pipe_tables+lists_without_preceding_blankline-yaml_metadata_block",
-        "--to",
-        "epub3",
-    ])
-    .args(["--css", &css_path.display().to_string()])
-    // No --toc: don't generate an in-book TOC chapter. The manuscript
-    // already has a hand-formatted "Contents" section. Pandoc still
-    // auto-generates nav.xhtml from H1s for the reader's navigation
-    // menu (required by the EPUB3 spec) — that's separate from the
-    // in-content TOC and doesn't show up as a visible chapter.
-    .arg("--standalone")
-    .args(["--output", &output.display().to_string()])
-    .args(["--metadata", &format!("title={}", config.book.title)]);
+    cmd.args(["--css", &css_path.display().to_string()])
+        // No --toc: don't generate an in-book TOC chapter. The manuscript
+        // already has a hand-formatted "Contents" section. Pandoc still
+        // auto-generates nav.xhtml from H1s for the reader's navigation
+        // menu (required by the EPUB3 spec) — that's separate from the
+        // in-content TOC and doesn't show up as a visible chapter.
+        .arg("--standalone")
+        .args(["--output", &output.display().to_string()])
+        .args(["--metadata", &format!("title={}", config.book.title)]);
 
     if !config.book.subtitle.is_empty() {
         cmd.args(["--metadata", &format!("subtitle={}", config.book.subtitle)]);
@@ -374,8 +420,11 @@ pub async fn export_epub(
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let output_result = cmd.output().await?;
-    // Best-effort cleanup of staged CSS + temp markdown.
+    // Best-effort cleanup of staged CSS + temp markdown + intermediate HTML.
     let _ = std::fs::remove_file(&css_path);
+    if let Some(p) = &intermediate_html_path {
+        let _ = std::fs::remove_file(p);
+    }
     super::citations::cleanup_temp_markdown(&temp_md);
 
     if !output_result.status.success() {

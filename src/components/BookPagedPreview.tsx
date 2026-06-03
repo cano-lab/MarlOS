@@ -6,6 +6,18 @@ import "@fontsource/eb-garamond/400.css";
 import "@fontsource/eb-garamond/400-italic.css";
 import "@fontsource/eb-garamond/600.css";
 import "@fontsource/eb-garamond/600-italic.css";
+// Accessibility fonts. Loaded eagerly so the body-font picker can
+// switch instantly — the browser already has the families when
+// Paged.js repaginates with the new font-family.
+import "@fontsource/opendyslexic/400.css";
+import "@fontsource/opendyslexic/400-italic.css";
+import "@fontsource/opendyslexic/700.css";
+import "@fontsource/atkinson-hyperlegible/400.css";
+import "@fontsource/atkinson-hyperlegible/400-italic.css";
+import "@fontsource/atkinson-hyperlegible/700.css";
+import "@fontsource/lexend/400.css";
+import "@fontsource/lexend/600.css";
+import "@fontsource/lexend/700.css";
 import { buildBookCss } from "../typesetter/book-css";
 import type { BookConfig, SectionAnchor, ScrollSurface } from "../services/typesetter-service";
 import "./BookPagedPreview.css";

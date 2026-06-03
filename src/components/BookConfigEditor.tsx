@@ -22,6 +22,20 @@ const TRIM_PRESETS = [
   { value: "5x8", label: "5 × 8 in (mass market)" },
 ];
 
+// Body fonts the renderer has @font-face entries for. The "custom"
+// sentinel switches the picker to a free-text input so the author can
+// reference any other family they have installed system-wide.
+const BODY_FONT_OPTIONS = [
+  { value: "EB Garamond", label: "EB Garamond — print serif (default)" },
+  {
+    value: "Atkinson Hyperlegible",
+    label: "Atkinson Hyperlegible — Braille Institute, low-vision",
+  },
+  { value: "OpenDyslexic", label: "OpenDyslexic — weighted, dyslexia-friendly" },
+  { value: "Lexend", label: "Lexend — reading-proficiency sans" },
+];
+const BODY_FONT_VALUES = new Set(BODY_FONT_OPTIONS.map((o) => o.value));
+
 const TRIM_PRESET_VALUES = new Set(TRIM_PRESETS.map((p) => p.value));
 const MM_PER_IN = 25.4;
 
@@ -353,14 +367,50 @@ const BookConfigEditor: Component<BookConfigEditorProps> = (props) => {
           <h4>Typography</h4>
           <label class="bce-field">
             <span>Body font</span>
-            <input
-              type="text"
-              value={draft().typography.body_font}
-              onInput={(e) =>
-                update((d) => (d.typography.body_font = e.currentTarget.value))
+            <select
+              value={
+                BODY_FONT_VALUES.has(draft().typography.body_font)
+                  ? draft().typography.body_font
+                  : "__custom__"
               }
-            />
+              onChange={(e) => {
+                const v = e.currentTarget.value;
+                if (v === "__custom__") {
+                  // Switch to custom; clear to an empty string so the
+                  // free-text input takes over (user types their face).
+                  update((d) => (d.typography.body_font = ""));
+                } else {
+                  update((d) => (d.typography.body_font = v));
+                }
+              }}
+            >
+              {BODY_FONT_OPTIONS.map((o) => (
+                <option value={o.value}>{o.label}</option>
+              ))}
+              <option value="__custom__">Custom — type a font name</option>
+            </select>
           </label>
+          <Show when={!BODY_FONT_VALUES.has(draft().typography.body_font)}>
+            <label class="bce-field">
+              <span>Custom font name</span>
+              <input
+                type="text"
+                value={draft().typography.body_font}
+                placeholder="e.g. Garamond, Sabon, Iowan Old Style"
+                onInput={(e) =>
+                  update(
+                    (d) => (d.typography.body_font = e.currentTarget.value)
+                  )
+                }
+              />
+            </label>
+            <p class="bce-help">
+              Only the bundled fonts (EB Garamond, Atkinson Hyperlegible,
+              OpenDyslexic, Lexend) ship embedded — a custom face must be
+              installed on the printing machine, otherwise the PDF falls
+              back to the next family in the stack and KDP may reject it.
+            </p>
+          </Show>
           <div class="bce-row">
             <label class="bce-field bce-field-narrow">
               <span>Size (pt)</span>
@@ -509,6 +559,31 @@ const BookConfigEditor: Component<BookConfigEditorProps> = (props) => {
             Adds a “List of Figures” page at the back and prefixes each
             captioned figure with “Fig. N.”. Turn off for books that
             shouldn’t enumerate their figures.
+          </p>
+        </section>
+
+        <section class="bce-section">
+          <h4>Accessibility</h4>
+          <label class="bce-check">
+            <input
+              type="checkbox"
+              checked={draft().export.word_anchors ?? false}
+              onChange={(e) =>
+                update(
+                  (d) => (d.export.word_anchors = e.currentTarget.checked),
+                )
+              }
+            />
+            <span>Word anchors — bold the leading half of each word</span>
+          </label>
+          <p class="bce-help">
+            Marks a fixation point at the start of each prose word so
+            the eye lands faster. Applies only to chapters &amp;
+            interludes — math anchors, equations, code, headings, and
+            front/back matter are left as-is. Orthogonal to the
+            body-font choice; pair with Atkinson Hyperlegible or
+            OpenDyslexic for the strongest low-vision / dyslexia
+            support.
           </p>
         </section>
 

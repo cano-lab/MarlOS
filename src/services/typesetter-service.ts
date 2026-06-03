@@ -132,7 +132,14 @@ export interface BookConfig {
      *  "arabic" (arabic = one continuous sequence through the book). */
     front_matter_page_number_style?: string;
   };
-  export: { color_mode: string; include_list_of_figures?: boolean };
+  export: {
+    color_mode: string;
+    include_list_of_figures?: boolean;
+    /** When true, prose chapters get the word-anchor fixation pass
+     *  (leading half of every word bolded). Math anchors, math, code,
+     *  and headings are excluded. Applies to PDF, EPUB, and preview. */
+    word_anchors?: boolean;
+  };
   files: string[];
   root_dir?: string;
   config_path?: string;

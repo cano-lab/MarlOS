@@ -9965,6 +9965,13 @@ pub async fn typesetter_book_load(book_path: String) -> Result<LoadedBook, Strin
         enriched_html.push_str(&lof);
     }
 
+    // Word-anchor accessibility pass. Runs last so it sees the final
+    // tagged HTML (math anchors, headings, lead-in spans) and can
+    // keep its hands off them. No-op when the toggle is off.
+    if config.export.word_anchors {
+        enriched_html = crate::typesetter::word_anchors::apply(&enriched_html);
+    }
+
     let resolve_cover = |rel: &Option<String>| -> Option<String> {
         let r = rel.as_ref()?;
         let p = std::path::Path::new(r);
@@ -10179,6 +10186,13 @@ pub async fn typesetter_export_pdf(
     structured.enriched_html = numbered_html;
     if !lof.is_empty() {
         structured.enriched_html.push_str(&lof);
+    }
+
+    // Word-anchor accessibility pass. Same gate as the preview path
+    // so what the user sees is what the printed/exported book has.
+    if config.export.word_anchors {
+        structured.enriched_html =
+            crate::typesetter::word_anchors::apply(&structured.enriched_html);
     }
 
     // Resolve cover paths
