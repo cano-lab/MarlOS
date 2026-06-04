@@ -149,10 +149,19 @@ const BookEditorPane: Component<BookEditorPaneProps> = (props) => {
   const zoomOut = () => setZoom((z) => Math.max(ZOOM_MIN, round1(z - 0.1)));
   const zoomReset = () => setZoom(1);
 
-  const loadActive = async () => {
+  /** Read the active file from disk. `respectDirty=true` (the reload-
+   *  token path) means: if the user typed during the async read, drop
+   *  the disk result and keep their edits — otherwise we'd clobber
+   *  the keystrokes that landed between the outer !dirty() gate and
+   *  this point. `false` (the file-switch path) always applies the
+   *  read, because the dirty edits belong to a *different* file. */
+  const loadActive = async (respectDirty: boolean = false) => {
     setError(null);
     try {
-      const text = await typesetterService.readBookFile(props.bookPath, activeIndex());
+      const idxAtRead = activeIndex();
+      const text = await typesetterService.readBookFile(props.bookPath, idxAtRead);
+      if (idxAtRead !== activeIndex()) return; // user switched files mid-read
+      if (respectDirty && dirty()) return;
       setContent(text);
       setDirty(false);
     } catch (e) {
@@ -169,6 +178,9 @@ const BookEditorPane: Component<BookEditorPaneProps> = (props) => {
   });
 
   // Re-read on an explicit reload, but never clobber unsaved edits.
+  // respectDirty=true so loadActive re-checks dirty *after* its async
+  // read too — a Backspace landing during the readBookFile window
+  // would otherwise be overwritten when the stale disk text returns.
   let reloadInitialized = false;
   createEffect(() => {
     void props.reloadToken;
@@ -176,7 +188,7 @@ const BookEditorPane: Component<BookEditorPaneProps> = (props) => {
       reloadInitialized = true;
       return;
     }
-    if (!dirty()) void loadActive();
+    if (!dirty()) void loadActive(true);
   });
 
   const flushSave = async () => {
@@ -186,10 +198,26 @@ const BookEditorPane: Component<BookEditorPaneProps> = (props) => {
     }
     if (!dirty()) return;
     setSaving(true);
+    // Snapshot the text we're committing to disk. If the user types
+    // during the await (write + parent loadBook can take ~50–200ms),
+    // we can't clear `dirty` or fire onSaved — both would let the
+    // reload effect overwrite the new keystrokes with the just-saved
+    // version. Instead, leave dirty=true and re-arm the save timer.
+    const snapshot = content();
     try {
-      await typesetterService.writeBookFile(props.bookPath, activeIndex(), content());
-      setDirty(false);
-      await props.onSaved();
+      await typesetterService.writeBookFile(
+        props.bookPath,
+        activeIndex(),
+        snapshot,
+      );
+      if (content() === snapshot) {
+        setDirty(false);
+        await props.onSaved();
+      } else {
+        // New edits arrived mid-flight; queue another save instead of
+        // declaring victory.
+        scheduleSave();
+      }
     } catch (e) {
       setError(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {

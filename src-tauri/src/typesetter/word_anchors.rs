@@ -287,8 +287,14 @@ impl<'a> Parser<'a> {
     }
 
     fn starts_with_at(&self, needle: &str, at: usize) -> bool {
-        self.bytes.len() >= at + needle.len()
-            && &self.src[at..at + needle.len()] == needle
+        // Byte-compare instead of string-slicing. `&self.src[at..at+n]`
+        // panics when `at+n` lands inside a multi-byte UTF-8 char —
+        // common in this codebase because the generated title page
+        // and prose both contain curly quotes (’ “ ”). Bytes never
+        // panic.
+        let need = needle.as_bytes();
+        let end = at + need.len();
+        end <= self.bytes.len() && &self.bytes[at..end] == need
     }
 }
 

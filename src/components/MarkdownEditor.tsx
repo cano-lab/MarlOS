@@ -1,18 +1,23 @@
 import { Component, createEffect, onMount, onCleanup, createSignal } from "solid-js";
-import { EditorState } from "@codemirror/state";
+import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import { defaultKeymap, history, historyKeymap, insertTab } from "@codemirror/commands";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldGutter, indentOnInput } from "@codemirror/language";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
-import { inlineAI } from "./inline-ai-extension";
+import { inlineAI, acceptOneWordGhostText } from "./inline-ai-extension";
+import { annotationExtension } from "./annotation-extension";
+import { citationAutocomplete } from "./citation-autocomplete-extension";
+import { nGramAutocomplete } from "../services/autocomplete-ngram";
 import "./MarkdownEditor.css";
 
 interface MarkdownEditorProps {
   content: string;
   onChange: (content: string) => void;
   onSave: () => void;
+  onEditorView?: (view: EditorView) => void;
+  targetWordCount?: number;
 }
 
 // Dark theme for CodeMirror
@@ -101,6 +106,17 @@ const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
           return true;
         },
       },
+      {
+        key: "Tab",
+        run: (view) => {
+          // Try to accept ghost text first
+          if (acceptOneWordGhostText(view)) {
+            return true;
+          }
+          // Otherwise, insert a tab
+          return insertTab(view);
+        },
+      },
     ]);
 
     const state = EditorState.create({
@@ -129,7 +145,7 @@ const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
           ...searchKeymap,
           ...historyKeymap,
           ...completionKeymap,
-          indentWithTab,
+          // Note: indentWithTab removed - handled by saveKeymap with ghost text support
         ]),
         saveKeymap,
         markdown({ base: markdownLanguage }),
@@ -137,6 +153,8 @@ const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         updateListener,
         EditorView.lineWrapping,
         inlineAI(), // Add inline AI ghost text
+        annotationExtension(), // Add annotation support
+        citationAutocomplete(), // Add cite-as-you-write with @ trigger
       ],
     });
 
@@ -149,18 +167,50 @@ const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     setWordCount(countWords(props.content));
     setLineCount(state.doc.lines);
 
+    // Expose view to parent
+    props.onEditorView?.(editorView);
+
     editorView.focus();
+
+    // Initialize n-gram autocomplete with current document content
+    nGramAutocomplete.learnFrom(props.content);
   });
 
-  // Update content when props change externally
+  // Update content when props change externally (parent reloaded the
+  // file, opened a different one, etc.). A naive full-doc replace
+  // clamps the selection to position 0 — which is what was sending the
+  // user's cursor to the top of the file mid-typing in split view
+  // (every autosave triggered a parent reload → setContent → here).
+  // Preserve selection + scroll across the replace so the edit point
+  // doesn't move under the writer's hands.
   createEffect(() => {
     if (editorView && props.content !== editorView.state.doc.toString()) {
+      const oldSel = editorView.state.selection;
+      const oldScrollTop = editorView.scrollDOM.scrollTop;
+      const newLen = props.content.length;
+      const clamped = EditorSelection.create(
+        oldSel.ranges.map((r) =>
+          EditorSelection.range(
+            Math.min(r.anchor, newLen),
+            Math.min(r.head, newLen),
+          ),
+        ),
+        oldSel.mainIndex,
+      );
       editorView.dispatch({
         changes: {
           from: 0,
           to: editorView.state.doc.length,
           insert: props.content,
         },
+        selection: clamped,
+        scrollIntoView: false,
+      });
+      // Restore scroll on the next frame — CM resets it as part of
+      // the dispatch's layout pass, so we have to fight that after.
+      const view = editorView;
+      requestAnimationFrame(() => {
+        view.scrollDOM.scrollTop = oldScrollTop;
       });
     }
   });
@@ -223,6 +273,20 @@ const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         <span>Ln {cursorPos().line}, Col {cursorPos().col}</span>
         <span>{lineCount()} lines</span>
         <span>{wordCount()} words</span>
+        {props.targetWordCount && props.targetWordCount > 0 && (
+          <span class="word-target" title={`Target: ${props.targetWordCount} words`}>
+            <span
+              class="word-target-bar"
+              style={{
+                width: `${Math.min(100, (wordCount() / props.targetWordCount) * 100)}%`,
+                "background-color": wordCount() >= props.targetWordCount ? "var(--success, #4ec9b0)" : "var(--accent)",
+              }}
+            />
+            <span class="word-target-label">
+              {Math.round((wordCount() / props.targetWordCount) * 100)}%
+            </span>
+          </span>
+        )}
         <span>Markdown</span>
       </div>
     </div>
