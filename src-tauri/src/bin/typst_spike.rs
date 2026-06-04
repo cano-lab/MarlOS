@@ -250,6 +250,7 @@ fn escape_inline(s: &str) -> String {
 }
 
 fn run_chapter_timing(path: &str) {
+    use marlos_lib::typesetter::typst_world::BookWorld;
     eprintln!("=== chapter timing: {} ===", path);
     let t_read = Instant::now();
     let md = std::fs::read_to_string(path).expect("read md");
@@ -269,7 +270,13 @@ fn run_chapter_timing(path: &str) {
 "#;
     let full = format!("{}\n{}", preamble, typst_src);
 
-    let world = SpikeWorld::new(full);
+    // Use the production World (no image-resolution needed for prose
+    // timing). M2 will pass in the book's actual root_dir.
+    let root = std::path::PathBuf::from(path)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::env::temp_dir());
+    let world = BookWorld::new(full, root);
 
     let t_compile = Instant::now();
     let warned = typst::compile::<PagedDocument>(&world);
@@ -314,6 +321,59 @@ fn run_chapter_timing(path: &str) {
     eprintln!("Output:      {}", out_path.display());
 }
 
+/// M1 verification: hand the production `BookWorld` an italic Greek
+/// source and confirm the resulting PDF embeds "EB Garamond". This
+/// exercises the same code path that `lib`-side unit tests would,
+/// but bypasses the unrelated pre-existing breakage in the lib's
+/// test target.
+fn run_m1_world_check() {
+    use marlos_lib::typesetter::typst_world::BookWorld;
+
+    let src = r#"
+#set page(width: 3in, height: 1in, margin: 0.2in)
+#set text(font: "EB Garamond", size: 16pt)
+#text(style: "italic")[αβγ — Greek italic glyph subset]
+"#;
+    let tmp = std::env::temp_dir().join("marlos-typst-m1-check");
+    let _ = std::fs::create_dir_all(&tmp);
+    let world = BookWorld::new(src.to_string(), &tmp);
+
+    let t_compile = Instant::now();
+    let warned = typst::compile::<PagedDocument>(&world);
+    let compile_elapsed = t_compile.elapsed();
+    let doc = match warned.output {
+        Ok(d) => d,
+        Err(errs) => {
+            for e in errs.iter().take(5) {
+                eprintln!("M1 COMPILE ERROR: {}", e.message);
+            }
+            std::process::exit(2);
+        }
+    };
+
+    let pdf_bytes = typst_pdf::pdf(&doc, &PdfOptions::default())
+        .expect("pdf encode");
+    let hay = String::from_utf8_lossy(&pdf_bytes);
+    let has_ebg = hay.contains("EBGaramond") || hay.contains("EB Garamond");
+
+    eprintln!("=== M1 world check ===");
+    eprintln!("Pages:       {}", doc.pages.len());
+    eprintln!("PDF size:    {} bytes", pdf_bytes.len());
+    eprintln!("Compile:     {:?}", compile_elapsed);
+    eprintln!("EB Garamond in font dict: {}", if has_ebg { "YES" } else { "NO" });
+
+    // Sandbox check: a source that imports @preview/cetz should fail.
+    let pkg_src = "#import \"@preview/cetz:0.2\"\n";
+    let pkg_world = BookWorld::new(pkg_src.to_string(), ".");
+    let pkg_result = typst::compile::<PagedDocument>(&pkg_world);
+    let rejected = pkg_result.output.is_err();
+    eprintln!("Package-import rejection (sandbox): {}", if rejected { "PASS" } else { "FAIL" });
+
+    if !has_ebg || !rejected {
+        std::process::exit(1);
+    }
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
@@ -324,6 +384,10 @@ fn main() {
         Some("--chapter") => {
             let path = args.next().expect("--chapter requires a path");
             run_chapter_timing(&path);
+            return;
+        }
+        Some("--m1") => {
+            run_m1_world_check();
             return;
         }
         _ => {}

@@ -14,6 +14,8 @@ pub mod pandoc;
 pub mod pdf_export;
 pub mod pdf_import;
 pub mod structure;
+pub mod typst_fonts;
+pub mod typst_world;
 pub mod word_anchors;
 
 pub use book_config::{BookConfig, BookConfigError, BookMeta};
