@@ -275,6 +275,26 @@ fn extract_top_level_sections(html: &str) -> Vec<RawHeading> {
 
 /// Classify and number each section. Position-aware: front matter is
 /// "before first chapter," back matter is "after last chapter."
+/// Markdown-AST-friendly entry to the classifier. Takes
+/// `(heading_text, html_id)` pairs for top-level (level-1) headings
+/// in document order and returns the classified `BookSection`s. The
+/// pandoc-specific class/data-header attributes (`{.chapter}`,
+/// `{header="..."}`) are dropped on this path because comrak doesn't
+/// parse them — flagged as a known gap if a manuscript starts using
+/// either. M2.5 of the typst-port plan.
+pub fn classify_markdown_headings(headings: &[(String, String)]) -> Vec<BookSection> {
+    let raw: Vec<RawHeading> = headings
+        .iter()
+        .map(|(text, id)| RawHeading {
+            h1_raw: text.clone(),
+            html_id: id.clone(),
+            classes: String::new(),
+            data_header: None,
+        })
+        .collect();
+    classify_sections(&raw)
+}
+
 pub fn classify_sections(headings: &[RawHeading]) -> Vec<BookSection> {
     let chapter_re = chapter_re();
     let interlude_re = interlude_re();

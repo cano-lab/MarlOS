@@ -296,6 +296,231 @@ fn transform_line<'a>(
     out
 }
 
+/// Typst-flavored variant of [`transform_citations`].
+///
+/// Same line-walker + ChapterGroup tracking, but body markers and
+/// the Notes section are emitted as `<typst>...</typst>` HTML
+/// passthrough so comrak's markdown parser preserves them verbatim
+/// (the typst emitter detects this sentinel pair and forwards the
+/// inner text as raw typst).
+///
+/// Body marker per `[CITE: text]`:
+///   `<typst>#super[#link(label("ch3n7"))[7]] #label("ch3n7-back")</typst>`
+/// Notes section (appended before the first `# Appendix` heading,
+/// matching the HTML variant):
+///   ```
+///   # Notes
+///   <typst-block>
+///   == Chapter Title
+///   /  7) note body text   #label("ch3n7")
+///   </typst-block>
+///   ```
+pub fn transform_citations_to_typst(markdown: &str) -> CitationTransformResult {
+    let mut output = String::with_capacity(markdown.len() + 1024);
+    let mut warnings = Vec::new();
+    let mut chapters: Vec<ChapterGroup> = Vec::new();
+    let mut current_chapter_id: Option<String> = None;
+    let mut counter: u32 = 0;
+    let mut total: u32 = 0;
+    let mut in_strip = false;
+
+    for (idx, line) in markdown.lines().enumerate() {
+        let line_num = (idx + 1) as u32;
+        if let Some(caps) = any_heading_re().captures(line) {
+            let level = caps.get(1).unwrap().as_str().len();
+            let heading_text = caps.get(2).unwrap().as_str().trim();
+            if heading_text.eq_ignore_ascii_case(STRIP_HEADING) {
+                in_strip = true;
+                continue;
+            }
+            if in_strip {
+                in_strip = false;
+            }
+            if level == 1 {
+                let cid = derive_chapter_id(heading_text);
+                current_chapter_id = Some(cid.id.clone());
+                counter = 0;
+                chapters.push(ChapterGroup {
+                    id: cid.id,
+                    title: cid.title,
+                    notes: Vec::new(),
+                });
+                output.push_str(line);
+                output.push('\n');
+                continue;
+            }
+            let transformed = transform_line_typst(
+                line,
+                &mut chapters,
+                current_chapter_id.as_deref(),
+                &mut counter,
+                &mut total,
+                &mut warnings,
+                line_num,
+            );
+            output.push_str(&transformed);
+            output.push('\n');
+            continue;
+        }
+        if in_strip {
+            continue;
+        }
+        if verify_re().is_match(line) {
+            warnings.push(format!(
+                "line {}: [VERIFY:] marker still present — finish citation verification before publishing",
+                line_num
+            ));
+        }
+        let transformed = transform_line_typst(
+            line,
+            &mut chapters,
+            current_chapter_id.as_deref(),
+            &mut counter,
+            &mut total,
+            &mut warnings,
+            line_num,
+        );
+        output.push_str(&transformed);
+        output.push('\n');
+    }
+
+    let chapters_with_notes =
+        chapters.iter().filter(|g| !g.notes.is_empty()).count() as u32;
+    let mut notes_section = String::new();
+    if chapters_with_notes > 0 {
+        notes_section.push_str("\n\n# Notes\n\n<typst-block>\n");
+        for group in &chapters {
+            if group.notes.is_empty() {
+                continue;
+            }
+            notes_section.push_str("== ");
+            notes_section.push_str(&typst_escape_string(&group.title));
+            notes_section.push_str("\n\n");
+            for note in &group.notes {
+                notes_section.push_str(&format!(
+                    "{}. {} #label(\"{}\")\n\n",
+                    note.number,
+                    typst_escape_inline(&note.text),
+                    note.note_id,
+                ));
+            }
+        }
+        notes_section.push_str("</typst-block>\n\n");
+    }
+    if !notes_section.is_empty() {
+        static APPENDIX_INSERT_RE: OnceLock<Regex> = OnceLock::new();
+        let appendix_re = APPENDIX_INSERT_RE
+            .get_or_init(|| Regex::new(r"(?mi)^#\s+Appendix\b").unwrap());
+        if let Some(m) = appendix_re.find(&output) {
+            output.insert_str(m.start(), &notes_section);
+        } else {
+            output.push_str(&notes_section);
+        }
+    }
+
+    CitationTransformResult {
+        transformed: output,
+        warnings,
+        note_count: total,
+        chapters_with_notes,
+    }
+}
+
+/// typst-flavored sibling of [`transform_line`]. Emits `<typst>...
+/// </typst>` body markers carrying typst markup that gets passed
+/// through verbatim by the markdown→typst emitter.
+fn transform_line_typst<'a>(
+    line: &'a str,
+    chapters: &mut Vec<ChapterGroup>,
+    current_chapter: Option<&str>,
+    counter: &mut u32,
+    total: &mut u32,
+    warnings: &mut Vec<String>,
+    line_num: u32,
+) -> String {
+    let re = cite_re();
+    let mut out = String::with_capacity(line.len());
+    let mut last_end = 0usize;
+    for caps in re.captures_iter(line) {
+        let mat = caps.get(0).unwrap();
+        let text = caps.get(1).unwrap().as_str().trim().to_string();
+
+        out.push_str(&line[last_end..mat.start()]);
+        last_end = mat.end();
+
+        let chapter_id = match current_chapter {
+            Some(id) => id.to_string(),
+            None => {
+                warnings.push(format!(
+                    "line {}: [CITE:] before any chapter heading; left in place",
+                    line_num
+                ));
+                out.push_str(mat.as_str());
+                continue;
+            }
+        };
+
+        *counter += 1;
+        *total += 1;
+        let n = *counter;
+        let note_id = format!("{}n{}", chapter_id, n);
+
+        if let Some(group) = chapters
+            .iter_mut()
+            .rev()
+            .find(|g| g.id == chapter_id)
+        {
+            group.notes.push(Note {
+                number: n,
+                note_id: note_id.clone(),
+                text,
+            });
+        }
+
+        // Pass-through wrapper. The markdown→typst emitter detects
+        // `<typst>` / `</typst>` and emits the contents verbatim.
+        out.push_str("<typst>#super[#link(label(\"");
+        out.push_str(&note_id);
+        out.push_str("\"))[");
+        out.push_str(&n.to_string());
+        out.push_str("]]</typst>");
+    }
+    out.push_str(&line[last_end..]);
+    out
+}
+
+/// Escape a string literal for embedding inside typst double-quoted
+/// strings. Only `"` and `\\` need escaping.
+fn typst_escape_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c == '"' || c == '\\' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Escape a note body for embedding inside the typst Notes section,
+/// where it's read as markup mode (not a string literal). Currently
+/// minimal: we trust the note text was authored as plain prose.
+fn typst_escape_inline(s: &str) -> String {
+    // Notes can contain `[`, `]`, `#`, etc. typst's markup escape is
+    // `\`. Keep curly quotes / em-dashes intact.
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' | '#' | '*' | '_' | '<' | '[' | ']' | '@' | '`' | '$' => {
+                out.push('\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 pub fn transform_citations(markdown: &str) -> CitationTransformResult {
     let mut output = String::with_capacity(markdown.len() + 1024);
     let mut warnings = Vec::new();

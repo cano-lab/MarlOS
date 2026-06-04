@@ -395,6 +395,91 @@ fn run_m1_world_check() {
     }
 }
 
+/// M2.10 fixture: end-to-end exercise of the markdown → typst → PDF
+/// pipeline against a small synthetic book that triggers every
+/// feature class (chapters, math anchor, inline math, citations,
+/// word anchors).
+fn run_m2_fixture() {
+    use marlos_lib::typesetter::book_config::BookConfig;
+    use marlos_lib::typesetter::typst_emit::markdown_to_typst;
+    use marlos_lib::typesetter::typst_world::BookWorld;
+
+    const MD: &str = r##"# Author's Note
+
+This book covers several themes. The opening note runs across
+multiple paragraphs to test prose flow.
+
+A second paragraph follows for variety.
+
+# Chapter 1: Beginnings
+
+In the beginning there was confusion. Some sources [CITE: Wallace, *The Beginning* (2024), p. 12] disagreed about the start.
+
+> **Math Anchor — Energy-mass equivalence**: Einstein's famous relation.
+>
+> $E = m c^2$
+>
+> The constant `c` is the speed of light in vacuum.
+
+A second paragraph in chapter one.
+
+# Chapter 2: Middles
+
+The middle of the book covers more ground [CITE: A second reference].
+
+# Appendix
+
+Auxiliary material.
+"##;
+
+    let tmp = std::env::temp_dir().join("marlos-typst-m2-fixture");
+    let _ = std::fs::create_dir_all(&tmp);
+    let mut config = BookConfig {
+        book: Default::default(),
+        trim: Default::default(),
+        typography: Default::default(),
+        export: Default::default(),
+        files: vec!["main.md".into()],
+        root_dir: tmp.clone(),
+        config_path: tmp.join("book.toml"),
+    };
+    config.export.word_anchors = true;
+
+    let typst_src = markdown_to_typst(MD, &config);
+    eprintln!("typst src ({} bytes):\n{}\n---", typst_src.len(), &typst_src[..typst_src.len().min(800)]);
+
+    let world = BookWorld::new(typst_src, tmp);
+    let t_compile = Instant::now();
+    let warned = typst::compile::<PagedDocument>(&world);
+    let compile_elapsed = t_compile.elapsed();
+    let doc = match warned.output {
+        Ok(d) => d,
+        Err(errs) => {
+            for e in errs.iter().take(5) {
+                eprintln!("M2 COMPILE ERROR: {}", e.message);
+            }
+            std::process::exit(1);
+        }
+    };
+    let pdf_bytes = typst_pdf::pdf(&doc, &PdfOptions::default())
+        .expect("pdf encode");
+    let hay = String::from_utf8_lossy(&pdf_bytes);
+
+    eprintln!("=== M2 fixture result ===");
+    eprintln!("Pages:           {}", doc.pages.len());
+    eprintln!("PDF size:        {} bytes", pdf_bytes.len());
+    eprintln!("Compile:         {:?}", compile_elapsed);
+    eprintln!("Warnings:        {}", warned.warnings.len());
+    eprintln!("EBGaramond in PDF: {}", hay.contains("EBGaramond") || hay.contains("EB Garamond"));
+
+    let out_path = std::env::current_dir()
+        .unwrap_or_default()
+        .join("target")
+        .join("typst_spike_m2_fixture.pdf");
+    std::fs::write(&out_path, &pdf_bytes).expect("write pdf");
+    eprintln!("Output:          {}", out_path.display());
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
@@ -409,6 +494,10 @@ fn main() {
         }
         Some("--m1") => {
             run_m1_world_check();
+            return;
+        }
+        Some("--m2") => {
+            run_m2_fixture();
             return;
         }
         _ => {}

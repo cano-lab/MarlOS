@@ -13,16 +13,31 @@ mod escape;
 mod markdown;
 mod math;
 mod preamble;
+mod structure;
+
+pub use structure::analyze_markdown_ast;
 
 use crate::typesetter::book_config::BookConfig;
 
 /// Convert a markdown source string into typst source.
 ///
+/// Pipeline:
+/// 1. Run the citation transform's typst-flavored variant — replaces
+///    `[CITE: text]` body markers with `<typst>` passthrough tags
+///    and appends a `# Notes` section before any `# Appendix`.
+/// 2. Build the typst preamble from [`BookConfig`].
+/// 3. Walk the (transformed) markdown via comrak and emit typst.
+///
 /// The output is a self-contained typst document: preamble +
-/// document body, ready to hand to [`crate::typesetter::typst_world::BookWorld`].
+/// document body, ready to hand to
+/// [`crate::typesetter::typst_world::BookWorld`].
 pub fn markdown_to_typst(md: &str, config: &BookConfig) -> String {
+    let transformed = crate::typesetter::citations::transform_citations_to_typst(md);
     let preamble = preamble::build(config);
-    let body = markdown::emit_body(md);
+    let body = markdown::emit_body_with(
+        &transformed.transformed,
+        config.export.word_anchors,
+    );
     format!("{preamble}\n{body}")
 }
 

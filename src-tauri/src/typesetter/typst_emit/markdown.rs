@@ -12,18 +12,44 @@ use comrak::{Arena, Options, parse_document};
 use super::escape::escape_markup;
 use super::math;
 
+/// Walker state. `skip_depth > 0` means we're inside a context where
+/// word-anchor wrapping would be inappropriate (heading, code, math,
+/// math-anchor callout, figure caption).
+struct Ctx {
+    out: String,
+    skip_depth: u32,
+    word_anchors: bool,
+}
+
+impl Ctx {
+    fn new(word_anchors: bool, capacity: usize) -> Self {
+        Self {
+            out: String::with_capacity(capacity),
+            skip_depth: 0,
+            word_anchors,
+        }
+    }
+}
+
 /// Emit the body of a typst document (no preamble).
 pub fn emit_body(md: &str) -> String {
+    emit_body_with(md, false)
+}
+
+/// Same as [`emit_body`] but lets the caller turn on the word-anchor
+/// fixation pass. Words in prose (text not inside headings, code,
+/// math, or math-anchor callouts) get wrapped in `#word-anchor[…]`.
+pub fn emit_body_with(md: &str, word_anchors: bool) -> String {
     let arena = Arena::new();
     let opts = make_options();
     let root = parse_document(&arena, md, &opts);
-    let mut out = String::with_capacity(md.len() * 11 / 10);
+    let mut ctx = Ctx::new(word_anchors, md.len() * 11 / 10);
     // Math helpers go at the very top so any `$...$` emitted later
     // can resolve their `mitexsqrt`/`textmath`/etc. references.
-    out.push_str(math::MITEX_SHIM);
-    out.push('\n');
-    emit_node(root, &mut out);
-    out
+    ctx.out.push_str(math::MITEX_SHIM);
+    ctx.out.push('\n');
+    emit_node(root, &mut ctx);
+    ctx.out
 }
 
 /// Comrak parser configuration matching the manuscript's flavor.
@@ -42,40 +68,50 @@ fn make_options() -> Options<'static> {
 }
 
 /// Recursively emit a node and its descendants.
-fn emit_node<'a>(node: &'a AstNode<'a>, out: &mut String) {
+fn emit_node<'a>(node: &'a AstNode<'a>, ctx: &mut Ctx) {
     let value = node.data.borrow().value.clone();
     match value {
         // ---- Block-level ----
-        NodeValue::Document => emit_children(node, out),
+        NodeValue::Document => emit_children(node, ctx),
 
         NodeValue::Paragraph => {
-            emit_children(node, out);
+            emit_children(node, ctx);
             // Two newlines = blank line = paragraph break in typst.
-            out.push_str("\n\n");
+            ctx.out.push_str("\n\n");
         }
 
         NodeValue::Heading(h) => {
             let level = h.level.min(6).max(1) as usize;
-            out.push_str(&"=".repeat(level));
-            out.push(' ');
-            emit_children(node, out);
-            out.push_str("\n\n");
+            ctx.out.push_str(&"=".repeat(level));
+            ctx.out.push(' ');
+            ctx.skip_depth += 1; // headings never get word anchors
+            emit_children(node, ctx);
+            ctx.skip_depth -= 1;
+            ctx.out.push_str("\n\n");
         }
 
         NodeValue::BlockQuote => {
-            // typst has no native blockquote; we wrap in a #quote
-            // block. The math-anchor detector (M2.8) will replace
-            // this for matching blockquotes.
-            out.push_str("#quote(block: true)[\n");
-            emit_children(node, out);
-            out.push_str("]\n\n");
+            // Math-anchor detection (M2.8): a blockquote whose first
+            // paragraph starts with `**Math Anchor — Title**:` (with
+            // optional colon) is rendered as the boxed-callout
+            // `#math-anchor(...)` helper from the preamble. Ordinary
+            // blockquotes wrap in `#quote(block: true)`.
+            if let Some(title) = detect_math_anchor_title(node) {
+                ctx.skip_depth += 1;
+                emit_math_anchor(node, &title, ctx);
+                ctx.skip_depth -= 1;
+            } else {
+                ctx.out.push_str("#quote(block: true)[\n");
+                emit_children(node, ctx);
+                ctx.out.push_str("]\n\n");
+            }
         }
 
         NodeValue::List(ref list) => {
-            emit_children(node, out);
+            emit_children(node, ctx);
             // typst infers list grouping from consecutive `-` / `+ N.`
             // lines, so we just emit items and a trailing blank.
-            out.push('\n');
+            ctx.out.push('\n');
             let _ = list; // list type comes from the items themselves
         }
 
@@ -84,18 +120,18 @@ fn emit_node<'a>(node: &'a AstNode<'a>, out: &mut String) {
                 ListType::Bullet => "- ".to_string(),
                 ListType::Ordered => format!("{}. ", list.start),
             };
-            out.push_str(&marker);
+            ctx.out.push_str(&marker);
             // Items may contain block-level children. We emit them
             // inline by stripping trailing blanks the children add.
-            let scratch_start = out.len();
-            emit_children(node, out);
+            let scratch_start = ctx.out.len();
+            emit_children(node, ctx);
             // Collapse runs of blank lines inside an item; typst will
             // treat them as ends-of-item which is what we want
             // between items but not inside a single one.
-            let item_out = out.split_off(scratch_start);
+            let item_out = ctx.out.split_off(scratch_start);
             let normalized = item_out.trim_end_matches('\n');
-            out.push_str(normalized);
-            out.push('\n');
+            ctx.out.push_str(normalized);
+            ctx.out.push('\n');
         }
 
         NodeValue::CodeBlock(ref cb) => {
@@ -104,57 +140,66 @@ fn emit_node<'a>(node: &'a AstNode<'a>, out: &mut String) {
             // `````{lang} ... ``````.
             let lang = cb.info.split_whitespace().next().unwrap_or("");
             if lang.is_empty() {
-                out.push_str("```\n");
+                ctx.out.push_str("```\n");
             } else {
-                out.push_str(&format!("```{lang}\n"));
+                ctx.out.push_str(&format!("```{lang}\n"));
             }
-            out.push_str(&cb.literal);
+            ctx.out.push_str(&cb.literal);
             if !cb.literal.ends_with('\n') {
-                out.push('\n');
+                ctx.out.push('\n');
             }
-            out.push_str("```\n\n");
+            ctx.out.push_str("```\n\n");
         }
 
         NodeValue::ThematicBreak => {
             // Centered three-asterism, matching the convention in
             // the manuscript's `---` thematic breaks.
-            out.push_str("#align(center)[\\* \\* \\*]\n\n");
+            ctx.out.push_str("#align(center)[\\* \\* \\*]\n\n");
         }
 
         NodeValue::HtmlBlock(ref hb) => {
-            // We can't render raw HTML in typst output. Drop a typst
-            // comment noting the block was skipped so the writer can
-            // grep for it.
+            // Citation pass-through: `<typst-block>...</typst-block>`
+            // is the Notes section + any future block-level injection.
+            // Emit the inner content verbatim as typst markup.
+            if let Some(inner) = strip_typst_block(&hb.literal) {
+                ctx.out.push_str(inner);
+                ctx.out.push_str("\n\n");
+                return;
+            }
+            // Otherwise drop with a typst-comment breadcrumb.
             let preview = hb.literal.lines().next().unwrap_or("").trim();
             let snippet = preview.chars().take(60).collect::<String>();
-            out.push_str(&format!(
+            ctx.out.push_str(&format!(
                 "// [marlos:skipped-html-block] {snippet}\n\n"
             ));
         }
 
-        NodeValue::HtmlInline(_) => {
-            // Silently drop inline HTML for V1; the manuscript uses
-            // it only for `<sup class="note-ref">` which the
-            // citation transform will replace with typst macros
-            // before this walker sees the markdown.
+        NodeValue::HtmlInline(ref h) => {
+            // Citation pass-through: `<typst>...</typst>` carries
+            // typst markup that should land verbatim. Anything else
+            // gets dropped silently — the only inline HTML the
+            // manuscript should contain is the citation marker.
+            if let Some(inner) = strip_typst_inline(h) {
+                ctx.out.push_str(inner);
+            }
         }
 
         NodeValue::Table(_) => {
             // Comrak gives us TableRow children. We emit a typst
             // `#table` with default settings.
-            out.push_str("#table(columns: auto)[\n");
-            emit_children(node, out);
-            out.push_str("]\n\n");
+            ctx.out.push_str("#table(columns: auto)[\n");
+            emit_children(node, ctx);
+            ctx.out.push_str("]\n\n");
         }
 
         NodeValue::TableRow(_) => {
-            emit_children(node, out);
+            emit_children(node, ctx);
         }
 
         NodeValue::TableCell => {
-            out.push('[');
-            emit_children(node, out);
-            out.push_str("], ");
+            ctx.out.push('[');
+            emit_children(node, ctx);
+            ctx.out.push_str("], ");
         }
 
         NodeValue::FootnoteDefinition(_) => {
@@ -164,66 +209,70 @@ fn emit_node<'a>(node: &'a AstNode<'a>, out: &mut String) {
 
         // ---- Inline-level ----
         NodeValue::Text(ref t) => {
-            out.push_str(&escape_markup(t));
+            if ctx.word_anchors && ctx.skip_depth == 0 {
+                emit_text_with_word_anchors(t, &mut ctx.out);
+            } else {
+                ctx.out.push_str(&escape_markup(t));
+            }
         }
 
         NodeValue::Strong => {
-            out.push_str("#strong[");
-            emit_children(node, out);
-            out.push(']');
+            ctx.out.push_str("#strong[");
+            emit_children(node, ctx);
+            ctx.out.push(']');
         }
 
         NodeValue::Emph => {
-            out.push_str("#emph[");
-            emit_children(node, out);
-            out.push(']');
+            ctx.out.push_str("#emph[");
+            emit_children(node, ctx);
+            ctx.out.push(']');
         }
 
         NodeValue::Strikethrough => {
-            out.push_str("#strike[");
-            emit_children(node, out);
-            out.push(']');
+            ctx.out.push_str("#strike[");
+            emit_children(node, ctx);
+            ctx.out.push(']');
         }
 
         NodeValue::Code(ref c) => {
-            // typst raw inline: backtick-delimited.
-            out.push_str("#raw(\"");
+            // typst raw inline. Code spans never get word anchors.
+            ctx.out.push_str("#raw(\"");
             for ch in c.literal.chars() {
                 if ch == '"' || ch == '\\' {
-                    out.push('\\');
+                    ctx.out.push('\\');
                 }
-                out.push(ch);
+                ctx.out.push(ch);
             }
-            out.push_str("\")");
+            ctx.out.push_str("\")");
         }
 
         NodeValue::Link(ref l) => {
             // #link("url")[label]
-            out.push_str("#link(\"");
+            ctx.out.push_str("#link(\"");
             for ch in l.url.chars() {
                 if ch == '"' || ch == '\\' {
-                    out.push('\\');
+                    ctx.out.push('\\');
                 }
-                out.push(ch);
+                ctx.out.push(ch);
             }
-            out.push_str("\")[");
-            emit_children(node, out);
-            out.push(']');
+            ctx.out.push_str("\")[");
+            emit_children(node, ctx);
+            ctx.out.push(']');
         }
 
         NodeValue::Image(ref l) => {
             // V1: emit as a centered figure. Real figure layout
             // (full bleed, crop, float) lands in M2.6.
-            out.push_str("\n#figure(\n  image(\"");
+            ctx.out.push_str("\n#figure(\n  image(\"");
             for ch in l.url.chars() {
                 if ch == '"' || ch == '\\' {
-                    out.push('\\');
+                    ctx.out.push('\\');
                 }
-                out.push(ch);
+                ctx.out.push(ch);
             }
-            out.push_str("\"),\n  caption: [");
-            emit_children(node, out);
-            out.push_str("]\n)\n\n");
+            ctx.out.push_str("\"),\n  caption: [");
+            emit_children(node, ctx);
+            ctx.out.push_str("]\n)\n\n");
         }
 
         NodeValue::Math(ref m) => {
@@ -240,36 +289,224 @@ fn emit_node<'a>(node: &'a AstNode<'a>, out: &mut String) {
             };
             if m.display_math {
                 // Center on its own line.
-                out.push_str("\n$ ");
-                out.push_str(&converted);
-                out.push_str(" $\n");
+                ctx.out.push_str("\n$ ");
+                ctx.out.push_str(&converted);
+                ctx.out.push_str(" $\n");
             } else {
-                out.push('$');
-                out.push_str(&converted);
-                out.push('$');
+                ctx.out.push('$');
+                ctx.out.push_str(&converted);
+                ctx.out.push('$');
             }
         }
 
-        NodeValue::SoftBreak => out.push(' '),
-        NodeValue::LineBreak => out.push_str(" \\\n"),
+        NodeValue::SoftBreak => ctx.out.push(' '),
+        NodeValue::LineBreak => ctx.out.push_str(" \\\n"),
 
         NodeValue::FootnoteReference(ref fr) => {
             // M2.7 wires this to typst labels. Skeleton: superscript.
-            out.push_str("#super[");
-            out.push_str(&escape_markup(&fr.name));
-            out.push(']');
+            ctx.out.push_str("#super[");
+            ctx.out.push_str(&escape_markup(&fr.name));
+            ctx.out.push(']');
         }
 
         // Fall-through: drop unhandled node types; M2.10 fixture run
         // will surface any we missed via visible gaps.
-        _ => emit_children(node, out),
+        _ => emit_children(node, ctx),
     }
 }
 
-fn emit_children<'a>(node: &'a AstNode<'a>, out: &mut String) {
+fn emit_children<'a>(node: &'a AstNode<'a>, ctx: &mut Ctx) {
     for child in node.children() {
-        emit_node(child, out);
+        emit_node(child, ctx);
     }
+}
+
+/// Emit a text run, wrapping the leading half of each word in
+/// `#word-anchor[...]`. Skips numbers, punctuation, and short words
+/// (≤1 letter). The preamble defines `#word-anchor` as a strong
+/// wrapper; M2.9 of the typst port. Behavior parity with the
+/// pre-existing HTML word-anchor transform.
+fn emit_text_with_word_anchors(text: &str, out: &mut String) {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let (byte_idx, ch) = chars[i];
+        if is_word_char(ch) {
+            let start = byte_idx;
+            let mut j = i;
+            let mut letter_count = 0usize;
+            while j < chars.len() && is_word_char(chars[j].1) {
+                if chars[j].1.is_alphabetic() {
+                    letter_count += 1;
+                }
+                j += 1;
+            }
+            let end = if j < chars.len() {
+                chars[j].0
+            } else {
+                text.len()
+            };
+            let word = &text[start..end];
+            if letter_count >= 2 {
+                emit_anchored_word(word, out);
+            } else {
+                out.push_str(&super::escape::escape_markup(word));
+            }
+            i = j;
+        } else {
+            // Non-word char: escape singly and advance.
+            let one: String = ch.to_string();
+            out.push_str(&super::escape::escape_markup(&one));
+            i += 1;
+        }
+    }
+}
+
+fn is_word_char(c: char) -> bool {
+    c.is_alphabetic() || c == '\'' || c == '\u{2019}'
+}
+
+/// Emit one word as `#word-anchor[head]tail`, splitting at the
+/// `ceil(letters / 2)` boundary. The head + tail are both escaped
+/// for typst markup mode.
+fn emit_anchored_word(word: &str, out: &mut String) {
+    let total: usize = word.chars().filter(|c| c.is_alphabetic()).count();
+    let cut = (total + 1) / 2;
+    let mut seen = 0usize;
+    let mut split_at = word.len();
+    for (idx, ch) in word.char_indices() {
+        if ch.is_alphabetic() {
+            seen += 1;
+            if seen == cut {
+                split_at = idx + ch.len_utf8();
+                break;
+            }
+        }
+    }
+    out.push_str("#word-anchor[");
+    out.push_str(&super::escape::escape_markup(&word[..split_at]));
+    out.push(']');
+    out.push_str(&super::escape::escape_markup(&word[split_at..]));
+}
+
+/// Recognize `<typst>...</typst>` and return the inner string.
+/// Used by the citation transform's body markers — the comrak parser
+/// preserves the wrapping HTML tag as `HtmlInline` text and we
+/// forward the contents to the typst output verbatim.
+fn strip_typst_inline(s: &str) -> Option<&str> {
+    let s = s.trim();
+    let inner = s.strip_prefix("<typst>")?.strip_suffix("</typst>")?;
+    Some(inner)
+}
+
+/// Block-level sibling: `<typst-block>...</typst-block>`. Used by
+/// the citation Notes section + future block-level injections.
+fn strip_typst_block(s: &str) -> Option<&str> {
+    let s = s.trim();
+    // The block content may span multiple lines and contain blank
+    // lines, so we match start/end tags ignoring inner content.
+    let inner = s.strip_prefix("<typst-block>")?.strip_suffix("</typst-block>")?;
+    Some(inner.trim())
+}
+
+/// If `bq` is a blockquote whose first paragraph opens with
+/// `**Math Anchor — Title**` (with optional `:` after Title), return
+/// the Title. Otherwise None. Matches the manuscript's convention.
+fn detect_math_anchor_title<'a>(bq: &'a AstNode<'a>) -> Option<String> {
+    let first_para = bq.children().find(|n| {
+        matches!(n.data.borrow().value, NodeValue::Paragraph)
+    })?;
+    let first_strong = first_para.children().find(|n| {
+        matches!(n.data.borrow().value, NodeValue::Strong)
+    })?;
+    // Concatenate the strong run's text.
+    let mut strong_text = String::new();
+    for c in first_strong.children() {
+        if let NodeValue::Text(ref t) = c.data.borrow().value {
+            strong_text.push_str(t);
+        }
+    }
+    let trimmed = strong_text.trim();
+    let prefix = "Math Anchor";
+    if !trimmed.starts_with(prefix) {
+        return None;
+    }
+    // After "Math Anchor", expect " — Title" or " - Title" or just ":".
+    let rest = &trimmed[prefix.len()..];
+    let rest = rest
+        .trim_start_matches(|c: char| matches!(c, ' ' | '\t' | '—' | '-' | '–'))
+        .trim_end_matches(':')
+        .trim();
+    if rest.is_empty() {
+        // Plain "Math Anchor" with no title.
+        Some(String::new())
+    } else {
+        Some(rest.to_string())
+    }
+}
+
+/// Render the blockquote as a `#math-anchor(title: "...")[ body ]`.
+/// Strips the recognized `**Math Anchor — Title**: ` lead-in so it
+/// doesn't appear twice (the title is shown by the helper instead).
+fn emit_math_anchor<'a>(bq: &'a AstNode<'a>, title: &str, ctx: &mut Ctx) {
+    ctx.out.push_str("#math-anchor(title: \"");
+    for ch in title.chars() {
+        if ch == '"' || ch == '\\' {
+            ctx.out.push('\\');
+        }
+        ctx.out.push(ch);
+    }
+    ctx.out.push_str("\")[\n");
+    // Emit children but skip the leading `**Math Anchor ...**` strong
+    // run on the first paragraph + any immediately-following `:` text.
+    let mut consumed_strong = false;
+    for child in bq.children() {
+        if !consumed_strong {
+            if let NodeValue::Paragraph = child.data.borrow().value {
+                let inner_out_start = ctx.out.len();
+                let mut skip_first_strong = true;
+                let mut skip_following_colon = true;
+                for inline in child.children() {
+                    let v = inline.data.borrow().value.clone();
+                    if skip_first_strong {
+                        if matches!(v, NodeValue::Strong) {
+                            skip_first_strong = false;
+                            consumed_strong = true;
+                            continue;
+                        }
+                        // Non-strong before strong: bail, render normally.
+                        if !matches!(v, NodeValue::Text(ref t) if t.trim().is_empty()) {
+                            skip_first_strong = false;
+                            skip_following_colon = false;
+                            emit_node(inline, ctx);
+                            continue;
+                        }
+                        emit_node(inline, ctx);
+                        continue;
+                    }
+                    if skip_following_colon {
+                        skip_following_colon = false;
+                        if let NodeValue::Text(ref t) = v {
+                            // Trim a leading ": " or whitespace.
+                            let stripped = t.trim_start();
+                            let stripped = stripped.strip_prefix(':').unwrap_or(stripped);
+                            let stripped = stripped.trim_start();
+                            ctx.out.push_str(&super::escape::escape_markup(stripped));
+                            continue;
+                        }
+                    }
+                    emit_node(inline, ctx);
+                }
+                // Close out the paragraph.
+                if ctx.out.len() > inner_out_start {
+                    ctx.out.push_str("\n\n");
+                }
+                continue;
+            }
+        }
+        emit_node(child, ctx);
+    }
+    ctx.out.push_str("]\n\n");
 }
 
 #[cfg(test)]
