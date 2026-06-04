@@ -34,6 +34,13 @@ name = "citations_smoke"
 path = "src/bin/citations_smoke.rs"
 required-features = ["tauri-app"]
 
+# Throwaway spike for the typst PDF backend swap (plan M0). Compiles
+# a hardcoded typst doc with a minimal World impl and writes PDF.
+# Deleted after M2 when markdown→typst is wired through.
+[[bin]]
+name = "typst_spike"
+path = "src/bin/typst_spike.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [], optional = true }
 
@@ -71,6 +78,27 @@ scraper = "0.22"
 toml = "0.8"
 headless_chrome = "1.0"
 anyhow = "1"
+
+# Typst PDF backend — replacing pandoc + headless Chromium in M0..M6 of
+# the plan at C:\Users\jerro\.claude\plans\rustling-riding-frost.md.
+# Pinned to 0.14 (the current cycle) so a typst release doesn't silently
+# move our paged-document semantics under us.
+typst = "0.14"
+typst-pdf = "0.14"
+typst-syntax = "0.14"
+typst-library = "0.14"
+typst-utils = "0.14"
+# Pure-Rust markdown parser with footnotes + GFM. Replaces the pandoc
+# subprocess on the PDF export path (preview still uses pandoc).
+comrak = "0.52"
+# LaTeX-math → typst-math transpiler. Wraps `$...$` / `$$...$$` runs
+# in manuscripts so authors keep writing TeX-style math.
+mitex = "0.2"
+# Decompresses the WOFF2 font assets bundled via @fontsource into OTF
+# bytes that typst's FontBook can consume. @fontsource does not ship
+# OTF/TTF in the npm package so this conversion is on the hot startup
+# path; we cache the decoded faces in a OnceLock.
+woff = "0.6"
 open = "5"
 rfd = "0.14"
 walkdir = "2"
