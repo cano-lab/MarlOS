@@ -250,6 +250,8 @@ fn escape_inline(s: &str) -> String {
 }
 
 fn run_chapter_timing(path: &str) {
+    use marlos_lib::typesetter::book_config::BookConfig;
+    use marlos_lib::typesetter::typst_emit::markdown_to_typst;
     use marlos_lib::typesetter::typst_world::BookWorld;
     eprintln!("=== chapter timing: {} ===", path);
     let t_read = Instant::now();
@@ -257,26 +259,34 @@ fn run_chapter_timing(path: &str) {
     let read_elapsed = t_read.elapsed();
     eprintln!("Read:        {:?} ({} bytes)", read_elapsed, md.len());
 
-    let t_translate = Instant::now();
-    let typst_src = trivial_md_to_typst(&md);
-    let translate_elapsed = t_translate.elapsed();
-    eprintln!("md → typst:  {:?} ({} bytes)", translate_elapsed, typst_src.len());
-
-    // Wrap with a minimal preamble that sets the page + body font.
-    let preamble = r#"
-#set page(width: 6in, height: 9in, margin: (inside: 1in, outside: 0.875in, top: 0.75in, bottom: 0.75in))
-#set text(font: "EB Garamond", size: 11pt)
-#set par(leading: 0.5em, justify: true)
-"#;
-    let full = format!("{}\n{}", preamble, typst_src);
-
-    // Use the production World (no image-resolution needed for prose
-    // timing). M2 will pass in the book's actual root_dir.
     let root = std::path::PathBuf::from(path)
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::env::temp_dir());
-    let world = BookWorld::new(full, root);
+
+    // Build a default BookConfig anchored at the manuscript dir.
+    // M2 doesn't read book.toml; M5 will plug this into the
+    // production command.
+    let mut config = BookConfig {
+        book: Default::default(),
+        trim: Default::default(),
+        typography: Default::default(),
+        export: Default::default(),
+        files: vec![std::path::PathBuf::from(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "main.md".to_string())],
+        root_dir: root.clone(),
+        config_path: root.join("book.toml"),
+    };
+    let _ = &mut config;
+
+    let t_translate = Instant::now();
+    let typst_src = markdown_to_typst(&md, &config);
+    let translate_elapsed = t_translate.elapsed();
+    eprintln!("md → typst:  {:?} ({} bytes)", translate_elapsed, typst_src.len());
+
+    let world = BookWorld::new(typst_src, root);
 
     let t_compile = Instant::now();
     let warned = typst::compile::<PagedDocument>(&world);
@@ -294,6 +304,17 @@ fn run_chapter_timing(path: &str) {
         "{} warning(s)",
         warned.warnings.len()
     );
+    // Print the first few unique warnings so we know what to fix.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for w in warned.warnings.iter() {
+        let key = w.message.to_string();
+        if seen.insert(key.clone()) {
+            eprintln!("  WARN: {}", key);
+            if seen.len() >= 8 {
+                break;
+            }
+        }
+    }
 
     let t_pdf = Instant::now();
     let pdf_bytes = match typst_pdf::pdf(&doc, &PdfOptions::default()) {

@@ -1624,7 +1624,7 @@ pub fn object_tier_history(
                 .map(|v| v == "tier_change")
                 .unwrap_or(false)
                 && entry.metadata.get("suid")
-                    .map(|v| v.as_str() == Some(&suid))
+                    .map(|v| v.as_str() == Some(suid.as_str()))
                     .unwrap_or(false)
         })
         .map(|entry| serde_json::json!({
