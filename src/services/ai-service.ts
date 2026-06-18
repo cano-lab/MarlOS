@@ -229,7 +229,7 @@ Continue the text:`;
 export const aiService = new AIService();
 
 // Simple hook for components
-import { createSignal, createResource } from 'solid-js';
+import { createResource } from 'solid-js';
 
 export function useAIHealth() {
   const [health] = createResource(() => aiService.checkHealth());
