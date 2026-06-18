@@ -25,7 +25,7 @@ const PrintPreview: Component<PrintPreviewProps> = (props) => {
   const [paperSize, setPaperSize] = createSignal<"letter" | "a4" | "legal">("letter");
   const [orientation, setOrientation] = createSignal<"portrait" | "landscape">("portrait");
   const [scale, setScale] = createSignal(100);
-  const [currentPreviewPage, setCurrentPreviewPage] = createSignal(0);
+  const [_currentPreviewPage, _setCurrentPreviewPage] = createSignal(0);
 
   // Margins in inches
   const [marginTop, setMarginTop] = createSignal(1.0);
@@ -119,7 +119,7 @@ const PrintPreview: Component<PrintPreviewProps> = (props) => {
   };
 
   const deselectAllPages = () => {
-    setSelectedPages(new Set());
+    setSelectedPages(new Set<number>());
   };
 
   const handlePrint = () => {
@@ -426,7 +426,7 @@ const PrintPreview: Component<PrintPreviewProps> = (props) => {
 
     // Process tables - ensure they have thead for repeat headers
     const tables = temp.querySelectorAll('table');
-    tables.forEach((table, index) => {
+    tables.forEach((table, _index) => {
       // Find the caption or create one
       let caption = table.querySelector('caption');
       if (!caption) {

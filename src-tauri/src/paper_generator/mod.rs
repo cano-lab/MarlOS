@@ -41,6 +41,9 @@ pub mod store;
 pub mod pipeline;
 pub mod citation_tracker;
 pub mod export;
+pub mod latex_export;
+pub mod cross_ref;
+pub mod templates;
 
 // Re-export main types
 pub use paper::*;
@@ -49,3 +52,4 @@ pub use store::*;
 pub use pipeline::*;
 pub use citation_tracker::*;
 pub use export::*;
+pub use latex_export::*;

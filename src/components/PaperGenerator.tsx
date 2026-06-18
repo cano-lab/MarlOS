@@ -113,14 +113,7 @@ interface ReviewIssue {
   severity: string;
 }
 
-interface ChunkingProgress {
-  total_sources: number;
-  processed_sources: number;
-  total_chunks: number;
-  total_words: number;
-  current_source: string | null;
-  complete: boolean;
-}
+// ChunkingProgress interface reserved for future use
 
 interface ExtractionProgress {
   total_chunks: number;
@@ -329,7 +322,7 @@ const PaperGenerator: Component<PaperGeneratorProps> = (props) => {
         sourceIds,
       });
       setSuccessMsg(`Added ${added} sources`);
-      setSelectedSourceIds(new Set());
+      setSelectedSourceIds(new Set<string>());
       await loadPaper(paper.id);
     } catch (e) {
       setError(`Failed to add sources: ${e}`);

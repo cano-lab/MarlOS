@@ -1,4 +1,4 @@
-import { Component, createEffect, createSignal, onMount } from "solid-js";
+import { Component, createEffect, createSignal } from "solid-js";
 import { marked } from "marked";
 import mermaid from "mermaid";
 import katex from "katex";
@@ -191,7 +191,7 @@ const Preview: Component<PreviewProps> = (props) => {
 
   createEffect(() => {
     // Re-render diagrams when HTML changes
-    const _ = html();
+    void html();
     setTimeout(() => {
       renderMermaidDiagrams();
       renderCharts();

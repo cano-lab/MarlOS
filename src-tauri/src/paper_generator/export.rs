@@ -22,6 +22,8 @@ pub enum ExportFormat {
     Html,
     /// Plain text
     PlainText,
+    /// LaTeX format (with companion .bib)
+    LaTeX,
     /// DOCX format (requires docx-rs)
     #[cfg(feature = "docx")]
     Docx,
@@ -93,6 +95,12 @@ impl PaperExporter {
             ExportFormat::Markdown => Self::export_markdown(&paper_clone, options),
             ExportFormat::Html => Self::export_html(&paper_clone, options),
             ExportFormat::PlainText => Self::export_plaintext(&paper_clone, options),
+            ExportFormat::LaTeX => {
+                // LaTeX export uses its own dedicated function with richer options
+                let latex_opts = super::latex_export::LaTeXExportOptions::default();
+                let output = super::latex_export::export_latex(&paper_clone, sources, &[], &latex_opts)?;
+                Ok(output.tex_content)
+            }
             #[cfg(feature = "docx")]
             ExportFormat::Docx => Err("DOCX export not yet implemented".to_string()),
         }
