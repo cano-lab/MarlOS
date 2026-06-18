@@ -9,45 +9,96 @@
 use comrak::nodes::{AstNode, ListType, NodeValue};
 use comrak::{Arena, Options, parse_document};
 
+use crate::typesetter::book_config::BookConfig;
+use crate::typesetter::structure::{BookStructure, SectionKind};
+
 use super::escape::escape_markup;
 use super::math;
+use super::preamble;
+use super::structure::analyze_markdown_ast;
 
 /// Walker state. `skip_depth > 0` means we're inside a context where
 /// word-anchor wrapping would be inappropriate (heading, code, math,
 /// math-anchor callout, figure caption).
-struct Ctx {
+struct Ctx<'a> {
     out: String,
     skip_depth: u32,
     word_anchors: bool,
+    /// Book configuration. Used to emit per-config preamble blocks
+    /// (TOC, LoF, page-numbering split) at the right moments.
+    config: Option<&'a BookConfig>,
+    /// Pre-computed structure (chapter/interlude/front/back-matter
+    /// classification of each level-1 heading).
+    structure: Option<BookStructure>,
+    /// Number of level-1 headings we've started emitting so far.
+    /// Used to look up the current heading's classification in
+    /// `structure.sections` (which is in document order).
+    h1_seen: usize,
+    /// Set to true the first time we've emitted the body-setup block
+    /// (page-counter restart + body-numbering switch + running header).
+    body_started: bool,
 }
 
-impl Ctx {
+impl<'a> Ctx<'a> {
     fn new(word_anchors: bool, capacity: usize) -> Self {
         Self {
             out: String::with_capacity(capacity),
             skip_depth: 0,
             word_anchors,
+            config: None,
+            structure: None,
+            h1_seen: 0,
+            body_started: false,
         }
     }
 }
 
-/// Emit the body of a typst document (no preamble).
+/// Emit the body of a typst document (no preamble). Test-only entry
+/// point; production callers should use [`emit_body_with_config`].
+#[cfg(test)]
 pub fn emit_body(md: &str) -> String {
     emit_body_with(md, false)
 }
 
-/// Same as [`emit_body`] but lets the caller turn on the word-anchor
-/// fixation pass. Words in prose (text not inside headings, code,
-/// math, or math-anchor callouts) get wrapped in `#word-anchor[…]`.
+/// Backwards-compatible alias used by the spike binary's --chapter
+/// timing run; turns on word anchors but doesn't take a config.
+#[cfg(test)]
 pub fn emit_body_with(md: &str, word_anchors: bool) -> String {
     let arena = Arena::new();
     let opts = make_options();
     let root = parse_document(&arena, md, &opts);
     let mut ctx = Ctx::new(word_anchors, md.len() * 11 / 10);
-    // Math helpers go at the very top so any `$...$` emitted later
-    // can resolve their `mitexsqrt`/`textmath`/etc. references.
     ctx.out.push_str(math::MITEX_SHIM);
     ctx.out.push('\n');
+    emit_node(root, &mut ctx);
+    ctx.out
+}
+
+/// Production entry: emits the typst body for `md` parameterized by
+/// `config`. Includes the M3 page chrome:
+///   - TOC + LoF inserted at the top (front-matter pages).
+///   - Body-setup block (page-counter restart, body numbering,
+///     running header) inserted before the first chapter heading.
+pub fn emit_body_with_config(md: &str, config: &BookConfig) -> String {
+    let arena = Arena::new();
+    let opts = make_options();
+    let root = parse_document(&arena, md, &opts);
+    let structure = analyze_markdown_ast(root);
+    let mut ctx = Ctx::new(config.export.word_anchors, md.len() * 11 / 10);
+    ctx.config = Some(config);
+    ctx.structure = Some(structure);
+
+    // Math helper shim at the very top so any `$...$` can resolve
+    // their mitexsqrt/textmath/etc. references.
+    ctx.out.push_str(math::MITEX_SHIM);
+    ctx.out.push('\n');
+
+    // TOC + (optional) LoF in front-matter numbering region. The
+    // outlines populate from the headings + figures the walker will
+    // emit below; typst resolves their page numbers in a single
+    // layout pass.
+    ctx.out.push_str(&preamble::front_matter_outlines(config));
+
     emit_node(root, &mut ctx);
     ctx.out
 }
@@ -68,7 +119,7 @@ fn make_options() -> Options<'static> {
 }
 
 /// Recursively emit a node and its descendants.
-fn emit_node<'a>(node: &'a AstNode<'a>, ctx: &mut Ctx) {
+fn emit_node<'a>(node: &'a AstNode<'a>, ctx: &mut Ctx<'_>) {
     let value = node.data.borrow().value.clone();
     match value {
         // ---- Block-level ----
@@ -82,6 +133,31 @@ fn emit_node<'a>(node: &'a AstNode<'a>, ctx: &mut Ctx) {
 
         NodeValue::Heading(h) => {
             let level = h.level.min(6).max(1) as usize;
+            // M3: at level 1, look up the heading's classification
+            // and emit body-setup once we hit the first chapter.
+            if level == 1 {
+                let idx = ctx.h1_seen;
+                ctx.h1_seen += 1;
+                if !ctx.body_started {
+                    let is_first_chapter = ctx
+                        .structure
+                        .as_ref()
+                        .and_then(|s| s.sections.get(idx))
+                        .map(|sec| {
+                            matches!(
+                                sec.kind,
+                                SectionKind::Chapter | SectionKind::Interlude
+                            )
+                        })
+                        .unwrap_or(false);
+                    if is_first_chapter {
+                        if let Some(cfg) = ctx.config {
+                            ctx.out.push_str(&preamble::body_setup(cfg));
+                            ctx.body_started = true;
+                        }
+                    }
+                }
+            }
             ctx.out.push_str(&"=".repeat(level));
             ctx.out.push(' ');
             ctx.skip_depth += 1; // headings never get word anchors
@@ -315,7 +391,7 @@ fn emit_node<'a>(node: &'a AstNode<'a>, ctx: &mut Ctx) {
     }
 }
 
-fn emit_children<'a>(node: &'a AstNode<'a>, ctx: &mut Ctx) {
+fn emit_children<'a>(node: &'a AstNode<'a>, ctx: &mut Ctx<'_>) {
     for child in node.children() {
         emit_node(child, ctx);
     }
@@ -448,7 +524,7 @@ fn detect_math_anchor_title<'a>(bq: &'a AstNode<'a>) -> Option<String> {
 /// Render the blockquote as a `#math-anchor(title: "...")[ body ]`.
 /// Strips the recognized `**Math Anchor — Title**: ` lead-in so it
 /// doesn't appear twice (the title is shown by the helper instead).
-fn emit_math_anchor<'a>(bq: &'a AstNode<'a>, title: &str, ctx: &mut Ctx) {
+fn emit_math_anchor<'a>(bq: &'a AstNode<'a>, title: &str, ctx: &mut Ctx<'_>) {
     ctx.out.push_str("#math-anchor(title: \"");
     for ch in title.chars() {
         if ch == '"' || ch == '\\' {

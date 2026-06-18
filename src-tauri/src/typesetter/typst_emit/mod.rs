@@ -34,10 +34,7 @@ use crate::typesetter::book_config::BookConfig;
 pub fn markdown_to_typst(md: &str, config: &BookConfig) -> String {
     let transformed = crate::typesetter::citations::transform_citations_to_typst(md);
     let preamble = preamble::build(config);
-    let body = markdown::emit_body_with(
-        &transformed.transformed,
-        config.export.word_anchors,
-    );
+    let body = markdown::emit_body_with_config(&transformed.transformed, config);
     format!("{preamble}\n{body}")
 }
 
