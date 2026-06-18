@@ -1,5 +1,5 @@
 import { Component, createSignal, createEffect, onCleanup, Show } from "solid-js";
-import { aiService } from "../../services/ai-service";
+import { aiService } from "../services/ai-service";
 import "./GhostText.css";
 
 interface GhostTextProps {
@@ -14,7 +14,7 @@ const GhostText: Component<GhostTextProps> = (props) => {
   const [suggestion, setSuggestion] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
   const [position, setPosition] = createSignal({ top: 0, left: 0 });
-  const [error, setError] = createSignal<string | null>(null);
+  const [, setError] = createSignal<string | null>(null);
 
   let debounceTimer: number | null = null;
   let dismissTimer: number | null = null;
@@ -100,7 +100,7 @@ const GhostText: Component<GhostTextProps> = (props) => {
     document.body.appendChild(mirror);
     
     const markerRect = cursorMarker.getBoundingClientRect();
-    const mirrorRect = mirror.getBoundingClientRect();
+    void mirror.getBoundingClientRect();
     const textareaRect = textarea.getBoundingClientRect();
     
     document.body.removeChild(mirror);
@@ -117,7 +117,7 @@ const GhostText: Component<GhostTextProps> = (props) => {
 
   // Debounced suggestion fetch
   createEffect(() => {
-    const _ = props.content; // Track content changes
+    void props.content; // Track content changes
     const pos = props.cursorPosition;
     
     if (debounceTimer) clearTimeout(debounceTimer);

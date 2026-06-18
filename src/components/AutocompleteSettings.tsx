@@ -1,8 +1,7 @@
 import { Component, createSignal, createEffect } from "solid-js";
-import { 
-  autocompleteService, 
-  ContentType 
-} from "../../services/autocomplete-service";
+import {
+  ContentType
+} from "../services/autocomplete-service";
 import "./AutocompleteSettings.css";
 
 interface AutocompleteSettingsProps {
@@ -78,7 +77,7 @@ const AutocompleteSettings: Component<AutocompleteSettingsProps> = (props) => {
         </div>
 
         <div class="settings-content">
-          <!-- Enable/Disable -->
+          {/* Enable/Disable */}
           <section class="setting-section">
             <label class="toggle-label">
               <input
@@ -94,7 +93,7 @@ const AutocompleteSettings: Component<AutocompleteSettingsProps> = (props) => {
             </p>
           </section>
 
-          <!-- Conservative Mode -->
+          {/* Conservative Mode */}
           <section class="setting-section">
             <label class="toggle-label">
               <input
@@ -110,7 +109,7 @@ const AutocompleteSettings: Component<AutocompleteSettingsProps> = (props) => {
             </p>
           </section>
 
-          <!-- Trigger Delay -->
+          {/* Trigger Delay */}
           <section class="setting-section">
             <label class="range-label">Trigger Delay</label>
             <div class="range-control">
@@ -129,7 +128,7 @@ const AutocompleteSettings: Component<AutocompleteSettingsProps> = (props) => {
             </p>
           </section>
 
-          <!-- Max Length -->
+          {/* Max Length */}
           <section class="setting-section">
             <label class="range-label">Max Suggestion Length</label>
             <div class="range-control">
@@ -149,7 +148,7 @@ const AutocompleteSettings: Component<AutocompleteSettingsProps> = (props) => {
             </p>
           </section>
 
-          <!-- Content Type Toggles -->
+          {/* Content Type Toggles */}
           <section class="setting-section">
             <h3>Enable for Content Types</h3>
             <div class="type-toggles">
@@ -174,7 +173,7 @@ const AutocompleteSettings: Component<AutocompleteSettingsProps> = (props) => {
             </div>
           </section>
 
-          <!-- Keyboard Shortcuts -->
+          {/* Keyboard Shortcuts */}
           <section class="setting-section">
             <h3>Keyboard Shortcuts</h3>
             <div class="shortcuts-list">

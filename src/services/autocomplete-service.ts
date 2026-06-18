@@ -1,6 +1,6 @@
 /**
  * Smart Autocomplete Service
- * 
+ *
  * Philosophy: Assist, don't replace.
  * - Short suggestions (1-10 words)
  * - Context-aware (code vs prose vs academic)
@@ -8,7 +8,8 @@
  * - Feels like a thinking partner, not a ghost writer
  */
 
-import { aiProviderManager } from './ai-config';
+import { nGramAutocomplete } from './autocomplete-ngram';
+import { autocompleteModel } from './autocomplete-model';
 
 export type ContentType = 'code' | 'prose' | 'academic' | 'markdown' | 'unknown';
 
@@ -19,6 +20,15 @@ export interface AutocompleteContext {
   fileExtension?: string;
   recentEdits: number; // How much user has typed recently
   pauseDuration: number; // ms since last keystroke
+
+  // Enhanced context
+  currentSection?: string; // Current heading/section name
+  inList?: boolean; // Are we in a bulleted/numbered list?
+  inCodeBlock?: boolean; // Are we in a code block?
+  inQuote?: boolean; // Are we in a blockquote?
+  documentTitle?: string; // Document/file name
+  recentDocuments?: string[]; // Recently viewed documents
+  semanticContext?: string; // Semantically similar content
 }
 
 export interface AutocompleteSuggestion {
@@ -50,6 +60,22 @@ const ACADEMIC_PATTERNS = [
 class AutocompleteService {
   private lastTriggerTime = 0;
   private consecutiveRejections = 0;
+  private useFineTunedModel = false;
+
+  /**
+   * Set whether to use fine-tuned model for autocomplete
+   */
+  setUseFineTunedModel(use: boolean) {
+    this.useFineTunedModel = use;
+    autocompleteModel.setUseFineTunedModel(use);
+  }
+
+  /**
+   * Check if fine-tuned model is available
+   */
+  hasFineTunedModel(): boolean {
+    return autocompleteModel.getFineTunedModels().length > 0;
+  }
 
   /**
    * Detect the type of content being written
@@ -99,48 +125,41 @@ class AutocompleteService {
    * - Context has enough information to be helpful
    */
   shouldTrigger(context: AutocompleteContext): boolean {
-    const { textBefore, pauseDuration, recentEdits } = context;
+    const { textBefore, pauseDuration } = context;
 
-    // Don't trigger if user is typing fast (in flow)
-    if (pauseDuration < 600) {
-      return false;
-    }
+    console.log('[Autocomplete] shouldTrigger:', {
+      pauseDuration,
+      textLength: textBefore.length,
+      lastTrigger: Date.now() - this.lastTriggerTime,
+      rejections: this.consecutiveRejections,
+    });
 
-    // Don't trigger too frequently
+    // Don't trigger if user hasn't paused long enough
+    if (pauseDuration < 750) return false;
+
+    // Don't trigger too frequently (reduced to 500ms for more responsive feel)
     const now = Date.now();
-    if (now - this.lastTriggerTime < 2000) {
+    if (now - this.lastTriggerTime < 500) {
+      console.log('[Autocomplete] Blocked: too soon since last trigger');
       return false;
     }
 
     // Cooldown after rejections
     if (this.consecutiveRejections > 2) {
       if (now - this.lastTriggerTime < 5000) {
+        console.log('[Autocomplete] Blocked: rejection cooldown');
         return false;
       }
       this.consecutiveRejections = 0;
     }
 
-    // Need meaningful context
-    const lastSentence = this.getLastSentence(textBefore);
-    if (lastSentence.trim().length < 10) {
+    // Need at least some context
+    if (textBefore.trim().length < 3) {
+      console.log('[Autocomplete] Blocked: too little context');
       return false;
     }
 
-    // Don't trigger mid-word
-    const lastChar = textBefore.slice(-1);
-    if (/[a-zA-Z0-9_]/.test(lastChar)) {
-      // Check if we're at a natural word boundary
-      const lastFewChars = textBefore.slice(-3);
-      if (!/[\s.,;:!?]/.test(lastFewChars)) {
-        return false;
-      }
-    }
-
-    // Don't trigger after recent large edits (user is restructuring)
-    if (recentEdits > 50) {
-      return false;
-    }
-
+    console.log('[Autocomplete] ✓ Approved');
     return true;
   }
 
@@ -154,58 +173,76 @@ class AutocompleteService {
 
     this.lastTriggerTime = Date.now();
 
-    const contentType = context.contentType === 'unknown' 
-      ? this.detectContentType(context) 
-      : context.contentType;
+    // Try fine-tuned model first if enabled and available
+    if (this.useFineTunedModel && this.hasFineTunedModel()) {
+      try {
+        console.log('[Autocomplete] Getting fine-tuned model completion for:', context.textBefore.slice(-50));
 
-    try {
-      const prompt = this.buildPrompt(context, contentType);
-      
-      const response = await fetch(
-        aiProviderManager.getUrl('/chat/completions'),
-        {
-          method: 'POST',
-          headers: aiProviderManager.getHeaders(),
-          body: JSON.stringify({
-            model: aiProviderManager.getActiveProvider().defaultModel,
-            messages: [
-              { 
-                role: 'system', 
-                content: this.getSystemPrompt(contentType) 
-              },
-              { role: 'user', content: prompt }
-            ],
-            temperature: 0.2, // Lower for predictable completions
-            max_tokens: 20,   // Short completions only
-          }),
+        const text = await autocompleteModel.complete(context.textBefore, 8);
+
+        console.log('[Autocomplete] Fine-tuned model result:', text);
+
+        if (text) {
+          const cleaned = this.cleanSuggestion(text, context);
+          console.log('[Autocomplete] Cleaned suggestion:', cleaned);
+
+          if (cleaned) {
+            return {
+              text: cleaned,
+              confidence: 0.85, // Higher confidence for fine-tuned model
+              type: 'completion',
+              reason: 'Continue writing (personalized)',
+            };
+          }
         }
+      } catch (e) {
+        console.warn('[Autocomplete] Fine-tuned model failed, falling back to n-gram:', e);
+      }
+    }
+
+    // Try semantic similarity search for context-aware suggestions
+    let semanticContext: string | undefined;
+    if (context.currentSection) {
+      semanticContext = `Section: ${context.currentSection}`;
+    }
+
+    // Fall back to n-gram autocomplete with enhanced structure context
+    try {
+      console.log('[Autocomplete] Getting n-gram completion with structure context');
+
+      const text = await nGramAutocomplete.complete(
+        context.textBefore,
+        8,
+        {
+          inList: context.inList ?? false,
+          inCodeBlock: context.inCodeBlock ?? false,
+          inQuote: context.inQuote ?? false,
+          currentHeading: context.currentSection,
+        },
+        semanticContext
       );
 
-      if (!response.ok) {
-        throw new Error(`AI request failed: ${response.status}`);
-      }
+      console.log('[Autocomplete] N-gram result:', text);
 
-      const data = await response.json();
-      const text = data.choices?.[0]?.message?.content?.trim();
-
-      if (!text || text.length < 2) {
+      if (!text) {
+        console.log('[Autocomplete] No suggestion returned');
         return null;
       }
 
       // Clean up the suggestion
       const cleaned = this.cleanSuggestion(text, context);
-      if (!cleaned) {
-        return null;
-      }
+      console.log('[Autocomplete] Cleaned suggestion:', cleaned);
+
+      if (!cleaned) return null;
 
       return {
         text: cleaned,
-        confidence: 0.8,
+        confidence: 0.75, // Slightly higher with enhanced context
         type: 'completion',
-        reason: this.getReason(contentType),
+        reason: 'Continue writing',
       };
     } catch (e) {
-      console.error('Autocomplete failed:', e);
+      console.error('[Autocomplete] Request failed:', e);
       return null;
     }
   }
@@ -224,123 +261,26 @@ class AutocompleteService {
     this.consecutiveRejections++;
   }
 
-  private getSystemPrompt(contentType: ContentType): string {
-    const base = `You are a writing assistant. Provide SHORT completions (2-8 words max) to help the user continue their thought.
-
-Rules:
-- Complete the current phrase, not the entire sentence
-- Match the user's style and tone
-- Never repeat what the user already typed
-- Prefer natural phrasings over formal ones
-- When uncertain, provide shorter completions`;
-
-    const specifics: Record<ContentType, string> = {
-      code: `${base}
-
-For code:
-- Complete variable names, function calls, or expressions
-- Suggest appropriate method names or parameters
-- Follow language conventions`,
-      
-      academic: `${base}
-
-For academic writing:
-- Use appropriate transitional phrases
-- Maintain formal tone but avoid being verbose
-- Suggest citations or references only if clearly relevant`,
-      
-      prose: `${base}
-
-For general writing:
-- Keep it conversational and natural
-- Complete the thought without over-explaining`,
-      
-      markdown: `${base}
-
-For Markdown:
-- Suggest link text or formatting
-- Complete list items naturally
-- Help with heading structure`,
-      
-      unknown: base,
-    };
-
-    return specifics[contentType] || base;
-  }
-
-  private buildPrompt(context: AutocompleteContext, contentType: ContentType): string {
-    const { textBefore, textAfter } = context;
-    
-    // Get the most relevant context (last sentence/line)
-    const relevantBefore = this.getLastSentence(textBefore).slice(-200);
-    const relevantAfter = textAfter.slice(0, 50);
-
-    return `Complete this ${contentType} text with a SHORT continuation (2-8 words):
-
-Text before:
-${relevantBefore}|
-
-Text after:
-${relevantAfter}
-
-Provide only the completion (the part that goes where | is), nothing else:`;
-  }
-
   private cleanSuggestion(text: string, context: AutocompleteContext): string | null {
-    // Remove common prefixes the AI might add
-    let cleaned = text
-      .replace(/^(complete|continuation|suggestion):\s*/i, '')
-      .replace(/^["']|["']$/g, '')
-      .trim();
+    // Clean up the suggestion
+    let cleaned = text.trim();
 
-    // Don't suggest if it's too long (likely over-eager AI)
-    const words = cleaned.split(/\s+/);
-    if (words.length > 10) {
-      cleaned = words.slice(0, 8).join(' ');
+    // Don't suggest if it's too short or empty
+    if (cleaned.length < 2) return null;
+
+    // Don't suggest if it repeats the last word the user typed
+    const lastWord = context.textBefore.split(/\s+/).pop()?.toLowerCase();
+    const firstSuggestedWord = cleaned.split(/\s+/)[0]?.toLowerCase();
+    if (lastWord && firstSuggestedWord === lastWord) {
+      cleaned = cleaned.split(/\s+/).slice(1).join(' ');
     }
 
-    // Don't suggest if it repeats what user already typed
-    const lastWords = context.textBefore.toLowerCase().split(/\s+/).slice(-5).join(' ');
-    if (cleaned.toLowerCase().startsWith(lastWords)) {
-      cleaned = cleaned.slice(lastWords.length).trim();
-    }
+    // Empty after removing duplicate
+    if (cleaned.length < 2) return null;
 
-    // Ensure it ends naturally
-    if (!/[.!?;:,\s]$/.test(cleaned)) {
-      // Don't add punctuation, just ensure there's a clean ending
-      cleaned = cleaned.replace(/\s+$/g, '');
-    }
-
-    return cleaned.length > 0 ? cleaned : null;
+    return cleaned;
   }
 
-  private getLastSentence(text: string): string {
-    // Find the last sentence break
-    const breaks = /[.!?\n]/;
-    const lastBreak = Math.max(
-      text.lastIndexOf('.'),
-      text.lastIndexOf('!'),
-      text.lastIndexOf('?'),
-      text.lastIndexOf('\n')
-    );
-    
-    if (lastBreak === -1) {
-      return text;
-    }
-    
-    return text.slice(lastBreak + 1);
-  }
-
-  private getReason(contentType: ContentType): string {
-    const reasons: Record<ContentType, string> = {
-      code: 'Complete the expression',
-      academic: 'Continue the thought',
-      prose: 'Finish the phrase',
-      markdown: 'Complete the formatting',
-      unknown: 'Continue writing',
-    };
-    return reasons[contentType];
-  }
 }
 
 // Singleton instance
