@@ -3,8 +3,10 @@ import { open } from "@tauri-apps/plugin-dialog";
 import {
   SemanticObject,
   ObjectSearchResult,
+  WaveformSearchResult,
   SecurityTier,
   searchObjects,
+  searchObjectsWaveform,
   listObjects,
   importFile,
   deleteObject,
@@ -19,15 +21,37 @@ interface MemoryBrowserProps {
   onSelectObject?: (obj: SemanticObject) => void;
 }
 
-const MemoryBrowser: Component<MemoryBrowserProps> = (props) => {
+type SearchMode = "cosine" | "waveform" | "compare";
+type ViewMode = "search" | "browse";
+
+interface ComparisonItem {
+  suid: string;
+  title?: string;
+  content_type: string;
+  tier: SecurityTier;
+  cosineScore?: number;
+  waveformScore?: number;
+  waveformComponents?: {
+    cross_correlation: number;
+    spectral: number;
+    multiscale: number;
+  };
+  onlyIn: "cosine" | "waveform" | "both";
+}
+
+const MemoryBrowser: Component<MemoryBrowserProps> = (_props) => {
   const [searchQuery, setSearchQuery] = createSignal("");
   const [results, setResults] = createSignal<ObjectSearchResult[]>([]);
+  const [waveformResults, setWaveformResults] = createSignal<WaveformSearchResult[]>([]);
+  const [comparisonResults, setComparisonResults] = createSignal<ComparisonItem[]>([]);
   const [allObjects, setAllObjects] = createSignal<SemanticObject[]>([]);
   const [isSearching, setIsSearching] = createSignal(false);
   const [selectedSuid, setSelectedSuid] = createSignal<string | null>(null);
   const [error, setError] = createSignal<string | null>(null);
-  const [viewMode, setViewMode] = createSignal<"search" | "browse">("browse");
+  const [viewMode, setViewMode] = createSignal<ViewMode>("browse");
+  const [searchMode, setSearchMode] = createSignal<SearchMode>("cosine");
   const [tierFilter, setTierFilter] = createSignal<SecurityTier | "all">("all");
+  const [saturationDetected, setSaturationDetected] = createSignal(false);
 
   // Load objects on mount
   createEffect(async () => {
@@ -58,8 +82,83 @@ const MemoryBrowser: Component<MemoryBrowserProps> = (props) => {
     setViewMode("search");
     try {
       const tier = tierFilter() === "all" ? undefined : tierFilter() as SecurityTier;
-      const searchResults = await searchObjects(query, 20, tier);
-      setResults(searchResults);
+
+      if (searchMode() === "compare") {
+        console.log("[MemoryBrowser] Running comparison: both cosine and waveform");
+
+        // Run both searches in parallel
+        const [cosineResults, waveformSearchResults] = await Promise.all([
+          searchObjects(query, 20, tier),
+          searchObjectsWaveform(query, 20, tier),
+        ]);
+
+        setResults(cosineResults);
+        setWaveformResults(waveformSearchResults);
+
+        if (waveformSearchResults.length > 0) {
+          setSaturationDetected(waveformSearchResults[0].saturation_detected);
+        }
+
+        // Build comparison results
+        const allSuids = new Set([
+          ...cosineResults.map(r => r.suid),
+          ...waveformSearchResults.map(r => r.suid),
+        ]);
+
+        const comparisons: ComparisonItem[] = Array.from(allSuids).map(suid => {
+          const cosineItem = cosineResults.find(r => r.suid === suid);
+          const waveformItem = waveformSearchResults.find(r => r.suid === suid);
+
+          return {
+            suid,
+            title: cosineItem?.title || waveformItem?.title,
+            content_type: cosineItem?.content_type || waveformItem?.content_type || "text",
+            tier: cosineItem?.tier || waveformItem?.tier || "Open",
+            cosineScore: cosineItem?.relevance,
+            waveformScore: waveformItem?.score,
+            waveformComponents: waveformItem?.waveform,
+            onlyIn: cosineItem && waveformItem ? "both" :
+                     cosineItem ? "cosine" : "waveform",
+          };
+        });
+
+        // Sort by combined score, favoring items that appear in both
+        comparisons.sort((a, b) => {
+          const aScore = (a.cosineScore || 0) + (a.waveformScore || 0) + (a.onlyIn === "both" ? 0.2 : 0);
+          const bScore = (b.cosineScore || 0) + (b.waveformScore || 0) + (b.onlyIn === "both" ? 0.2 : 0);
+          return bScore - aScore;
+        });
+
+        setComparisonResults(comparisons);
+      } else if (searchMode() === "waveform") {
+        console.log("[MemoryBrowser] Using waveform similarity search");
+        const waveformSearchResults = await searchObjectsWaveform(query, 20, tier);
+        setWaveformResults(waveformSearchResults);
+
+        // Check if saturation was detected
+        if (waveformSearchResults.length > 0) {
+          setSaturationDetected(waveformSearchResults[0].saturation_detected);
+        }
+
+        // Also convert to standard format for display
+        const standardResults: ObjectSearchResult[] = waveformSearchResults.map(r => ({
+          suid: r.suid,
+          title: r.title,
+          content_type: r.content_type,
+          tier: r.tier,
+          relevance: r.score,
+        }));
+        setResults(standardResults);
+        setComparisonResults([]);
+      } else {
+        console.log("[MemoryBrowser] Using cosine similarity search");
+        const searchResults = await searchObjects(query, 20, tier);
+        setResults(searchResults);
+        setWaveformResults([]);
+        setComparisonResults([]);
+        setSaturationDetected(false);
+      }
+
       setError(null);
     } catch (e) {
       console.error("Search failed:", e);
@@ -150,6 +249,30 @@ const MemoryBrowser: Component<MemoryBrowserProps> = (props) => {
         </button>
       </div>
 
+      <div class="memory-mode-toggle">
+        <button
+          class={`mode-btn ${searchMode() === "cosine" ? "active" : ""}`}
+          onClick={() => setSearchMode("cosine")}
+          title="Traditional cosine similarity search"
+        >
+          Cosine
+        </button>
+        <button
+          class={`mode-btn ${searchMode() === "waveform" ? "active" : ""}`}
+          onClick={() => setSearchMode("waveform")}
+          title="Waveform similarity: treats embeddings as signals using cross-correlation, spectral analysis, and multi-scale comparison"
+        >
+          〰️ Waveform
+        </button>
+        <button
+          class={`mode-btn ${searchMode() === "compare" ? "active" : ""}`}
+          onClick={() => setSearchMode("compare")}
+          title="Compare: run both searches side-by-side to see differences"
+        >
+          ⚖️ Compare
+        </button>
+      </div>
+
       <div class="memory-filters">
         <select
           class="tier-filter"
@@ -173,29 +296,201 @@ const MemoryBrowser: Component<MemoryBrowserProps> = (props) => {
       <div class="memory-list">
         <Show when={viewMode() === "search" && results().length > 0}>
           <div class="results-header">
-            Search Results ({results().length})
+            <span>Search Results ({results().length})</span>
+            <Show when={searchMode() === "waveform"}>
+              <span class="search-mode-badge">〰️ Waveform</span>
+            </Show>
           </div>
+          <Show when={saturationDetected()}>
+            <div class="saturation-notice">
+              ⚠️ Cosine saturation detected - waveform similarity active
+            </div>
+          </Show>
           <For each={results()}>
-            {(result) => (
+            {(result, idx) => {
+              const waveformData = () => {
+                if (searchMode() === "waveform" && waveformResults()[idx()]) {
+                  return waveformResults()[idx()];
+                }
+                return null;
+              };
+
+              return (
+                <div
+                  class={`memory-item ${selectedSuid() === result.suid ? "selected" : ""}`}
+                  onClick={() => setSelectedSuid(result.suid)}
+                >
+                  <div class="item-header">
+                    <span class="item-icon">{contentTypeIcon(result.content_type)}</span>
+                    <span class="item-title">{result.title || result.suid.slice(0, 8)}</span>
+                    <span
+                      class="item-tier"
+                      style={{ color: tierColor(result.tier) }}
+                    >
+                      {tierIcon(result.tier)}
+                    </span>
+                  </div>
+
+                  {/* Waveform similarity components */}
+                  <Show when={waveformData()}>
+                    {(wf) => (
+                      <div class="waveform-components">
+                        <div class="waveform-bar" title="Cross-correlation (phase alignment)">
+                          <span class="waveform-label">↔️</span>
+                          <div class="waveform-track">
+                            <div
+                              class="waveform-fill correlation"
+                              style={{ width: `${wf().waveform.cross_correlation * 100}%` }}
+                            />
+                          </div>
+                          <span class="waveform-value">{(wf().waveform.cross_correlation * 100).toFixed(0)}%</span>
+                        </div>
+                        <div class="waveform-bar" title="Spectral similarity (frequency patterns)">
+                          <span class="waveform-label">🌊</span>
+                          <div class="waveform-track">
+                            <div
+                              class="waveform-fill spectral"
+                              style={{ width: `${wf().waveform.spectral * 100}%` }}
+                            />
+                          </div>
+                          <span class="waveform-value">{(wf().waveform.spectral * 100).toFixed(0)}%</span>
+                        </div>
+                        <div class="waveform-bar" title="Multi-scale similarity">
+                          <span class="waveform-label">📐</span>
+                          <div class="waveform-track">
+                            <div
+                              class="waveform-fill multiscale"
+                              style={{ width: `${wf().waveform.multiscale * 100}%` }}
+                            />
+                          </div>
+                          <span class="waveform-value">{(wf().waveform.multiscale * 100).toFixed(0)}%</span>
+                        </div>
+                      </div>
+                    )}
+                  </Show>
+
+                  <div class="item-meta">
+                    <span class="relevance">
+                      {(result.relevance * 100).toFixed(0)}% match
+                    </span>
+                  </div>
+                </div>
+              );
+            }}
+          </For>
+        </Show>
+
+        {/* Comparison View: Side-by-side results */}
+        <Show when={viewMode() === "search" && searchMode() === "compare" && comparisonResults().length > 0}>
+          <div class="results-header">
+            <span>Comparison ({comparisonResults().length} results)</span>
+            <span class="search-mode-badge">⚖️ Side-by-side</span>
+          </div>
+          <Show when={saturationDetected()}>
+            <div class="saturation-notice">
+              ⚠️ Cosine saturation detected - waveform is finding different results
+            </div>
+          </Show>
+          <For each={comparisonResults()}>
+            {(item) => (
               <div
-                class={`memory-item ${selectedSuid() === result.suid ? "selected" : ""}`}
-                onClick={() => setSelectedSuid(result.suid)}
+                class={`memory-item comparison-item ${item.onlyIn === "cosine" ? "cosine-only" : ""} ${item.onlyIn === "waveform" ? "waveform-only" : ""}`}
+                onClick={() => setSelectedSuid(item.suid)}
               >
                 <div class="item-header">
-                  <span class="item-icon">{contentTypeIcon(result.content_type)}</span>
-                  <span class="item-title">{result.title || result.suid.slice(0, 8)}</span>
+                  <span class="item-icon">{contentTypeIcon(item.content_type as any)}</span>
+                  <span class="item-title">{item.title || item.suid.slice(0, 8)}</span>
+                  <span class="comparison-badge">
+                    {item.onlyIn === "both" ? "🔗 Both" :
+                     item.onlyIn === "cosine" ? "📐 Cosine only" :
+                     "〰️ Waveform only"}
+                  </span>
                   <span
                     class="item-tier"
-                    style={{ color: tierColor(result.tier) }}
+                    style={{ color: tierColor(item.tier) }}
                   >
-                    {tierIcon(result.tier)}
+                    {tierIcon(item.tier)}
                   </span>
                 </div>
-                <div class="item-meta">
-                  <span class="relevance">
-                    {(result.relevance * 100).toFixed(0)}% match
-                  </span>
+
+                {/* Side-by-side score comparison */}
+                <div class="score-comparison">
+                  <div class="score-side cosine-side">
+                    <span class="score-label">Cosine</span>
+                    <div class="score-bar">
+                      <div
+                        class="score-fill cosine-fill"
+                        style={{ width: `${(item.cosineScore || 0) * 100}%` }}
+                      />
+                    </div>
+                    <span class="score-value">
+                      {item.cosineScore ? (item.cosineScore * 100).toFixed(0) + "%" : "—"}
+                    </span>
+                  </div>
+
+                  <div class="score-side waveform-side">
+                    <span class="score-label">Waveform</span>
+                    <div class="score-bar">
+                      <div
+                        class="score-fill waveform-fill"
+                        style={{ width: `${(item.waveformScore || 0) * 100}%` }}
+                      />
+                    </div>
+                    <span class="score-value">
+                      {item.waveformScore ? (item.waveformScore * 100).toFixed(0) + "%" : "—"}
+                    </span>
+                  </div>
+
+                  {/* Difference indicator */}
+                  <Show when={item.cosineScore && item.waveformScore}>
+                    <div class="score-diff">
+                      {(() => {
+                        const diff = (item.waveformScore! - item.cosineScore!) * 100;
+                        if (Math.abs(diff) < 5) return <span class="diff-similar">≈</span>;
+                        if (diff > 0) return <span class="diff-higher" title={`Waveform +${diff.toFixed(0)}%`}>↑{diff.toFixed(0)}</span>;
+                        return <span class="diff-lower" title={`Waveform ${diff.toFixed(0)}%`}>↓{Math.abs(diff).toFixed(0)}</span>;
+                      })()}
+                    </div>
+                  </Show>
                 </div>
+
+                {/* Waveform components for waveform-only items */}
+                <Show when={item.waveformComponents}>
+                  {(wf) => (
+                    <div class="waveform-components">
+                      <div class="waveform-bar">
+                        <span class="waveform-label">↔️</span>
+                        <div class="waveform-track">
+                          <div
+                            class="waveform-fill correlation"
+                            style={{ width: `${wf().cross_correlation * 100}%` }}
+                          />
+                        </div>
+                        <span class="waveform-value">{(wf().cross_correlation * 100).toFixed(0)}%</span>
+                      </div>
+                      <div class="waveform-bar">
+                        <span class="waveform-label">🌊</span>
+                        <div class="waveform-track">
+                          <div
+                            class="waveform-fill spectral"
+                            style={{ width: `${wf().spectral * 100}%` }}
+                          />
+                        </div>
+                        <span class="waveform-value">{(wf().spectral * 100).toFixed(0)}%</span>
+                      </div>
+                      <div class="waveform-bar">
+                        <span class="waveform-label">📐</span>
+                        <div class="waveform-track">
+                          <div
+                            class="waveform-fill multiscale"
+                            style={{ width: `${wf().multiscale * 100}%` }}
+                          />
+                        </div>
+                        <span class="waveform-value">{(wf().multiscale * 100).toFixed(0)}%</span>
+                      </div>
+                    </div>
+                  )}
+                </Show>
               </div>
             )}
           </For>

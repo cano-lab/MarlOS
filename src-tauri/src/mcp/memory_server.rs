@@ -621,6 +621,67 @@ pub fn create_memory_tools() -> Vec<Tool> {
             },
         },
 
+        // research_papers tool
+        Tool {
+            name: "research_papers".to_string(),
+            description: "Search for academic papers on Semantic Scholar and arXiv. Returns titles, authors, abstracts, citation counts, and URLs. Use this to find papers on a topic, then use fetch_page to read full content.".to_string(),
+            parameters: ToolParameters {
+                param_type: "object".to_string(),
+                properties: HashMap::from([
+                    ("query".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "Search query for academic papers".to_string(),
+                        enum_values: None,
+                    }),
+                    ("num_results".to_string(), ParameterProperty {
+                        prop_type: "integer".to_string(),
+                        description: "Number of results to return (default: 8, max: 20)".to_string(),
+                        enum_values: None,
+                    }),
+                ]),
+                required: vec!["query".to_string()],
+            },
+        },
+
+        // web_search tool
+        Tool {
+            name: "web_search".to_string(),
+            description: "Search the web using DuckDuckGo. Returns titles, URLs, and snippets. Use this for general web searches, blog posts, documentation, and non-academic content.".to_string(),
+            parameters: ToolParameters {
+                param_type: "object".to_string(),
+                properties: HashMap::from([
+                    ("query".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "Search query".to_string(),
+                        enum_values: None,
+                    }),
+                    ("num_results".to_string(), ParameterProperty {
+                        prop_type: "integer".to_string(),
+                        description: "Number of results to return (default: 5, max: 15)".to_string(),
+                        enum_values: None,
+                    }),
+                ]),
+                required: vec!["query".to_string()],
+            },
+        },
+
+        // fetch_page tool
+        Tool {
+            name: "fetch_page".to_string(),
+            description: "Fetch and extract the main text content from a URL. Use this to read full articles, papers, blog posts, or documentation. Returns the extracted text, title, and metadata.".to_string(),
+            parameters: ToolParameters {
+                param_type: "object".to_string(),
+                properties: HashMap::from([
+                    ("url".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "URL to fetch and extract content from".to_string(),
+                        enum_values: None,
+                    }),
+                ]),
+                required: vec!["url".to_string()],
+            },
+        },
+
         // learning_history tool
         Tool {
             name: "learning_history".to_string(),
@@ -641,6 +702,160 @@ pub fn create_memory_tools() -> Vec<Tool> {
                     ("limit".to_string(), ParameterProperty {
                         prop_type: "integer".to_string(),
                         description: "Maximum number of results (default: 10)".to_string(),
+                        enum_values: None,
+                    }),
+                ]),
+                required: vec![],
+            },
+        },
+
+        // ====================================================================
+        // Daily Research Automation tools
+        // ====================================================================
+
+        Tool {
+            name: "list_research_topics".to_string(),
+            description: "List all registered research topics for the daily research pipeline. Each topic has a name and one or more search queries.".to_string(),
+            parameters: ToolParameters {
+                param_type: "object".to_string(),
+                properties: HashMap::new(),
+                required: vec![],
+            },
+        },
+
+        Tool {
+            name: "add_research_topic".to_string(),
+            description: "Register a new research topic for the daily research pipeline. If queries are not provided, the topic name is used as the query.".to_string(),
+            parameters: ToolParameters {
+                param_type: "object".to_string(),
+                properties: HashMap::from([
+                    ("name".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "Topic name (e.g., 'AI', 'Operating Systems'). Case-sensitive, used as the identifier.".to_string(),
+                        enum_values: None,
+                    }),
+                    ("queries".to_string(), ParameterProperty {
+                        prop_type: "array".to_string(),
+                        description: "Optional list of search queries for this topic. Defaults to [name].".to_string(),
+                        enum_values: None,
+                    }),
+                ]),
+                required: vec!["name".to_string()],
+            },
+        },
+
+        Tool {
+            name: "remove_research_topic".to_string(),
+            description: "Remove a research topic from the daily research pipeline. Does not delete already-stored summaries.".to_string(),
+            parameters: ToolParameters {
+                param_type: "object".to_string(),
+                properties: HashMap::from([
+                    ("name".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "Topic name to remove".to_string(),
+                        enum_values: None,
+                    }),
+                ]),
+                required: vec!["name".to_string()],
+            },
+        },
+
+        Tool {
+            name: "daily_research_fetch".to_string(),
+            description: "Fetch candidate academic papers for a topic, deduplicated against already-summarized papers. Returns candidates for the LLM to summarize and then store via store_research_summary.".to_string(),
+            parameters: ToolParameters {
+                param_type: "object".to_string(),
+                properties: HashMap::from([
+                    ("topic".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "Topic name (must be a registered topic from list_research_topics)".to_string(),
+                        enum_values: None,
+                    }),
+                    ("limit".to_string(), ParameterProperty {
+                        prop_type: "integer".to_string(),
+                        description: "Maximum number of fresh candidates to return (default: 5)".to_string(),
+                        enum_values: None,
+                    }),
+                ]),
+                required: vec!["topic".to_string()],
+            },
+        },
+
+        Tool {
+            name: "store_research_summary".to_string(),
+            description: "Store a summary of an academic paper under a topic. Dedup keys (doi, arxiv_id, url) are recorded as tags so future daily_research_fetch calls skip the same paper.".to_string(),
+            parameters: ToolParameters {
+                param_type: "object".to_string(),
+                properties: HashMap::from([
+                    ("topic".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "Topic this summary belongs to".to_string(),
+                        enum_values: None,
+                    }),
+                    ("title".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "Paper title".to_string(),
+                        enum_values: None,
+                    }),
+                    ("url".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "Source URL".to_string(),
+                        enum_values: None,
+                    }),
+                    ("summary".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "3-5 sentence summary of the paper's key findings and contributions".to_string(),
+                        enum_values: None,
+                    }),
+                    ("doi".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "DOI if available (preferred dedup key)".to_string(),
+                        enum_values: None,
+                    }),
+                    ("arxiv_id".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "arXiv ID if available (e.g. '2401.12345')".to_string(),
+                        enum_values: None,
+                    }),
+                    ("authors".to_string(), ParameterProperty {
+                        prop_type: "array".to_string(),
+                        description: "List of author names".to_string(),
+                        enum_values: None,
+                    }),
+                    ("year".to_string(), ParameterProperty {
+                        prop_type: "integer".to_string(),
+                        description: "Publication year".to_string(),
+                        enum_values: None,
+                    }),
+                    ("venue".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "Journal or conference name".to_string(),
+                        enum_values: None,
+                    }),
+                ]),
+                required: vec!["topic".to_string(), "title".to_string(), "url".to_string(), "summary".to_string()],
+            },
+        },
+
+        Tool {
+            name: "list_research_summaries".to_string(),
+            description: "List stored research summaries, optionally filtered by topic and date range. Use this to pull accumulated research context when synthesizing papers.".to_string(),
+            parameters: ToolParameters {
+                param_type: "object".to_string(),
+                properties: HashMap::from([
+                    ("topic".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "Filter by topic name (optional)".to_string(),
+                        enum_values: None,
+                    }),
+                    ("since".to_string(), ParameterProperty {
+                        prop_type: "string".to_string(),
+                        description: "ISO date (YYYY-MM-DD) - only return summaries stored on or after this date".to_string(),
+                        enum_values: None,
+                    }),
+                    ("limit".to_string(), ParameterProperty {
+                        prop_type: "integer".to_string(),
+                        description: "Maximum number of summaries to return (default: 50)".to_string(),
                         enum_values: None,
                     }),
                 ]),
@@ -685,11 +900,22 @@ impl MemoryToolExecutor {
             "save_draft" => self.execute_save_draft(call.arguments).await,
             "read_file" => self.execute_read_file(call.arguments).await,
             "list_sources" => self.execute_list_sources(call.arguments).await,
+            // Web & research tools
+            "research_papers" => self.execute_research_papers(call.arguments).await,
+            "web_search" => self.execute_web_search(call.arguments).await,
+            "fetch_page" => self.execute_fetch_page(call.arguments).await,
             // Learning tools
             "learning_start" => self.execute_learning_start(call.arguments).await,
             "learning_compare" => self.execute_learning_compare(call.arguments).await,
             "learning_save" => self.execute_learning_save(call.arguments).await,
             "learning_history" => self.execute_learning_history(call.arguments).await,
+            // Daily research automation tools
+            "list_research_topics" => self.execute_list_research_topics().await,
+            "add_research_topic" => self.execute_add_research_topic(call.arguments).await,
+            "remove_research_topic" => self.execute_remove_research_topic(call.arguments).await,
+            "daily_research_fetch" => self.execute_daily_research_fetch(call.arguments).await,
+            "store_research_summary" => self.execute_store_research_summary(call.arguments).await,
+            "list_research_summaries" => self.execute_list_research_summaries(call.arguments).await,
             _ => ToolResult::error(format!("Unknown memory tool: {}", call.name)),
         }
     }
@@ -1908,6 +2134,527 @@ impl MemoryToolExecutor {
             }
             Err(e) => ToolResult::error(format!("Failed to search learning history: {}", e)),
         }
+    }
+
+    // ========================================================================
+    // Web & Research Tools
+    // ========================================================================
+
+    async fn execute_research_papers(&self, args: HashMap<String, serde_json::Value>) -> ToolResult {
+        let query = match args.get("query").and_then(|v| v.as_str()) {
+            Some(q) => q,
+            None => return ToolResult::error("Missing required parameter: query".to_string()),
+        };
+
+        let num_results = args.get("num_results")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(8)
+            .min(20) as usize;
+
+        match super::web_search::search_academic(query, num_results).await {
+            Ok(results) => {
+                let papers: Vec<serde_json::Value> = results.papers.iter().map(|p| {
+                    serde_json::json!({
+                        "title": p.title,
+                        "authors": p.authors,
+                        "year": p.year,
+                        "abstract": p.abstract_text,
+                        "url": p.url,
+                        "pdf_url": p.pdf_url,
+                        "citation_count": p.citation_count,
+                        "source": p.source,
+                        "doi": p.doi,
+                        "venue": p.venue,
+                    })
+                }).collect();
+
+                ToolResult::success(serde_json::to_string_pretty(&serde_json::json!({
+                    "query": results.query,
+                    "total_found": results.total_found,
+                    "papers": papers,
+                })).unwrap())
+            }
+            Err(e) => ToolResult::error(format!("Academic search failed: {}", e)),
+        }
+    }
+
+    async fn execute_web_search(&self, args: HashMap<String, serde_json::Value>) -> ToolResult {
+        let query = match args.get("query").and_then(|v| v.as_str()) {
+            Some(q) => q,
+            None => return ToolResult::error("Missing required parameter: query".to_string()),
+        };
+
+        let num_results = args.get("num_results")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(5)
+            .min(15) as usize;
+
+        match super::web_search::search(query, num_results).await {
+            Ok(results) => {
+                let items: Vec<serde_json::Value> = results.results.iter().map(|r| {
+                    serde_json::json!({
+                        "title": r.title,
+                        "url": r.url,
+                        "snippet": r.snippet,
+                        "source_domain": r.source_domain,
+                    })
+                }).collect();
+
+                ToolResult::success(serde_json::to_string_pretty(&serde_json::json!({
+                    "query": results.query,
+                    "total_found": results.total_found,
+                    "results": items,
+                })).unwrap())
+            }
+            Err(e) => ToolResult::error(format!("Web search failed: {}", e)),
+        }
+    }
+
+    async fn execute_fetch_page(&self, args: HashMap<String, serde_json::Value>) -> ToolResult {
+        let url = match args.get("url").and_then(|v| v.as_str()) {
+            Some(u) => u,
+            None => return ToolResult::error("Missing required parameter: url".to_string()),
+        };
+
+        match super::web_search::fetch_page(url, false).await {
+            Ok(page) => {
+                // Truncate very long content to avoid overwhelming the LLM
+                let content = if page.content.len() > 15000 {
+                    format!("{}...\n\n[Content truncated at 15000 chars. Total: {} chars]",
+                        &page.content[..15000], page.content.len())
+                } else {
+                    page.content
+                };
+
+                ToolResult::success(serde_json::to_string_pretty(&serde_json::json!({
+                    "url": page.url,
+                    "title": page.title,
+                    "content": content,
+                    "word_count": page.word_count,
+                    "metadata": page.metadata,
+                })).unwrap())
+            }
+            Err(e) => ToolResult::error(format!("Failed to fetch page: {}", e)),
+        }
+    }
+
+    // ========================================================================
+    // Daily Research Automation Executors
+    // ========================================================================
+
+    async fn execute_list_research_topics(&self) -> ToolResult {
+        let store = self.search.store.read().await;
+        let topic_objs = match store.list_by_tag("kind:research-topic", 200) {
+            Ok(objs) => objs,
+            Err(e) => return ToolResult::error(format!("Failed to list topics: {}", e)),
+        };
+
+        // Exact-match filter — list_by_tag uses substring LIKE so prefix collisions are possible.
+        let topics: Vec<serde_json::Value> = topic_objs.iter()
+            .filter(|o| o.tags.iter().any(|t| t == "kind:research-topic"))
+            .map(|o| {
+                let parsed: serde_json::Value = o.content_as_str()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or(serde_json::json!({}));
+                serde_json::json!({
+                    "name": o.name.clone().unwrap_or_default(),
+                    "queries": parsed.get("queries").cloned().unwrap_or(serde_json::json!([])),
+                    "last_run": parsed.get("last_run").cloned().unwrap_or(serde_json::Value::Null),
+                    "enabled": parsed.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
+                    "created_at": o.created_at.to_rfc3339(),
+                })
+            })
+            .collect();
+
+        ToolResult::success(serde_json::to_string_pretty(&serde_json::json!({
+            "count": topics.len(),
+            "topics": topics,
+        })).unwrap())
+    }
+
+    async fn execute_add_research_topic(&self, args: HashMap<String, serde_json::Value>) -> ToolResult {
+        let name = match args.get("name").and_then(|v| v.as_str()) {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => return ToolResult::error("Missing required parameter: name".to_string()),
+        };
+
+        let queries: Vec<String> = args.get("queries")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_else(|| vec![name.clone()]);
+
+        // Check for existing topic with same name (upsert)
+        let name_tag = format!("research-topic-name:{}", name);
+        let store = self.search.store.read().await;
+        let existing = store.list_by_tag(&name_tag, 10)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|o| o.tags.iter().any(|t| t == &name_tag)
+                && o.tags.iter().any(|t| t == "kind:research-topic"));
+        drop(store);
+
+        let body = serde_json::json!({
+            "queries": queries,
+            "last_run": serde_json::Value::Null,
+            "enabled": true,
+        });
+        let content = serde_json::to_string(&body).unwrap();
+
+        if let Some(mut obj) = existing {
+            obj.update_content(content.into_bytes());
+            match self.search.update(&obj).await {
+                Ok(_) => ToolResult::success(serde_json::to_string_pretty(&serde_json::json!({
+                    "status": "updated",
+                    "name": name,
+                    "queries": queries,
+                })).unwrap()),
+                Err(e) => ToolResult::error(format!("Failed to update topic: {}", e)),
+            }
+        } else {
+            let obj = SemanticObject::new(content.into_bytes(), ContentType::Json)
+                .with_name(&name)
+                .with_tag("kind:research-topic")
+                .with_tag(&name_tag)
+                .with_tier(SecurityTier::Open);
+
+            match self.search.store(&obj).await {
+                Ok(_) => ToolResult::success(serde_json::to_string_pretty(&serde_json::json!({
+                    "status": "created",
+                    "name": name,
+                    "queries": queries,
+                })).unwrap()),
+                Err(e) => ToolResult::error(format!("Failed to create topic: {}", e)),
+            }
+        }
+    }
+
+    async fn execute_remove_research_topic(&self, args: HashMap<String, serde_json::Value>) -> ToolResult {
+        let name = match args.get("name").and_then(|v| v.as_str()) {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => return ToolResult::error("Missing required parameter: name".to_string()),
+        };
+
+        let name_tag = format!("research-topic-name:{}", name);
+        let store = self.search.store.write().await;
+
+        let matches = match store.list_by_tag(&name_tag, 10) {
+            Ok(objs) => objs,
+            Err(e) => return ToolResult::error(format!("Failed to look up topic: {}", e)),
+        };
+
+        let mut removed = 0;
+        for obj in matches {
+            if obj.tags.iter().any(|t| t == &name_tag)
+                && obj.tags.iter().any(|t| t == "kind:research-topic")
+            {
+                if let Ok(true) = store.delete(&obj.suid) {
+                    removed += 1;
+                }
+            }
+        }
+
+        if removed == 0 {
+            return ToolResult::error(format!("No topic found with name: {}", name));
+        }
+
+        ToolResult::success(serde_json::to_string_pretty(&serde_json::json!({
+            "status": "removed",
+            "name": name,
+            "removed_count": removed,
+        })).unwrap())
+    }
+
+    async fn execute_daily_research_fetch(&self, args: HashMap<String, serde_json::Value>) -> ToolResult {
+        let topic_name = match args.get("topic").and_then(|v| v.as_str()) {
+            Some(t) if !t.is_empty() => t.to_string(),
+            _ => return ToolResult::error("Missing required parameter: topic".to_string()),
+        };
+
+        let limit = args.get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(5)
+            .min(20) as usize;
+
+        // Load topic to get queries
+        let name_tag = format!("research-topic-name:{}", topic_name);
+        let (queries, topic_obj) = {
+            let store = self.search.store.read().await;
+            let topic = store.list_by_tag(&name_tag, 10)
+                .unwrap_or_default()
+                .into_iter()
+                .find(|o| o.tags.iter().any(|t| t == &name_tag)
+                    && o.tags.iter().any(|t| t == "kind:research-topic"));
+            match topic {
+                Some(o) => {
+                    let parsed: serde_json::Value = o.content_as_str()
+                        .and_then(|s| serde_json::from_str(s).ok())
+                        .unwrap_or(serde_json::json!({}));
+                    let qs: Vec<String> = parsed.get("queries")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                        .unwrap_or_else(|| vec![topic_name.clone()]);
+                    (qs, Some(o))
+                }
+                None => return ToolResult::error(format!("Unknown topic: {}. Register it with add_research_topic first.", topic_name)),
+            }
+        };
+
+        // Fetch candidates from academic search across all queries
+        let per_query = (limit * 2).max(8);
+        let mut all_candidates: Vec<super::web_search::AcademicPaper> = Vec::new();
+        let mut seen_titles = std::collections::HashSet::new();
+        let mut search_errors: Vec<String> = Vec::new();
+
+        for query in &queries {
+            match super::web_search::search_academic(query, per_query).await {
+                Ok(results) => {
+                    for paper in results.papers {
+                        let normalized = paper.title.to_lowercase()
+                            .chars().filter(|c| c.is_alphanumeric()).collect::<String>();
+                        if seen_titles.insert(normalized) {
+                            all_candidates.push(paper);
+                        }
+                    }
+                }
+                Err(e) => search_errors.push(format!("{}: {}", query, e)),
+            }
+        }
+
+        // Dedup against already-stored summaries using dedup tags
+        let store = self.search.store.read().await;
+        let mut fresh: Vec<serde_json::Value> = Vec::new();
+
+        for paper in all_candidates {
+            if fresh.len() >= limit {
+                break;
+            }
+
+            let mut dedup_hits = 0;
+
+            if let Some(doi) = &paper.doi {
+                let tag = if doi.starts_with("arXiv:") {
+                    format!("dedup-arxiv:{}", doi.trim_start_matches("arXiv:"))
+                } else {
+                    format!("dedup-doi:{}", doi)
+                };
+                if let Ok(hits) = store.list_by_tag(&tag, 1) {
+                    if hits.iter().any(|o| o.tags.iter().any(|t| t == &tag)) {
+                        dedup_hits += 1;
+                    }
+                }
+            }
+
+            let url_tag = format!("dedup-url:{}", Self::normalize_url(&paper.url));
+            if dedup_hits == 0 {
+                if let Ok(hits) = store.list_by_tag(&url_tag, 1) {
+                    if hits.iter().any(|o| o.tags.iter().any(|t| t == &url_tag)) {
+                        dedup_hits += 1;
+                    }
+                }
+            }
+
+            if dedup_hits == 0 {
+                fresh.push(serde_json::json!({
+                    "title": paper.title,
+                    "authors": paper.authors,
+                    "year": paper.year,
+                    "abstract": paper.abstract_text,
+                    "url": paper.url,
+                    "pdf_url": paper.pdf_url,
+                    "doi": paper.doi,
+                    "venue": paper.venue,
+                    "source": paper.source,
+                    "citation_count": paper.citation_count,
+                }));
+            }
+        }
+        drop(store);
+
+        // Update last_run on the topic
+        if let Some(mut obj) = topic_obj {
+            let mut parsed: serde_json::Value = obj.content_as_str()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or(serde_json::json!({}));
+            if let Some(map) = parsed.as_object_mut() {
+                map.insert("last_run".to_string(), serde_json::json!(Utc::now().to_rfc3339()));
+            }
+            let new_content = serde_json::to_string(&parsed).unwrap();
+            obj.update_content(new_content.into_bytes());
+            let _ = self.search.update(&obj).await;
+        }
+
+        ToolResult::success(serde_json::to_string_pretty(&serde_json::json!({
+            "topic": topic_name,
+            "queries": queries,
+            "candidates": fresh,
+            "count": fresh.len(),
+            "search_errors": search_errors,
+            "instructions": "For each candidate, write a 3-5 sentence summary capturing key findings, methodology, and novelty. Then call store_research_summary with topic, title, url, summary, and any of (doi, arxiv_id, authors, year, venue).",
+        })).unwrap())
+    }
+
+    async fn execute_store_research_summary(&self, args: HashMap<String, serde_json::Value>) -> ToolResult {
+        let topic = match args.get("topic").and_then(|v| v.as_str()) {
+            Some(t) if !t.is_empty() => t.to_string(),
+            _ => return ToolResult::error("Missing required parameter: topic".to_string()),
+        };
+        let title = match args.get("title").and_then(|v| v.as_str()) {
+            Some(t) if !t.is_empty() => t.to_string(),
+            _ => return ToolResult::error("Missing required parameter: title".to_string()),
+        };
+        let url = match args.get("url").and_then(|v| v.as_str()) {
+            Some(u) if !u.is_empty() => u.to_string(),
+            _ => return ToolResult::error("Missing required parameter: url".to_string()),
+        };
+        let summary = match args.get("summary").and_then(|v| v.as_str()) {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => return ToolResult::error("Missing required parameter: summary".to_string()),
+        };
+
+        let doi = args.get("doi").and_then(|v| v.as_str()).map(String::from);
+        let arxiv_id = args.get("arxiv_id").and_then(|v| v.as_str()).map(String::from);
+        let authors: Vec<String> = args.get("authors")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        let year = args.get("year").and_then(|v| v.as_i64());
+        let venue = args.get("venue").and_then(|v| v.as_str()).map(String::from);
+
+        // Build markdown content
+        let authors_line = if authors.is_empty() {
+            String::new()
+        } else {
+            format!("\n**Authors:** {}", authors.join(", "))
+        };
+        let year_line = year.map(|y| format!("\n**Year:** {}", y)).unwrap_or_default();
+        let venue_line = venue.as_ref().map(|v| format!("\n**Venue:** {}", v)).unwrap_or_default();
+        let doi_line = doi.as_ref().map(|d| format!("\n**DOI:** {}", d)).unwrap_or_default();
+        let arxiv_line = arxiv_id.as_ref().map(|a| format!("\n**arXiv:** {}", a)).unwrap_or_default();
+
+        let markdown = format!(
+            "# {}\n\n**URL:** {}{}{}{}{}{}\n\n## Summary\n\n{}\n",
+            title, url, authors_line, year_line, venue_line, doi_line, arxiv_line, summary
+        );
+
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        let mut obj = SemanticObject::from_markdown(&markdown)
+            .with_name(&title)
+            .with_tag("kind:research-summary")
+            .with_tag(&format!("research-topic-name:{}", topic))
+            .with_tag(&format!("research-date:{}", today))
+            .with_tag(&format!("dedup-url:{}", Self::normalize_url(&url)))
+            .with_tier(SecurityTier::Open);
+
+        if let Some(d) = &doi {
+            obj = obj.with_tag(&format!("dedup-doi:{}", d));
+        }
+        if let Some(a) = &arxiv_id {
+            obj = obj.with_tag(&format!("dedup-arxiv:{}", a));
+        }
+
+        // Stash structured metadata for later retrieval
+        obj = obj
+            .with_metadata("topic", serde_json::json!(topic))
+            .with_metadata("source_url", serde_json::json!(url))
+            .with_metadata("authors", serde_json::json!(authors))
+            .with_metadata("year", serde_json::json!(year))
+            .with_metadata("venue", serde_json::json!(venue))
+            .with_metadata("doi", serde_json::json!(doi))
+            .with_metadata("arxiv_id", serde_json::json!(arxiv_id));
+
+        match self.search.store(&obj).await {
+            Ok(_) => ToolResult::success(serde_json::to_string_pretty(&serde_json::json!({
+                "status": "stored",
+                "id": obj.suid.to_string(),
+                "topic": topic,
+                "title": title,
+            })).unwrap()),
+            Err(e) => ToolResult::error(format!("Failed to store summary: {}", e)),
+        }
+    }
+
+    async fn execute_list_research_summaries(&self, args: HashMap<String, serde_json::Value>) -> ToolResult {
+        let topic = args.get("topic").and_then(|v| v.as_str()).map(String::from);
+        let since = args.get("since").and_then(|v| v.as_str()).map(String::from);
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+
+        let store = self.search.store.read().await;
+
+        // Efficient path: filter by topic tag if provided, otherwise all summaries
+        let tag = match &topic {
+            Some(t) => format!("research-topic-name:{}", t),
+            None => "kind:research-summary".to_string(),
+        };
+        let exact_tag = tag.clone();
+        let topic_filter = topic.clone();
+
+        let objs = match store.list_by_tag(&tag, limit.max(200)) {
+            Ok(o) => o,
+            Err(e) => return ToolResult::error(format!("Failed to list summaries: {}", e)),
+        };
+
+        let mut summaries: Vec<serde_json::Value> = objs.iter()
+            .filter(|o| o.tags.iter().any(|t| t == "kind:research-summary"))
+            .filter(|o| o.tags.iter().any(|t| t == &exact_tag)
+                || (topic_filter.is_none() && exact_tag == "kind:research-summary"))
+            .filter(|o| {
+                if let Some(s) = &since {
+                    o.tags.iter().any(|t| {
+                        t.strip_prefix("research-date:")
+                            .map(|d| d.as_ref() as &str >= s.as_str())
+                            .unwrap_or(false)
+                    })
+                } else {
+                    true
+                }
+            })
+            .map(|o| {
+                let topic_tag = o.tags.iter()
+                    .find(|t| t.starts_with("research-topic-name:"))
+                    .map(|t| t.trim_start_matches("research-topic-name:").to_string())
+                    .unwrap_or_default();
+                let date = o.tags.iter()
+                    .find(|t| t.starts_with("research-date:"))
+                    .map(|t| t.trim_start_matches("research-date:").to_string())
+                    .unwrap_or_default();
+                serde_json::json!({
+                    "id": o.suid.to_string(),
+                    "title": o.name.clone().unwrap_or_default(),
+                    "topic": topic_tag,
+                    "date": date,
+                    "doi": o.metadata.get("doi").cloned().unwrap_or(serde_json::Value::Null),
+                    "arxiv_id": o.metadata.get("arxiv_id").cloned().unwrap_or(serde_json::Value::Null),
+                    "url": o.metadata.get("source_url").cloned().unwrap_or(serde_json::Value::Null),
+                    "authors": o.metadata.get("authors").cloned().unwrap_or(serde_json::Value::Null),
+                    "year": o.metadata.get("year").cloned().unwrap_or(serde_json::Value::Null),
+                    "venue": o.metadata.get("venue").cloned().unwrap_or(serde_json::Value::Null),
+                    "summary": o.content_as_str().unwrap_or("").to_string(),
+                })
+            })
+            .collect();
+
+        summaries.sort_by(|a, b| {
+            let ad = a.get("date").and_then(|v| v.as_str()).unwrap_or("");
+            let bd = b.get("date").and_then(|v| v.as_str()).unwrap_or("");
+            bd.cmp(ad)
+        });
+        summaries.truncate(limit);
+
+        ToolResult::success(serde_json::to_string_pretty(&serde_json::json!({
+            "count": summaries.len(),
+            "topic_filter": topic,
+            "since_filter": since,
+            "summaries": summaries,
+        })).unwrap())
+    }
+
+    fn normalize_url(url: &str) -> String {
+        let lower = url.trim().to_lowercase();
+        let without_scheme = lower.trim_start_matches("https://")
+            .trim_start_matches("http://");
+        let without_query = without_scheme.split('?').next().unwrap_or(without_scheme);
+        let without_frag = without_query.split('#').next().unwrap_or(without_query);
+        without_frag.trim_end_matches('/').to_string()
     }
 }
 
