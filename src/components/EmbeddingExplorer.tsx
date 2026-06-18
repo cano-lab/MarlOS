@@ -1,4 +1,4 @@
-import { Component, createSignal, createEffect, createMemo, Show, For, onMount, onCleanup } from "solid-js";
+import { Component, createSignal, createEffect, createMemo, Show, For, onCleanup } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import "./EmbeddingExplorer.css";
 
@@ -482,7 +482,7 @@ const playMelody = (
   // Map values to MIDI notes
   const absMax = Math.max(...notes.map(Math.abs)) || 1;
   const baseNote = 60; // Middle C
-  const range = 24; // 2 octaves
+  // range: 2 octaves (24 semitones)
 
   const masterGain = ctx.createGain();
   masterGain.gain.value = 0.4;
@@ -491,7 +491,7 @@ const playMelody = (
   let currentTime = ctx.currentTime + 0.1;
   const allOscs: OscillatorNode[] = [];
 
-  notes.forEach((val, idx) => {
+  notes.forEach((val, _idx) => {
     const normalized = (val / absMax + 1) / 2; // 0 to 1
     const scaleIdx = Math.floor(normalized * scale.length * 2);
     const octave = Math.floor(scaleIdx / scale.length);

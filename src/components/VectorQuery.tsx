@@ -42,7 +42,7 @@ const VectorQuery: Component<VectorQueryProps> = (props) => {
   const [showWaveform, setShowWaveform] = createSignal(false);
   const [showComparison, setShowComparison] = createSignal(false);
   const [showWaveform3D, setShowWaveform3D] = createSignal(false);
-  const [selectedEmbedding, setSelectedEmbedding] = createSignal<number[] | null>(null);
+  const [selectedEmbedding, _setSelectedEmbedding] = createSignal<number[] | null>(null);
   const [indexing, setIndexing] = createSignal(false);
   const [statusMessage, setStatusMessage] = createSignal<string | null>(null);
   const [recentSessions, setRecentSessions] = createSignal<RecentSession[]>([]);

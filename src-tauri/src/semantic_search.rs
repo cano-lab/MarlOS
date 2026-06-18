@@ -13,6 +13,10 @@ use tokio::sync::RwLock;
 use chrono::{DateTime, Utc};
 
 use crate::embeddings::{cosine_similarity, EmbeddingManager};
+use crate::waveform_similarity::{
+    hybrid_similarity, find_similar_waveform, WaveformSimilarityResult,
+    detect_saturation as waveform_detect_saturation,
+};
 use crate::embedding_store::{FieldWeights, SearchConfig};
 use crate::memory::SecurityTier;
 use crate::object_store::{ObjectStore, ObjectStoreError};
@@ -141,6 +145,19 @@ pub struct SearchHit {
     pub score: f32,
     /// How the match was found
     pub match_type: MatchType,
+}
+
+/// A waveform-based search result with detailed similarity breakdown
+#[derive(Debug, Clone)]
+pub struct WaveformSearchHit {
+    /// The matching object
+    pub object: SemanticObject,
+    /// Final similarity score (0.0 to 1.0), includes recency boost
+    pub score: f32,
+    /// Detailed waveform similarity components
+    pub waveform: WaveformSimilarityResult,
+    /// Whether saturation was detected in the search space
+    pub saturation_detected: bool,
 }
 
 /// How a search result was matched
@@ -501,6 +518,141 @@ impl SemanticSearch {
 
         // Limit results
         hits.truncate(limit);
+
+        Ok(hits)
+    }
+
+    // ========================================================================
+    // Waveform-Based Search
+    // ========================================================================
+
+    /// Search using waveform similarity instead of cosine similarity
+    ///
+    /// This treats embeddings as signals and uses cross-correlation, spectral
+    /// analysis, and multi-scale comparison to find similarities that cosine
+    /// misses. Particularly effective at scale where cosine similarity saturates.
+    pub async fn search_waveform(&self, query: &str, options: SearchOptions) -> Result<Vec<WaveformSearchHit>> {
+        // Generate query embedding
+        let query_embedding = self.embeddings.embed(query).await?;
+
+        // Get all objects with embeddings
+        let objects_with_embeddings = {
+            let store = self.store.read().await;
+            store.get_objects_with_embeddings(options.max_tier)?
+        };
+
+        // First compute cosine scores to check for saturation
+        let cosine_scores: Vec<f32> = objects_with_embeddings
+            .iter()
+            .map(|(_, embedding)| cosine_similarity(&query_embedding, embedding))
+            .collect();
+
+        // Check for saturation
+        let is_saturated = waveform_detect_saturation(&cosine_scores);
+
+        // Prepare candidates for waveform search
+        let candidates: Vec<(String, Vec<f32>)> = objects_with_embeddings
+            .into_iter()
+            .map(|(obj, embedding)| (obj.suid.to_string(), embedding))
+            .collect();
+
+        // Find similar using waveform methods
+        let waveform_results = find_similar_waveform(
+            &query_embedding,
+            &candidates,
+            Some(&cosine_scores),
+            options.limit * 2, // Get more results, we'll filter
+            options.min_score,
+        );
+
+        // Get full objects and add recency boost
+        let store = self.store.read().await;
+        let mut hits: Vec<WaveformSearchHit> = waveform_results
+            .into_iter()
+            .filter_map(|(suid_str, waveform_result)| {
+                // Parse the SUID string back to Suid
+                match crate::semantic_object::Suid::parse(&suid_str) {
+                    Ok(suid) => {
+                        store.get(&suid).ok().flatten().map(|obj| {
+                            // Calculate recency boost
+                            let recency_boost = calculate_recency_boost(&obj.modified_at, options.recency_decay);
+                            let final_score = (waveform_result.score + recency_boost).min(1.0);
+
+                            WaveformSearchHit {
+                                object: obj,
+                                score: final_score,
+                                waveform: waveform_result,
+                                saturation_detected: is_saturated,
+                            }
+                        })
+                    }
+                    Err(_) => None,
+                }
+            })
+            .collect();
+
+        // Sort by final score
+        hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Apply limit
+        hits.truncate(options.limit);
+
+        Ok(hits)
+    }
+
+    /// Find similar objects using waveform similarity
+    ///
+    /// This is the waveform-based alternative to find_similar.
+    pub async fn find_similar_waveform(&self, suid: &Suid, limit: usize) -> Result<Vec<WaveformSearchHit>> {
+        // Get the object's embedding
+        let embedding = {
+            let store = self.store.read().await;
+            store.get_embedding(suid)?.ok_or(SearchError::NoEmbedding)?
+        };
+
+        // Get all objects with embeddings
+        let objects_with_embeddings = {
+            let store = self.store.read().await;
+            store.get_objects_with_embeddings(SecurityTier::Sealed)?
+        };
+
+        // Prepare candidates (excluding query object)
+        let candidates: Vec<(String, Vec<f32>)> = objects_with_embeddings
+            .into_iter()
+            .filter(|(obj, _)| &obj.suid != suid)
+            .map(|(obj, obj_embedding)| (obj.suid.to_string(), obj_embedding))
+            .collect();
+
+        // Find similar using waveform
+        let waveform_results = find_similar_waveform(
+            &embedding,
+            &candidates,
+            None,
+            limit,
+            0.0, // No minimum score for "find similar"
+        );
+
+        // Get full objects
+        let store = self.store.read().await;
+        let hits: Vec<WaveformSearchHit> = waveform_results
+            .into_iter()
+            .filter_map(|(suid_str, waveform_result)| {
+                // Parse the SUID string back to Suid
+                match crate::semantic_object::Suid::parse(&suid_str) {
+                    Ok(suid) => {
+                        store.get(&suid).ok().flatten().map(|obj| {
+                            WaveformSearchHit {
+                                object: obj,
+                                score: waveform_result.score,
+                                waveform: waveform_result,
+                                saturation_detected: false,
+                            }
+                        })
+                    }
+                    Err(_) => None,
+                }
+            })
+            .collect();
 
         Ok(hits)
     }
