@@ -1,7 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "Bash(tasklist:*)"
+      "Bash(tasklist:*)",
+      "Bash(cargo check *)",
+      "Bash(npx tsc *)"
     ]
-  }
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "marlos-memory"
+  ]
 }

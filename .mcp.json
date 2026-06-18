@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "marlos-memory": {
+      "command": "F:\\CanoLab\\MarlOS\\src-tauri\\target\\release\\marlos-mcp.exe",
+      "args": [
+        "--db-path",
+        "C:\\Users\\jerro\\AppData\\Roaming\\com.marlos.app\\objects.db"
+      ]
+    }
+  }
+}
