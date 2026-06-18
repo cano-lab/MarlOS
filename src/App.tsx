@@ -1,4 +1,4 @@
-import { createSignal, createEffect, onMount, Show, ErrorBoundary } from "solid-js";
+import { createSignal, onMount, Show, ErrorBoundary } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
@@ -17,7 +17,15 @@ import HomePage, { RecentFile } from "./components/HomePage";
 import LearningPanel from "./components/LearningPanel";
 import { ToastProvider, useToast } from "./components/Toast";
 import { useDocumentTimer } from "./hooks/useDocumentTimer";
+import SplitPane from "./components/SplitPane";
+import DocumentOutline from "./components/DocumentOutline";
+import WritingTargetModal from "./components/WritingTargetModal";
+import VersionHistory from "./components/VersionHistory";
+import AnnotationPanel from "./components/AnnotationPanel";
+import ReferenceLibrary from "./components/ReferenceLibrary";
+import BookMode from "./components/BookMode";
 import ErrorFallback from "./components/ErrorBoundary";
+import { EditorView } from "@codemirror/view";
 import "./App.css";
 
 interface VersionInfo {
@@ -36,7 +44,7 @@ interface Document {
 }
 
 type ViewMode = "editor" | "preview" | "split";
-type AppMode = "home" | "markdown" | "pdf" | "epub" | "learn" | "unstuck";
+type AppMode = "home" | "markdown" | "pdf" | "epub" | "learn" | "unstuck" | "book";
 
 function AppContent() {
   const { showToast } = useToast();
@@ -55,8 +63,15 @@ function AppContent() {
   const [researchHubSearchQuery, setResearchHubSearchQuery] = createSignal<string>("");
   const [showSessions, setShowSessions] = createSignal(false);
   const [showVectorQuery, setShowVectorQuery] = createSignal(false);
-  const [selectedText, setSelectedText] = createSignal<string>("");
+  const [selectedText, _setSelectedText] = createSignal<string>("");
   const [recentFiles, setRecentFiles] = createSignal<RecentFile[]>([]);
+  const [showOutline, setShowOutline] = createSignal(false);
+  const [editorViewRef, setEditorViewRef] = createSignal<EditorView | undefined>(undefined);
+  const [targetWordCount, setTargetWordCount] = createSignal<number>(0);
+  const [showWritingTarget, setShowWritingTarget] = createSignal(false);
+  const [showVersionHistory, setShowVersionHistory] = createSignal(false);
+  const [showAnnotations, setShowAnnotations] = createSignal(false);
+  const [showRefLibrary, setShowRefLibrary] = createSignal(false);
 
   const documentTimer = useDocumentTimer();
 
@@ -97,6 +112,13 @@ function AppContent() {
 
   const openUnstuck = () => {
     setAppMode("unstuck");
+    setDocument(null);
+    setPdfPath(null);
+    setEpubPath(null);
+  };
+
+  const openBookMode = () => {
+    setAppMode("book");
     setDocument(null);
     setPdfPath(null);
     setEpubPath(null);
@@ -231,6 +253,12 @@ function AppContent() {
         is_dirty: false,
         title: extractTitle(doc.content) || path.split(/[/\\]/).pop()?.replace(/\.[^.]+$/, "") || doc.title,
       });
+      // Auto-save a version snapshot
+      try {
+        await invoke("version_save", { documentPath: path, content: doc.content, label: null });
+      } catch (e) {
+        console.debug("Version save failed:", e);
+      }
       showToast("Document saved", "success");
     } catch (e) {
       console.error("Failed to save document:", e);
@@ -298,6 +326,10 @@ function AppContent() {
       e.preventDefault();
       setShowVectorQuery(!showVectorQuery());
     }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "L") {
+      e.preventDefault();
+      setShowRefLibrary(!showRefLibrary());
+    }
     if (appMode() === "markdown") {
       if ((e.ctrlKey || e.metaKey) && e.key === "1") {
         e.preventDefault();
@@ -310,6 +342,10 @@ function AppContent() {
       if ((e.ctrlKey || e.metaKey) && e.key === "3") {
         e.preventDefault();
         setViewMode("preview");
+      }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "O") {
+        e.preventDefault();
+        setShowOutline(!showOutline());
       }
     }
     if (e.key === "Escape") {
@@ -362,6 +398,8 @@ function AppContent() {
             sessionsOpen={showSessions()}
             onToggleVectorQuery={() => setShowVectorQuery(!showVectorQuery())}
             vectorQueryOpen={showVectorQuery()}
+            onToggleRefLibrary={() => setShowRefLibrary(!showRefLibrary())}
+            refLibraryOpen={showRefLibrary()}
             onGoHome={goHome}
             recentFiles={recentFiles()}
             onOpenRecent={openDocument}
@@ -379,6 +417,12 @@ function AppContent() {
               onToggleVectorSearch={() => setShowVectorQuery(!showVectorQuery())}
               onOpenLearn={openLearn}
               onOpenUnstuck={openUnstuck}
+              onOpenBook={openBookMode}
+              onResearchSearch={(query) => {
+                setResearchHubSearchQuery(query);
+                setResearchHubInitialTab("discover");
+                setShowResearchHub(true);
+              }}
             />
           </Show>
 
@@ -403,26 +447,68 @@ function AppContent() {
                   onToggleVectorSearch={() => setShowVectorQuery(!showVectorQuery())}
                   onOpenLearn={openLearn}
                   onOpenUnstuck={openUnstuck}
+                  onOpenBook={openBookMode}
+                  onResearchSearch={(query) => {
+                    setResearchHubSearchQuery(query);
+                    setResearchHubInitialTab("discover");
+                    setShowResearchHub(true);
+                  }}
                 />
               }
             >
-              <div class={`editor-area view-${viewMode()}`}>
-                <Show when={viewMode() !== "preview"}>
-                  <div class="editor-pane">
-                    <MarkdownEditor
-                      content={document()!.content}
-                      onChange={updateContent}
-                      onSave={saveDocument}
+              <div class="editor-with-outline">
+                <Show when={showOutline()}>
+                  <DocumentOutline
+                    content={document()!.content}
+                    editorView={editorViewRef()}
+                    onClose={() => setShowOutline(false)}
+                  />
+                </Show>
+                <div class={`editor-area view-${viewMode()}`}>
+                  <Show when={viewMode() === "split"}>
+                    <SplitPane
+                      storageKey="editor-split-ratio"
+                      defaultRatio={0.5}
+                      left={
+                        <div class="editor-pane">
+                          <MarkdownEditor
+                            content={document()!.content}
+                            onChange={updateContent}
+                            onSave={saveDocument}
+                            onEditorView={setEditorViewRef}
+                            targetWordCount={targetWordCount()}
+                          />
+                        </div>
+                      }
+                      right={
+                        <div class="preview-pane">
+                          <Preview content={document()!.content} />
+                        </div>
+                      }
                     />
-                  </div>
-                </Show>
-                <Show when={viewMode() === "split"}>
-                  <div class="pane-divider" />
-                </Show>
-                <Show when={viewMode() !== "editor"}>
-                  <div class="preview-pane">
-                    <Preview content={document()!.content} />
-                  </div>
+                  </Show>
+                  <Show when={viewMode() === "editor"}>
+                    <div class="editor-pane">
+                      <MarkdownEditor
+                        content={document()!.content}
+                        onChange={updateContent}
+                        onSave={saveDocument}
+                        onEditorView={setEditorViewRef}
+                        targetWordCount={targetWordCount()}
+                      />
+                    </div>
+                  </Show>
+                  <Show when={viewMode() === "preview"}>
+                    <div class="preview-pane">
+                      <Preview content={document()!.content} />
+                    </div>
+                  </Show>
+                </div>
+                <Show when={showAnnotations()}>
+                  <AnnotationPanel
+                    editorView={editorViewRef()}
+                    onClose={() => setShowAnnotations(false)}
+                  />
                 </Show>
               </div>
             </Show>
@@ -443,6 +529,12 @@ function AppContent() {
               />
             </div>
           </Show>
+
+          <Show when={appMode() === "book"}>
+            <div class="book-mode-view">
+              <BookMode onClose={goHome} />
+            </div>
+          </Show>
         </main>
 
         <Show when={showChat() && appMode() !== "unstuck"}>
@@ -459,6 +551,38 @@ function AppContent() {
         <footer class="status-bar">
           <Show when={appMode() === "markdown" && document()}>
             <span>{document()!.word_count} words</span>
+            <button
+              class="status-target-btn"
+              onClick={() => setShowWritingTarget(true)}
+              title="Set writing target"
+            >
+              {targetWordCount() > 0
+                ? `${Math.round((document()!.word_count / targetWordCount()) * 100)}% of ${targetWordCount()}`
+                : "Set target"}
+            </button>
+            <button
+              class="status-target-btn"
+              onClick={() => setShowOutline(!showOutline())}
+              title="Toggle outline (Ctrl+Shift+O)"
+            >
+              Outline
+            </button>
+            <button
+              class="status-target-btn"
+              onClick={() => setShowAnnotations(!showAnnotations())}
+              title="Toggle annotations"
+            >
+              Notes
+            </button>
+            <Show when={document()?.path}>
+              <button
+                class="status-target-btn"
+                onClick={() => setShowVersionHistory(true)}
+                title="Version history"
+              >
+                History
+              </button>
+            </Show>
           </Show>
           <Show when={document()?.path || pdfPath() || epubPath()}>
             <span class="status-path" title={document()?.path || pdfPath() || epubPath() || ""}>
@@ -515,6 +639,38 @@ function AppContent() {
             <VectorQuery onClose={() => setShowVectorQuery(false)} />
           </ErrorBoundary>
         </div>
+      </Show>
+
+      <Show when={showWritingTarget()}>
+        <WritingTargetModal
+          currentTarget={targetWordCount()}
+          currentWords={document()?.word_count || 0}
+          onSetTarget={setTargetWordCount}
+          onClose={() => setShowWritingTarget(false)}
+        />
+      </Show>
+
+      <Show when={showRefLibrary()}>
+        <ReferenceLibrary
+          onClose={() => setShowRefLibrary(false)}
+          onOpenPdf={(path) => {
+            setShowRefLibrary(false);
+            openPdf(path);
+          }}
+        />
+      </Show>
+
+      <Show when={showVersionHistory() && document()?.path}>
+        <VersionHistory
+          documentPath={document()!.path!}
+          currentContent={document()!.content}
+          onRestore={(content) => {
+            updateContent(content);
+            setShowVersionHistory(false);
+            showToast("Version restored", "success");
+          }}
+          onClose={() => setShowVersionHistory(false)}
+        />
       </Show>
     </div>
   );

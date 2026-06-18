@@ -436,24 +436,6 @@ export const Sessions: Component<SessionsProps> = (props) => {
     }
   };
 
-  const searchSessions = async () => {
-    if (!searchQuery().trim()) {
-      await loadSessions();
-      return;
-    }
-
-    try {
-      setLoading(true);
-      const results = await invoke<Session[]>('search_sessions', { query: searchQuery() });
-      setSessionHistory(results);
-    } catch (error) {
-      console.error('Failed to search sessions:', error);
-      props.onError?.(String(error));
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const formatTimestamp = (timestamp: string) => {
     const date = new Date(timestamp);
     return date.toLocaleString();

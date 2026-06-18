@@ -77,18 +77,7 @@ interface TrackedRepo {
   auto_sync: string | { Scheduled: { interval_hours: number } };
 }
 
-interface RepoStatus {
-  id: string;
-  name: string;
-  path: string;
-  last_synced: string;
-  is_git_repo: boolean;
-  current_commit: string | null;
-  last_synced_commit: string | null;
-  has_changes: boolean;
-  files_changed: number;
-  auto_sync: string | { Scheduled: { interval_hours: number } };
-}
+// RepoStatus interface reserved for future use
 
 interface IdeaSpace3DProps {
   isOpen: boolean;
@@ -116,7 +105,7 @@ const IdeaSpace3D: Component<IdeaSpace3DProps> = (props) => {
   const [totalObjects, setTotalObjects] = createSignal(0);
   const [selectedPoint, setSelectedPoint] = createSignal<IdeaSpacePoint | null>(null);
   const [hoveredPoint, setHoveredPoint] = createSignal<IdeaSpacePoint | null>(null);
-  const [viewMode, setViewMode] = createSignal<"pca" | "custom">("pca");
+  const [_viewMode, _setViewMode] = createSignal<"pca" | "custom">("pca");
   const [clusters, setClusters] = createSignal<ClusterInfo[]>([]);
   const [showClusters, setShowClusters] = createSignal(false);
   const [filterType, setFilterType] = createSignal<string | null>(null);
@@ -127,7 +116,7 @@ const IdeaSpace3D: Component<IdeaSpace3DProps> = (props) => {
   const [importing, setImporting] = createSignal(false);
   const [importStatus, setImportStatus] = createSignal("");
   const [trackedRepos, setTrackedRepos] = createSignal<TrackedRepo[]>([]);
-  const [showRepoList, setShowRepoList] = createSignal(false);
+  const [_showRepoList, _setShowRepoList] = createSignal(false);
   const [projectionMode, setProjectionMode] = createSignal<string>("pca");
 
   // Load tracked repos on open
@@ -382,7 +371,7 @@ const IdeaSpace3D: Component<IdeaSpace3DProps> = (props) => {
     if (!scene) return;
 
     const axisLength = 1.5;
-    const axes = space()?.axes || [];
+    void (space()?.axes || []);
 
     // X axis (red)
     const xGeometry = new THREE.BufferGeometry().setFromPoints([

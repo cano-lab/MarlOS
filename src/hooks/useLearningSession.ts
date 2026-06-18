@@ -37,7 +37,10 @@ Your job is to:
 1. Provide a clear, accurate answer to their question
 2. Be thorough but accessible
 3. Include concrete examples where helpful
-4. If the topic requires current information, indicate what might need verification
+4. If research context is provided, cite specific sources by name/author
+5. Distinguish between established knowledge and recent findings
+
+If [Research Context] is included, USE those sources — cite papers by author and year, reference web sources by name. The research context contains REAL search results, not placeholders.
 
 Do NOT compare to their prediction yet - just provide the accurate answer.`,
 
@@ -304,6 +307,7 @@ export interface SearchResults {
   query: string;
   results: SearchResult[];
   total_found: number;
+  error?: string;
 }
 
 interface AcademicPaper {
@@ -319,10 +323,11 @@ interface AcademicPaper {
   venue: string | null;
 }
 
-interface AcademicSearchResults {
+export interface AcademicSearchResults {
   query: string;
   papers: AcademicPaper[];
   total_found: number;
+  error?: string;
 }
 
 // Web search helper

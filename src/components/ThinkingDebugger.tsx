@@ -1,4 +1,4 @@
-import { Component, createSignal, createEffect, For, Show, onMount } from "solid-js";
+import { Component, createSignal, For, Show, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import "./ThinkingDebugger.css";
 

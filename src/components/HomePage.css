@@ -29,6 +29,66 @@
   margin: 8px 0 0;
 }
 
+/* Research Search Bar */
+.home-search-bar {
+  width: 100%;
+  max-width: 640px;
+  margin-bottom: 36px;
+}
+
+.home-search-bar .search-form {
+  display: flex;
+  align-items: center;
+  background: var(--bg-secondary);
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  padding: 4px 8px 4px 16px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.home-search-bar .search-form:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb, 100, 149, 237), 0.15);
+}
+
+.home-search-bar .search-icon {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  margin-right: 10px;
+}
+
+.home-search-bar .search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-size: 15px;
+  padding: 12px 0;
+  min-width: 0;
+}
+
+.home-search-bar .search-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.home-search-bar .search-submit {
+  flex-shrink: 0;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.home-search-bar .search-submit:hover {
+  opacity: 0.9;
+}
+
 /* Sections */
 .home-section {
   width: 100%;

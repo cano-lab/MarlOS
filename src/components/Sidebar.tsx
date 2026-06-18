@@ -21,6 +21,8 @@ interface SidebarProps {
   sessionsOpen?: boolean;
   onToggleVectorQuery?: () => void;
   vectorQueryOpen?: boolean;
+  onToggleRefLibrary?: () => void;
+  refLibraryOpen?: boolean;
   currentFile?: string;
   currentProject?: string;
   // New props for home and recent files
@@ -167,6 +169,18 @@ const Sidebar: Component<SidebarProps> = (props) => {
                 <path d="M4 6h4M6 4v4" stroke="currentColor" stroke-width="0.8" />
               </svg>
               Research
+            </button>
+            <button
+              class={`sidebar-btn ${props.refLibraryOpen ? "active" : ""}`}
+              onClick={props.onToggleRefLibrary}
+              title="Reference Library (Ctrl+Shift+L)"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <rect x="2" y="2" width="4" height="12" rx="0.5" stroke="currentColor" stroke-width="1" fill="none" />
+                <rect x="7" y="2" width="3" height="12" rx="0.5" stroke="currentColor" stroke-width="1" fill="none" />
+                <rect x="11" y="2" width="3" height="12" rx="0.5" stroke="currentColor" stroke-width="1" fill="none" />
+              </svg>
+              Library
             </button>
             <button
               class={`sidebar-btn sessions-btn ${props.sessionsOpen ? "active" : ""}`}

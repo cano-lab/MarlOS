@@ -28,6 +28,8 @@ interface HomePageProps {
   onToggleVectorSearch: () => void;
   onOpenLearn?: () => void;
   onOpenUnstuck?: () => void;
+  onOpenBook?: () => void;
+  onResearchSearch?: (query: string) => void;
 }
 
 const HomePage: Component<HomePageProps> = (props) => {
@@ -35,6 +37,7 @@ const HomePage: Component<HomePageProps> = (props) => {
   const [aiSessions, setAiSessions] = createSignal<ActiveAiSession[]>([]);
   const [loading, setLoading] = createSignal(true);
   const [loadingAi, setLoadingAi] = createSignal(true);
+  const [searchQuery, setSearchQuery] = createSignal("");
 
   onMount(async () => {
     // Load both in parallel
@@ -155,12 +158,41 @@ const HomePage: Component<HomePageProps> = (props) => {
     }
   };
 
+  const handleSearchSubmit = (e: Event) => {
+    e.preventDefault();
+    const query = searchQuery().trim();
+    if (query && props.onResearchSearch) {
+      props.onResearchSearch(query);
+      setSearchQuery("");
+    }
+  };
+
   return (
     <div class="home-page">
       <header class="home-header">
         <h1>Welcome back</h1>
         <p class="home-subtitle">Pick up where you left off</p>
       </header>
+
+      {/* Research Search Bar */}
+      <div class="home-search-bar">
+        <form onSubmit={handleSearchSubmit} class="search-form">
+          <svg class="search-icon" width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <circle cx="7.5" cy="7.5" r="5.5" stroke="currentColor" stroke-width="1.5" fill="none" />
+            <path d="M12 12l4.5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          </svg>
+          <input
+            type="text"
+            class="search-input"
+            placeholder="Search the web and academic papers... (Enter to research)"
+            value={searchQuery()}
+            onInput={(e) => setSearchQuery(e.currentTarget.value)}
+          />
+          <Show when={searchQuery().trim()}>
+            <button type="submit" class="search-submit">Research</button>
+          </Show>
+        </form>
+      </div>
 
       {/* Active AI Coding Sessions */}
       <Show when={!loadingAi() && aiSessions().length > 0}>
@@ -271,6 +303,12 @@ const HomePage: Component<HomePageProps> = (props) => {
               <button class="action-btn action-learn" onClick={props.onOpenLearn}>
                 <span class="action-icon">{"\u{1F4DA}"}</span>
                 <span class="action-label">Learn</span>
+              </button>
+            </Show>
+            <Show when={props.onOpenBook}>
+              <button class="action-btn action-book" onClick={props.onOpenBook}>
+                <span class="action-icon">{"\u{1F4D6}"}</span>
+                <span class="action-label">Book Mode</span>
               </button>
             </Show>
           </div>

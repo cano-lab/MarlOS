@@ -5,7 +5,7 @@ import GoalEditor from "./GoalEditor";
 import StepCard from "./StepCard";
 import WidgetCard from "./WidgetCard";
 import WidgetPicker from "./WidgetPicker";
-import LocationPicker, { SavedLocation } from "./LocationPicker";
+import LocationPicker from "./LocationPicker";
 import "./PlanSpace.css";
 
 // Types
@@ -206,7 +206,7 @@ const PlanSpace: Component<PlanSpaceProps> = (props) => {
     createdAt: Date;
   }
   const [savedLocations, setSavedLocations] = createSignal<SavedLocation[]>([]);
-  const [showLocationPicker, setShowLocationPicker] = createSignal(false);
+  const [_showLocationPicker, _setShowLocationPicker] = createSignal(false);
 
   // Current energy level (for filtering)
   const [currentEnergy, setCurrentEnergy] = createSignal(3);
@@ -558,7 +558,7 @@ const PlanSpace: Component<PlanSpaceProps> = (props) => {
         calendar: { type: "calendar" as const, showWeekends: true },
         file: { type: "file" as const, filePath: "", isImage: false },
         link: { type: "link" as const, url: "", title: "" },
-        clock: { type: "clock" as const, clockType: "digital", showSeconds: true, use24Hour: true },
+        clock: { type: "clock" as const, clockType: "digital" as const, showSeconds: true, use24Hour: true },
       };
 
       const defaultSizes = {
@@ -876,11 +876,6 @@ const PlanSpace: Component<PlanSpaceProps> = (props) => {
 
   const zoomIn = () => setZoom(Math.min(2, zoom() + 0.25));
   const zoomOut = () => setZoom(Math.max(0.25, zoom() - 0.25));
-  const resetZoom = () => {
-    setZoom(1);
-    setPanOffset({ x: 0, y: 0 });
-  };
-
   // Open editor
   const openNewGoalEditor = () => {
     setEditingGoal(null);

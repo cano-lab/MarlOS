@@ -1,5 +1,5 @@
-import { Component, JSX } from "solid-js";
-import { resetErrorBoundaries, ErrorBoundary } from "solid-js";
+import { JSX, Show } from "solid-js";
+import { resetErrorBoundaries } from "solid-js";
 import "./ErrorBoundary.css";
 
 interface FallbackProps {

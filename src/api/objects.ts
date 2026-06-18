@@ -36,6 +36,22 @@ export interface ObjectSearchResult {
   relevance: number;
 }
 
+export interface WaveformSimilarityComponents {
+  cross_correlation: number;
+  spectral: number;
+  multiscale: number;
+}
+
+export interface WaveformSearchResult {
+  suid: string;
+  title?: string;
+  content_type: ContentType;
+  tier: SecurityTier;
+  score: number;
+  waveform: WaveformSimilarityComponents;
+  saturation_detected: boolean;
+}
+
 export interface TierChange {
   from: SecurityTier;
   to: SecurityTier;
@@ -133,6 +149,70 @@ export async function addRelation(
   relationType: string
 ): Promise<boolean> {
   return invoke("object_add_relation", { fromSuid, toSuid, relationType });
+}
+
+// Waveform-based search (signal processing approach)
+
+/**
+ * Search objects using waveform similarity
+ *
+ * Treats embeddings as signals and uses cross-correlation, spectral analysis,
+ * and multi-scale comparison to find similarities that cosine similarity misses.
+ * Particularly effective at scale where cosine similarity saturates.
+ */
+export async function searchObjectsWaveform(
+  query: string,
+  limit?: number,
+  tierFilter?: SecurityTier
+): Promise<WaveformSearchResult[]> {
+  const results = await invoke("object_search_waveform", {
+    query,
+    limit,
+    max_tier: tierFilter,
+  });
+
+  // Map backend response to frontend types
+  return (results as any[]).map((r) => ({
+    suid: r.object.suid,
+    title: r.object.name,
+    content_type: r.object.content_type as ContentType,
+    tier: r.object.security_tier as SecurityTier,
+    score: r.score,
+    waveform: {
+      cross_correlation: r.waveform.cross_correlation,
+      spectral: r.waveform.spectral,
+      multiscale: r.waveform.multiscale,
+    },
+    saturation_detected: r.saturation_detected,
+  }));
+}
+
+/**
+ * Find objects similar to a given object using waveform similarity
+ */
+export async function findSimilarWaveform(
+  suid: string,
+  limit?: number
+): Promise<WaveformSearchResult[]> {
+  const results = await invoke("object_find_similar_waveform", {
+    suid,
+    limit,
+  });
+
+  // Map backend response to frontend types
+  return (results as any[]).map((r) => ({
+    suid: r.object.suid,
+    title: r.object.name,
+    content_type: r.object.content_type as ContentType,
+    tier: r.object.security_tier as SecurityTier,
+    score: r.score,
+    waveform: {
+      cross_correlation: r.waveform.cross_correlation,
+      spectral: r.waveform.spectral,
+      multiscale: r.waveform.multiscale,
+    },
+    saturation_detected: r.saturation_detected,
+  }));
 }
 
 // Helper functions
