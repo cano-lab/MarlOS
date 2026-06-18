@@ -1,4 +1,4 @@
-import { Component, createEffect, onMount } from "solid-js";
+import { Component, onMount } from "solid-js";
 import "./Editor.css";
 
 interface EditorProps {

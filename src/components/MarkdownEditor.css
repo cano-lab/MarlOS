@@ -90,6 +90,38 @@
   align-items: center;
 }
 
+/* Word count target */
+.word-target {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 80px;
+  height: 14px;
+  background: var(--bg-primary);
+  border-radius: 7px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.word-target-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  border-radius: 7px;
+  transition: width 0.3s ease, background-color 0.3s ease;
+}
+
+.word-target-label {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
 /* Ghost text for inline AI */
 .cm-ghost-text {
   opacity: 0.5;

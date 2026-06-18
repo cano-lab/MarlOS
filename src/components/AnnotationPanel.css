@@ -1,0 +1,231 @@
+.ann-panel {
+  width: 260px;
+  min-width: 220px;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ann-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ann-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.ann-close {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.ann-close:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.ann-add {
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ann-add-row {
+  display: flex;
+  gap: 4px;
+}
+
+.ann-type-select {
+  flex: 1;
+  padding: 4px 8px;
+  font-size: 12px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.ann-text-input {
+  flex: 1;
+  padding: 4px 8px;
+  font-size: 12px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  min-width: 0;
+}
+
+.ann-text-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.ann-add-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  background: var(--accent);
+  color: white;
+  border-radius: 3px;
+  font-weight: 500;
+}
+
+.ann-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.ann-toggle-resolved {
+  font-size: 11px;
+  color: var(--accent);
+  padding: 0;
+}
+
+.ann-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.ann-item {
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.ann-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.ann-item-resolved {
+  opacity: 0.5;
+}
+
+.ann-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.ann-type-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-weight: 600;
+}
+
+.ann-badge-comment {
+  background: rgba(86, 156, 214, 0.2);
+  color: #569cd6;
+}
+
+.ann-badge-todo {
+  background: rgba(220, 220, 170, 0.2);
+  color: #dcdcaa;
+}
+
+.ann-badge-citation-needed {
+  background: rgba(206, 145, 120, 0.2);
+  color: #ce9178;
+}
+
+.ann-badge-highlight {
+  background: rgba(78, 201, 176, 0.2);
+  color: #4ec9b0;
+}
+
+.ann-item-actions {
+  display: flex;
+  gap: 2px;
+}
+
+.ann-action {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.ann-action:hover {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.ann-action-delete:hover {
+  color: #f44747;
+}
+
+.ann-item-text {
+  font-size: 12px;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+
+/* CodeMirror annotation highlight styles */
+.cm-annotation-highlight {
+  background: rgba(78, 201, 176, 0.15);
+  border-bottom: 2px solid rgba(78, 201, 176, 0.5);
+}
+
+.cm-annotation-comment {
+  background: rgba(86, 156, 214, 0.15);
+  border-bottom: 2px solid rgba(86, 156, 214, 0.5);
+}
+
+.cm-annotation-todo {
+  background: rgba(220, 220, 170, 0.15);
+  border-bottom: 2px solid rgba(220, 220, 170, 0.5);
+}
+
+.cm-annotation-citation {
+  background: rgba(206, 145, 120, 0.15);
+  border-bottom: 2px solid rgba(206, 145, 120, 0.5);
+}
+
+/* Gutter markers */
+.cm-annotation-gutter {
+  width: 16px;
+}
+
+.annotation-gutter-marker {
+  font-size: 10px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+}
+
+.annotation-type-comment { color: #569cd6; }
+.annotation-type-todo { color: #dcdcaa; }
+.annotation-type-citation-needed { color: #ce9178; }
+.annotation-type-highlight { color: #4ec9b0; }

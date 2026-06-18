@@ -1,0 +1,132 @@
+.wt-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.wt-modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 24px;
+  width: 380px;
+  max-width: 90vw;
+}
+
+.wt-modal h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  color: var(--text-primary);
+}
+
+.wt-current {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0 0 16px;
+}
+
+.wt-input-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.wt-input-row label {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.wt-input-row input {
+  padding: 8px 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 14px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.wt-input-row input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.wt-presets {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.wt-preset {
+  padding: 4px 12px;
+  font-size: 12px;
+  border-radius: 12px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  transition: all 0.15s;
+}
+
+.wt-preset:hover {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.wt-preset-active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.wt-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.wt-actions-right {
+  display: flex;
+  gap: 8px;
+}
+
+.wt-btn-clear {
+  font-size: 13px;
+  color: var(--text-secondary);
+  padding: 6px 12px;
+}
+
+.wt-btn-clear:hover {
+  color: var(--text-primary);
+}
+
+.wt-btn-cancel {
+  padding: 6px 16px;
+  font-size: 13px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+}
+
+.wt-btn-set {
+  padding: 6px 16px;
+  font-size: 13px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: white;
+  font-weight: 500;
+}
+
+.wt-btn-set:hover {
+  background: var(--accent-hover);
+}
