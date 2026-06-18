@@ -1,0 +1,88 @@
+.refimport-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.refimport-modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  width: 550px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.refimport-modal h3 { margin: 0 0 4px; font-size: 16px; color: var(--text-primary); }
+.refimport-modal p { margin: 0 0 12px; font-size: 13px; color: var(--text-secondary); }
+
+.refimport-actions-top {
+  margin-bottom: 8px;
+}
+
+.refimport-file-btn {
+  padding: 6px 14px;
+  font-size: 13px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+}
+.refimport-file-btn:hover { border-color: var(--accent); }
+
+.refimport-textarea {
+  width: 100%;
+  padding: 10px;
+  font-size: 12px;
+  font-family: "JetBrains Mono", "Consolas", monospace;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  resize: vertical;
+  box-sizing: border-box;
+  margin-bottom: 12px;
+}
+.refimport-textarea:focus { outline: none; border-color: var(--accent); }
+
+.refimport-result {
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.refimport-result.success {
+  background: rgba(78, 201, 176, 0.15);
+  color: #4ec9b0;
+}
+.refimport-result.error {
+  background: rgba(244, 71, 71, 0.15);
+  color: #f44747;
+}
+
+.refimport-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.refimport-actions button {
+  padding: 6px 16px;
+  font-size: 13px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+}
+.refimport-btn-primary {
+  background: var(--accent) !important;
+  color: white !important;
+  border-color: var(--accent) !important;
+}
+.refimport-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }

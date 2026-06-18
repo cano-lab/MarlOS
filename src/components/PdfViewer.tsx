@@ -1,5 +1,6 @@
-import { Component, createSignal, createEffect, onMount, onCleanup, Show, For } from "solid-js";
+import { Component, createSignal, createEffect, onMount, Show, For } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
+import { useOCR } from "../services/ocr-service";
 import "./PdfViewer.css";
 
 interface PageInfo {
@@ -73,12 +74,36 @@ const PdfViewer: Component<PdfViewerProps> = (props) => {
 
   // Calibration state
   const [calibrationFactor, setCalibrationFactor] = createSignal(1.0);
-  const [calibrationInput, setCalibrationInput] = createSignal("");
+  const [_calibrationInput, _setCalibrationInput] = createSignal("");
 
   // Pan state
-  const [pan, setPan] = createSignal({ x: 0, y: 0 });
-  const [isPanning, setIsPanning] = createSignal(false);
-  const [panStart, setPanStart] = createSignal({ x: 0, y: 0 });
+  const [pan] = createSignal({ x: 0, y: 0 });
+
+  // OCR state
+  const ocr = useOCR();
+  const [ocrText, setOcrText] = createSignal<string>("");
+  const [showOcrPanel, setShowOcrPanel] = createSignal(false);
+
+  const runOcr = async () => {
+    const rendered = renderedPage();
+    if (!rendered) return;
+    setShowOcrPanel(true);
+    setOcrText("");
+    try {
+      const result = await ocr.recognizeBase64(rendered.image_data, "image/png");
+      setOcrText(result.text);
+    } catch (e) {
+      setOcrText(`OCR failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const copyOcrText = async () => {
+    try {
+      await navigator.clipboard.writeText(ocrText());
+    } catch (e) {
+      console.error("Clipboard write failed:", e);
+    }
+  };
 
   onMount(async () => {
     await loadPdf();
@@ -128,7 +153,7 @@ const PdfViewer: Component<PdfViewerProps> = (props) => {
   };
 
   createEffect(() => {
-    const _ = [currentPage(), zoom(), dpi()];
+    void [currentPage(), zoom(), dpi()];
     if (pdfInfo()) {
       renderCurrentPage();
     }
@@ -337,6 +362,22 @@ const PdfViewer: Component<PdfViewerProps> = (props) => {
             <option value="points">points</option>
           </select>
         </div>
+
+        <div class="toolbar-group">
+          <button
+            class="toolbar-btn"
+            onClick={runOcr}
+            disabled={!renderedPage() || ocr.status().status === "loading" || ocr.status().status === "recognizing"}
+            title="Extract text from this page (OCR)"
+          >
+            🔤 OCR
+          </button>
+          <Show when={ocr.status().status === "loading" || ocr.status().status === "recognizing"}>
+            <span class="toolbar-label">
+              {Math.round((ocr.status().progress || 0) * 100)}%
+            </span>
+          </Show>
+        </div>
       </div>
 
       <div class="pdf-content" ref={containerRef}>
@@ -450,6 +491,39 @@ const PdfViewer: Component<PdfViewerProps> = (props) => {
                 />
               </Show>
             </svg>
+          </div>
+        </Show>
+
+        <Show when={showOcrPanel()}>
+          <div class="pdf-ocr-panel">
+            <div class="pdf-ocr-header">
+              <span class="pdf-ocr-title">Extracted Text</span>
+              <Show when={ocr.status().status === "loading" || ocr.status().status === "recognizing"}>
+                <span class="pdf-ocr-status">{ocr.status().message}</span>
+              </Show>
+              <span class="status-spacer" />
+              <button
+                class="toolbar-btn"
+                onClick={copyOcrText}
+                disabled={!ocrText()}
+                title="Copy extracted text"
+              >
+                Copy
+              </button>
+              <button class="toolbar-btn" onClick={() => setShowOcrPanel(false)} title="Close">
+                ✕
+              </button>
+            </div>
+            <textarea
+              class="pdf-ocr-text"
+              readonly
+              value={ocrText()}
+              placeholder={
+                ocr.status().status === "recognizing" || ocr.status().status === "loading"
+                  ? "Recognizing text..."
+                  : "(no text extracted yet)"
+              }
+            />
           </div>
         </Show>
       </div>
