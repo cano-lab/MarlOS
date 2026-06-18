@@ -1,0 +1,26 @@
+# MarlOS Fine-Tuning Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core ML libraries
+torch>=2.0.0
+transformers>=4.35.0
+accelerate>=0.25.0
+datasets>=2.14.0
+
+# LoRA/QLoRA for efficient fine-tuning
+peft>=0.7.0
+bitsandbytes>=0.41.0
+
+# ONNX export and optimization
+onnx>=1.15.0
+onnxruntime>=1.16.0
+optimum>=1.14.0
+
+# Utilities
+numpy>=1.24.0
+pandas>=2.0.0
+tqdm>=4.65.0
+
+# Optional: For ONNX conversion with best results
+# onnxruntime-tools>=1.14.0
+# optimum[onnxruntime]>=1.14.0
