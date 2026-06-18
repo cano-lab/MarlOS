@@ -90,7 +90,7 @@ const LocationPicker: Component<LocationPickerProps> = (props) => {
                 value={newLocationName()}
                 onInput={(e) => setNewLocationName(e.currentTarget.value)}
                 onKeyDown={handleKeyPress}
-                autoFocus
+                autofocus
               />
               <div class="location-save-actions">
                 <button class="location-save-confirm" onClick={handleSave}>

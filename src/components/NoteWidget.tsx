@@ -95,7 +95,7 @@ const NoteWidget: Component<NoteWidgetProps> = (props) => {
             onKeyDown={handleKeyDown}
             placeholder="Write your note here..."
             onMouseDown={(e) => e.stopPropagation()}
-            autoFocus
+            autofocus
           />
           <div class="note-widget-toolbar">
             <div class="note-widget-colors">

@@ -28,7 +28,7 @@ const widgetIcons: Record<string, string> = {
 };
 
 const WidgetCard: Component<WidgetCardProps> = (props) => {
-  const [isResizing, setIsResizing] = createSignal(false);
+  const [, setIsResizing] = createSignal(false);
 
   const getWidgetIcon = () => {
     return widgetIcons[props.widget.widgetType] || "\u{1F4DD}";

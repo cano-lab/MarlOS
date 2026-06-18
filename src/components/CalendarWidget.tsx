@@ -13,7 +13,6 @@ interface CalendarWidgetProps {
 }
 
 const CalendarWidget: Component<CalendarWidgetProps> = (props) => {
-  const [currentDate, setCurrentDate] = createSignal(new Date());
   const [viewingMonth, setViewingMonth] = createSignal(new Date());
   const [selectedDate, setSelectedDate] = createSignal<string | null>(null);
   const [eventTitle, setEventTitle] = createSignal("");
@@ -200,7 +199,7 @@ const CalendarWidget: Component<CalendarWidgetProps> = (props) => {
               if (e.key === "Enter") saveEvent();
               if (e.key === "Escape") cancelEvent();
             }}
-            autoFocus
+            autofocus
           />
           <div class="calendar-event-actions">
             <button class="calendar-event-btn calendar-event-save" onClick={saveEvent}>

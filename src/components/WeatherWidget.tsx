@@ -1,4 +1,4 @@
-import { Component, createSignal, onMount, onCleanup, For } from "solid-js";
+import { Component, createSignal, onMount, onCleanup, For, Show } from "solid-js";
 import type { Widget } from "./PlanSpace";
 import "./WeatherWidget.css";
 
@@ -134,7 +134,7 @@ const WeatherWidget: Component<WeatherWidgetProps> = (props) => {
       })) || [];
 
       // Filter to get today and next 2 days only
-      const forecastDays = dailyData.filter(day => day.date >= today).slice(0, 3);
+      const forecastDays = dailyData.filter((day: any) => day.date >= today).slice(0, 3);
 
       const weatherData: WeatherData = {
         current: {
@@ -245,7 +245,7 @@ const WeatherWidget: Component<WeatherWidgetProps> = (props) => {
                 setLocationInput(location());
               }
             }}
-            autoFocus
+            autofocus
           />
           <div class="weather-suggestions">
             <span class="weather-suggestions-label">Popular:</span>
