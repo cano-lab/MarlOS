@@ -95,6 +95,9 @@ export interface BookMeta {
    *  Renders as centered italic body under an "Acknowledgements"
    *  heading at the end of the book. Empty = omit. */
   acknowledgements: string;
+  /** Front-cover art credit (freeform). Prints anchored top-left on
+   *  the copyright page. Empty = omit. */
+  cover_art: string;
 }
 
 export interface BookConfig {

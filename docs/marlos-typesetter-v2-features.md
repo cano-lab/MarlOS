@@ -288,3 +288,18 @@ The V1 handoff said *"the book is the forcing function, the book is the test."* 
 Implementation order: Phase H first, even though it produces no visible change. The drop-cap and lead-in spans are infrastructure both presets depend on. Skipping H and adding the `traditional` preset directly leaves the codebase with two `::first-letter` styles and the quote-mark bug intact.
 
 The CSS lives in two places (`book-css.ts` for preview, `pdf_export.rs::build_export_css` for export) and they drift. V2 work should keep them in sync, and a future cleanup should consider extracting the shared subset to a single source — but that's not V2 work.
+
+---
+
+## TODO — Cover-art credit on the Typst path
+
+The `book.cover_art` field (freeform front-cover credit — artwork title, artist,
+medium) was added in the legacy HTML/CSS path: it renders anchored top-left on the
+generated copyright page (`structure.rs::build_generated_front_matter` +
+`.gen-cover-art` in `book-css.ts`, plus the editor field in `BookConfigEditor.tsx`).
+
+The Typst backend (`typst_emit/`) does **not** generate title/copyright/dedication
+pages yet — only page setup, headers, chapter openers, and the TOC/LoF outlines. When
+those generated front-matter pages are ported to Typst, wire `cover_art` into the
+copyright page there too (the field already exists on `BookMeta`, so no schema change
+is needed). Keep the placement consistent: anchored top-left, small italic.

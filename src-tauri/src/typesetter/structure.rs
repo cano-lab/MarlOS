@@ -539,9 +539,17 @@ pub fn build_generated_front_matter(book: &BookMeta) -> String {
     if !holder.is_empty() {
         out.push_str(
             r#"<section data-section-type="front-matter" data-front-page="copyright" class="generated-copyright-page">
-  <div class="copyright-page-inner">
 "#,
         );
+        // Cover-art credit, anchored top-left of the page (CSS-positioned),
+        // separate from the vertically-centred copyright block below.
+        if !book.cover_art.trim().is_empty() {
+            out.push_str(&format!(
+                "  <div class=\"gen-cover-art\">{}</div>\n",
+                escape_html(book.cover_art.trim()).replace('\n', "<br>")
+            ));
+        }
+        out.push_str("  <div class=\"copyright-page-inner\">\n");
         out.push_str(&format!(
             "    <p>Copyright \u{00A9} {} {}</p>\n",
             escape_html(&year),

@@ -307,6 +307,21 @@ const BookConfigEditor: Component<BookConfigEditorProps> = (props) => {
               rows={6}
             />
           </label>
+          <label class="bce-field">
+            <span>Cover art credit</span>
+            <textarea
+              class="bce-textarea"
+              placeholder={
+                'e.g. "Untitled (oil on canvas) by Jane Doe"\n' +
+                "Prints anchored top-left on the copyright page."
+              }
+              value={draft().book.cover_art ?? ""}
+              onInput={(e) =>
+                update((d) => (d.book.cover_art = e.currentTarget.value))
+              }
+              rows={3}
+            />
+          </label>
         </section>
 
         <section class="bce-section">

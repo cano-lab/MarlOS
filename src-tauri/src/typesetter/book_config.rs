@@ -73,6 +73,11 @@ pub struct BookMeta {
     /// page, under an "Acknowledgements" heading. Empty = omit.
     #[serde(default)]
     pub acknowledgements: String,
+    /// Front-cover art credit — freeform, e.g. "Untitled (oil on
+    /// canvas) by Jane Doe". Prints anchored top-left on the copyright
+    /// page. Empty = omit.
+    #[serde(default)]
+    pub cover_art: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -368,6 +373,10 @@ impl BookConfig {
         out.push_str(&format!(
             "acknowledgements = {}\n",
             toml_string_literal(&self.book.acknowledgements)
+        ));
+        out.push_str(&format!(
+            "cover_art = {}\n",
+            toml_string_literal(&self.book.cover_art)
         ));
         out.push('\n');
 
