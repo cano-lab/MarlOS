@@ -817,6 +817,21 @@ sup.note-ref a {{
 .generated-title-page {{ page: no-page-number; }}
 .generated-dedication-page {{ page: no-page-number; }}
 
+/* Stack the cover-art credit above the centred copyright block. */
+.generated-copyright-page {{ flex-direction: column; }}
+
+.generated-copyright-page .gen-cover-art {{
+  width: 100%;
+  max-width: 4in;
+  margin: 0 0 1.2em;
+  font-size: 0.8em;
+  font-style: italic;
+  line-height: 1.4;
+  text-align: center;
+  text-indent: 0;
+  color: #333;
+}}
+
 .generated-title-page .title-page-inner,
 .generated-copyright-page .copyright-page-inner,
 .generated-dedication-page .dedication-inner {{
@@ -1511,6 +1526,9 @@ pub fn html_to_pdf(
 
     let launch_opts = LaunchOptionsBuilder::default()
         .headless(true)
+        .path(Some(PathBuf::from(
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        )))
         .build()
         .map_err(|e| PdfExportError::Chromium(format!("launch options: {}", e)))?;
 

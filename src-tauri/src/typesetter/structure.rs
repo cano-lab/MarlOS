@@ -541,8 +541,8 @@ pub fn build_generated_front_matter(book: &BookMeta) -> String {
             r#"<section data-section-type="front-matter" data-front-page="copyright" class="generated-copyright-page">
 "#,
         );
-        // Cover-art credit, anchored top-left of the page (CSS-positioned),
-        // separate from the vertically-centred copyright block below.
+        // Cover-art credit, centred above the copyright block (CSS stacks
+        // it in flow as the first child of the column-flex page).
         if !book.cover_art.trim().is_empty() {
             out.push_str(&format!(
                 "  <div class=\"gen-cover-art\">{}</div>\n",

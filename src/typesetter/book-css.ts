@@ -430,18 +430,17 @@ hr {
 .generated-title-page { page: no-page-number; }
 .generated-dedication-page { page: no-page-number; }
 
-/* Anchor point for the cover-art credit on the copyright page. */
-.generated-copyright-page { position: relative; }
+/* Stack the cover-art credit above the centred copyright block. */
+.generated-copyright-page { flex-direction: column; }
 
 .generated-copyright-page .gen-cover-art {
-  position: absolute;
-  top: 0;
-  left: 0;
-  max-width: 3in;
+  width: 100%;
+  max-width: 4in;
+  margin: 0 0 1.2em;
   font-size: 0.8em;
   font-style: italic;
   line-height: 1.4;
-  text-align: left;
+  text-align: center;
   text-indent: 0;
   color: #333;
 }
