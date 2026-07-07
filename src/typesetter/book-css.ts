@@ -28,6 +28,10 @@ const TRIM_PRESETS: Record<string, TrimDimensions> = {
   "6x9": { width: "6in", height: "9in" },
   "5x8": { width: "5in", height: "8in" },
   "5.5x8.5": { width: "5.5in", height: "8.5in" },
+  // Document (non-book) page sizes. A4 stays metric — an inch
+  // conversion (8.27×11.69) drifts ~0.003in from the ISO spec.
+  letter: { width: "8.5in", height: "11in" },
+  a4: { width: "210mm", height: "297mm" },
 };
 
 export function trimDimensions(size: string): TrimDimensions {

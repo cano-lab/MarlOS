@@ -20,6 +20,8 @@ const TRIM_PRESETS = [
   { value: "6x9", label: "6 × 9 in (KDP trade paperback)" },
   { value: "5.5x8.5", label: "5.5 × 8.5 in (digest)" },
   { value: "5x8", label: "5 × 8 in (mass market)" },
+  { value: "letter", label: "8.5 × 11 in (US Letter — resume/document)" },
+  { value: "a4", label: "210 × 297 mm (A4 — resume/document)" },
 ];
 
 // Body fonts the renderer has @font-face entries for. The "custom"

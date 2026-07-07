@@ -117,6 +117,16 @@ pub fn get_presets() -> Vec<ProviderPreset> {
             default_model: Some("anthropic/claude-3.5-sonnet".to_string()),
             description: "Access multiple providers via OpenRouter".to_string(),
         },
+        ProviderPreset {
+            // Kimi K2 coding endpoint. OpenAI-compatible: the client
+            // appends /chat/completions to this base, so the effective
+            // URL is https://api.kimi.com/coding/chat/completions.
+            name: "Kimi (Moonshot K2)".to_string(),
+            base_url: "https://api.kimi.com/coding".to_string(),
+            requires_api_key: true,
+            default_model: Some("kimi-k2.7".to_string()),
+            description: "Kimi K2 coding endpoint — powers the resume/custom typeset mode (requires API key)".to_string(),
+        },
     ]
 }
 

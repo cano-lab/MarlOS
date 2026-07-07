@@ -48,6 +48,10 @@ pub fn build_export_css(config: &BookConfig, structure: &BookStructure) -> Strin
         "5x8" => ("5in".into(), "8in".into()),
         "5.5x8.5" => ("5.5in".into(), "8.5in".into()),
         "6x9" => ("6in".into(), "9in".into()),
+        // Document (non-book) page sizes. A4 stays metric so the @page
+        // size matches the ISO spec exactly rather than a lossy inch cast.
+        "letter" => ("8.5in".into(), "11in".into()),
+        "a4" => ("210mm".into(), "297mm".into()),
         other => {
             let mut parsed: Option<(f64, f64)> = None;
             if let Some((w_str, h_str)) = other.split_once('x') {
