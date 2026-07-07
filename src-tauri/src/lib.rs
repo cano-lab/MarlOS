@@ -136,6 +136,26 @@ pub fn run() {
             // Initialize ProviderStore for custom AI providers
             let provider_store = provider_store::ProviderStore::new();
             log::info!("Provider store initialized");
+            // Sync the persisted active provider into the AiManager at startup
+            // so ai_generate (custom-CSS/resume generator, code ops) uses the
+            // user's chosen provider even before the ChatPanel mounts and
+            // re-syncs — e.g. going straight to Book Mode → Style.
+            if let Ok(Some(p)) = provider_store.get_active() {
+                let pname = p.name.clone();
+                let cfg = ai::ProviderConfig {
+                    name: p.name,
+                    base_url: p.base_url,
+                    api_key: p.api_key,
+                    model: p.model,
+                    temperature: p.temperature,
+                    max_tokens: p.max_tokens,
+                    timeout_secs: p.timeout_secs,
+                };
+                match ai_manager.set_config(cfg) {
+                    Ok(()) => log::info!("Synced active provider '{}' into AiManager", pname),
+                    Err(e) => log::warn!("Failed to sync active provider into AiManager: {}", e),
+                }
+            }
             app.manage(provider_store);
 
             // Initialize EmbeddingStore for embedding configuration

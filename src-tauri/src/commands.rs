@@ -563,8 +563,26 @@ pub fn custom_provider_delete(
 pub fn custom_provider_set_active(
     id: String,
     store: State<'_, ProviderStore>,
+    ai_manager: State<'_, Arc<AiManager>>,
 ) -> Result<(), String> {
-    store.set_active(&id)
+    store.set_active(&id)?;
+    // Bridge the newly-active provider into the AiManager immediately so
+    // everything driven by ai_generate (the custom-CSS/resume generator,
+    // code ops, etc.) routes to it right away — not only after the
+    // ChatPanel next mounts and re-syncs. Field shapes are identical.
+    if let Some(p) = store.get(&id)? {
+        let cfg = ProviderConfig {
+            name: p.name,
+            base_url: p.base_url,
+            api_key: p.api_key,
+            model: p.model,
+            temperature: p.temperature,
+            max_tokens: p.max_tokens,
+            timeout_secs: p.timeout_secs,
+        };
+        ai_manager.set_config(cfg).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Test a provider connection
