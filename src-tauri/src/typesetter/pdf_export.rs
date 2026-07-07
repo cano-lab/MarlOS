@@ -152,6 +152,24 @@ section[data-section-type="chapter"] > p:first-of-type {
             String::new()
         };
 
+    // Folio (page-number) margin box, re-declared inside every named
+    // @page rule below. Chromium's print engine does NOT reliably
+    // cascade the general `@page { @bottom-center }` into a *named* page
+    // that redeclares any margin box (the chapter running header sets
+    // @top-center), so without repeating it here the chapter pages come
+    // out with no page number — and, downstream, the two-pass TOC
+    // measurement finds no folio for chapter sections and the TOC
+    // entries print blank. Empty when page numbers are disabled.
+    let folio_box: String = if page_number_content == "none" {
+        String::new()
+    } else {
+        format!(
+            "  @bottom-center {{\n    content: {pg};\n    font-family: {bf};\n    font-size: 9pt;\n    color: #444;\n  }}\n",
+            pg = page_number_content,
+            bf = body_font,
+        )
+    };
+
     // Per-chapter @page rules with literal headers. Chromium's native
     // string()/string-set has been unreliable across versions; literal
     // content in named pages always works.
@@ -238,11 +256,12 @@ section[data-section-type="chapter"][data-section-number="{n}"] > h1 {{
     text-overflow: ellipsis;
     max-width: 100%;
   }}
-}}
+{folio_box}}}
 "#,
             n = n,
             header_lit = header_lit,
             bf = body_font,
+            folio_box = folio_box,
         ));
     }
 
@@ -554,7 +573,16 @@ blockquote {{ margin: 1em 1.5em; font-style: italic; }}
 
 /* "Math Anchor" callout boxes — the equations/derivations the writer
    flags inline. Tagged with class="math-anchor" by the structure
-   pipeline. A bordered, lightly tinted box that stays on one page. */
+   pipeline. A bordered, lightly tinted box.
+
+   The box is allowed to fragment across a page boundary rather than
+   being kept atomic. A short box still stays together naturally (content
+   just flows), but a tall derivation no longer gets shoved whole onto
+   the next page — which left a blank gap at the bottom of the previous
+   one, and had nowhere to go at all when taller than a full page. The
+   atomic unit is instead each equation/paragraph *inside* the box (see
+   the break-inside: avoid on its children below), so fragmentation only
+   ever happens cleanly at the gap between equations, never mid-equation. */
 blockquote.math-anchor {{
   margin: 1.2em 0;
   padding: 0.6em 0.9em;
@@ -562,12 +590,12 @@ blockquote.math-anchor {{
   border-left: 3pt solid #555555;
   background: #f5f5f5;
   font-style: normal;
-  break-inside: avoid;
-  page-break-inside: avoid;
+  break-inside: auto;
+  page-break-inside: auto;
 }}
 blockquote.math-anchor > :first-child {{ margin-top: 0; }}
 blockquote.math-anchor > :last-child {{ margin-bottom: 0; }}
-blockquote.math-anchor p {{ text-indent: 0; }}
+blockquote.math-anchor p {{ text-indent: 0; break-inside: avoid; page-break-inside: avoid; }}
 ul, ol {{ margin: 0.5em 0 0.5em 1.5em; padding: 0; }}
 li {{ margin: 0.2em 0; }}
 
@@ -599,6 +627,8 @@ math[display="block"] {{
   max-width: 100%;
   margin: 1em auto;
   text-align: center;
+  break-inside: avoid;
+  page-break-inside: avoid;
 }}
 p:has(> math[display="block"]) {{ text-align: center; text-indent: 0; }}
 

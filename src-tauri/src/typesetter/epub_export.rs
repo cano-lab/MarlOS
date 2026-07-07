@@ -335,7 +335,13 @@ pub async fn export_epub(
     // EPUB. Without this we'd have to do the anchor pass at the
     // markdown level, which can't see math anchors as a block class.
     let intermediate_html_path: Option<PathBuf> = if config.export.word_anchors {
-        let opts = PandocConvertOptions::default();
+        // Native MathML so equations render in EPUB3 readers without JS
+        // (KaTeX/MathJax spans need a runtime the reader won't run, so
+        // the default --katex path leaves math blank). Matches the PDF.
+        let opts = PandocConvertOptions {
+            math_format: Some("mathml".to_string()),
+            ..Default::default()
+        };
         let pandoc_html = PandocConverter::convert_file(&temp_md, &opts)
             .await
             .map_err(|e| EpubExportError::Invalid(format!("pandoc md→html failed: {}", e)))?;
@@ -385,6 +391,13 @@ pub async fn export_epub(
             "epub3",
         ]);
     }
+
+    // Render math as native MathML. EPUB3 readers display MathML without
+    // any script; pandoc's default (no math flag) emits raw TeX in a
+    // <span class="math">, which shows as blank/garbled source in most
+    // readers — the "math not appearing in the EPUB" bug. Applies to
+    // both the markdown and the word-anchor HTML input paths.
+    cmd.args(["--mathml"]);
 
     cmd.args(["--css", &css_path.display().to_string()])
         // No --toc: don't generate an in-book TOC chapter. The manuscript
