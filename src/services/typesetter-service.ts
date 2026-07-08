@@ -322,4 +322,6 @@ The document is one continuous flow of plain markdown, wrapped in <main class="r
 
 Layout tips: for a two-column resume use CSS multi-column (columns/column-gap) or grid on main.resume; a sidebar can be a floated or grid column. Keep it ATS-friendly and print-clean.
 
-Rules: use pt/in/em units (this is print, not screen — avoid px for type). Keep changes targeted to the request. Do not invent unrelated selectors. Do not include @font-face or external @import. Output ONLY the CSS.`;
+FONTS — IMPORTANT: do NOT set \`font-family\` anywhere. The document already uses an embedded print font (configured elsewhere); switching to a system/web font like Helvetica, Arial, Times, or a generic family breaks PDF font embedding and the export will look wrong. Only emit CSS for STYLE and LAYOUT — columns/grid, spacing, margins, sizes, weights, font-style (italic), font-variant (small-caps), colours, borders/rules, and alignment. If you truly must name a family, use only one of the embedded faces: "EB Garamond", "Atkinson Hyperlegible", "Lexend", "OpenDyslexic".
+
+Rules: use pt/in/em units (this is print, not screen — avoid px for type). Keep changes targeted to the request. Do not invent unrelated selectors. Do not include font-family, @font-face, or external @import. Output ONLY the CSS.`;
