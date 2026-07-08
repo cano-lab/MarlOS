@@ -1,4 +1,5 @@
 import { Component, createSignal, For, Show } from "solid-js";
+import { invoke } from "@tauri-apps/api/core";
 import { aiProviderManager, type AIProvider } from "../services/ai-config";
 import { useLocalLLM } from "../services/ai-service";
 import "./AISettings.css";
@@ -11,14 +12,48 @@ const AISettings: Component = () => {
   // Local LLM hooks for browser provider
   const localLLM = useLocalLLM();
 
+  // Push a menu provider into the backend AiManager so it actually drives
+  // server-side generation (the resume/custom Style panel via ai_generate,
+  // code ops, etc.). Browser-local models aren't backend HTTP providers, so
+  // they're skipped. Field shapes match the Rust ProviderConfig.
+  const pushActiveToBackend = async (provider: AIProvider) => {
+    if (provider.type === "browser") return;
+    const params = config().defaultParams;
+    try {
+      await invoke("ai_set_config", {
+        config: {
+          name: provider.name,
+          base_url: provider.baseUrl,
+          api_key: provider.apiKey || null,
+          model: provider.defaultModel,
+          temperature: params.temperature,
+          max_tokens: params.maxTokens,
+          timeout_secs: 300,
+        },
+      });
+    } catch (e) {
+      console.debug("ai_set_config bridge failed:", e);
+    }
+  };
+
   const handleSetActive = (id: string) => {
     aiProviderManager.setActiveProvider(id);
-    setConfig(aiProviderManager.getConfig());
+    const cfg = aiProviderManager.getConfig();
+    setConfig(cfg);
+    const provider = cfg.providers.find((p) => p.id === id);
+    if (provider) void pushActiveToBackend(provider);
   };
 
   const handleUpdateProvider = (id: string, updates: Partial<AIProvider>) => {
     aiProviderManager.updateProvider(id, updates);
-    setConfig(aiProviderManager.getConfig());
+    const cfg = aiProviderManager.getConfig();
+    setConfig(cfg);
+    // Re-sync to the backend when the *active* provider is edited, so a
+    // freshly pasted API key or model change takes effect immediately.
+    if (cfg.activeProvider === id) {
+      const provider = cfg.providers.find((p) => p.id === id);
+      if (provider) void pushActiveToBackend(provider);
+    }
   };
 
   const handleTestConnection = async (provider: AIProvider) => {

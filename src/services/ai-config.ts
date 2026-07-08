@@ -61,6 +61,19 @@ export const defaultAIConfig: AIConfig = {
       defaultModel: 'claude-3-sonnet',
       availableModels: ['claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku'],
     },
+    {
+      // Kimi K2 coding endpoint. OpenAI-compatible: the client appends
+      // /chat/completions, so the effective URL is
+      // https://api.kimi.com/coding/chat/completions. Powers the
+      // resume/custom typeset Style panel when set active.
+      id: 'kimi',
+      name: 'Kimi (Moonshot K2)',
+      type: 'cloud',
+      baseUrl: 'https://api.kimi.com/coding',
+      apiKey: '',
+      defaultModel: 'kimi-k2.7',
+      availableModels: ['kimi-k2.7'],
+    },
   ],
   defaultParams: {
     temperature: 0.7,
@@ -80,12 +93,25 @@ class AIProviderManager {
     try {
       const saved = localStorage.getItem('ai-config');
       if (saved) {
-        return { ...defaultAIConfig, ...JSON.parse(saved) };
+        const merged = { ...defaultAIConfig, ...JSON.parse(saved) };
+        return this.ensureBuiltinProviders(merged);
       }
     } catch (e) {
       console.error('Failed to load AI config:', e);
     }
     return defaultAIConfig;
+  }
+
+  /** Append any built-in provider missing from a (possibly older) saved
+   *  config — so newer defaults like Kimi appear without the user having
+   *  to reset. Existing entries and edits are left untouched. */
+  private ensureBuiltinProviders(cfg: AIConfig): AIConfig {
+    for (const builtin of defaultAIConfig.providers) {
+      if (!cfg.providers.find((p) => p.id === builtin.id)) {
+        cfg.providers.push(builtin);
+      }
+    }
+    return cfg;
   }
 
   saveConfig() {
