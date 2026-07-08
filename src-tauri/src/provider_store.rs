@@ -119,10 +119,12 @@ pub fn get_presets() -> Vec<ProviderPreset> {
         },
         ProviderPreset {
             // Kimi K2 coding endpoint. OpenAI-compatible: the client
-            // appends /chat/completions to this base, so the effective
-            // URL is https://api.kimi.com/coding/chat/completions.
+            // appends /chat/completions to this base, so the effective URL
+            // is https://api.kimi.com/coding/v1/chat/completions (verified
+            // 200 + real completion; the /v1 segment is required — without
+            // it the endpoint 404s).
             name: "Kimi (Moonshot K2)".to_string(),
-            base_url: "https://api.kimi.com/coding".to_string(),
+            base_url: "https://api.kimi.com/coding/v1".to_string(),
             requires_api_key: true,
             default_model: Some("kimi-k2.7".to_string()),
             description: "Kimi K2 coding endpoint — powers the resume/custom typeset mode (requires API key)".to_string(),

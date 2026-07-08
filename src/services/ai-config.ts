@@ -64,12 +64,13 @@ export const defaultAIConfig: AIConfig = {
     {
       // Kimi K2 coding endpoint. OpenAI-compatible: the client appends
       // /chat/completions, so the effective URL is
-      // https://api.kimi.com/coding/chat/completions. Powers the
+      // https://api.kimi.com/coding/v1/chat/completions (verified 200; the
+      // /v1 segment is required, without it the endpoint 404s). Powers the
       // resume/custom typeset Style panel when set active.
       id: 'kimi',
       name: 'Kimi (Moonshot K2)',
       type: 'cloud',
-      baseUrl: 'https://api.kimi.com/coding',
+      baseUrl: 'https://api.kimi.com/coding/v1',
       apiKey: '',
       defaultModel: 'kimi-k2.7',
       availableModels: ['kimi-k2.7'],
@@ -110,6 +111,13 @@ class AIProviderManager {
       if (!cfg.providers.find((p) => p.id === builtin.id)) {
         cfg.providers.push(builtin);
       }
+    }
+    // One-time correction: an earlier build shipped the Kimi base URL
+    // without the required /v1 segment (it 404s). That URL was never
+    // functional, so patch it forward without touching the user's key.
+    const kimi = cfg.providers.find((p) => p.id === "kimi");
+    if (kimi && kimi.baseUrl === "https://api.kimi.com/coding") {
+      kimi.baseUrl = "https://api.kimi.com/coding/v1";
     }
     return cfg;
   }
