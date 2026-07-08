@@ -49,6 +49,7 @@ mod tests {
 
     fn cfg() -> BookConfig {
         BookConfig {
+            doc_type: Default::default(),
             book: Default::default(),
             trim: Default::default(),
             typography: Default::default(),

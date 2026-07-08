@@ -41,6 +41,38 @@ pub enum BookConfigError {
     Invalid(String),
 }
 
+/// What kind of document this config describes. Selects which layout
+/// lane the export/preview takes: `Book` gets the full book chrome
+/// (chapters, drop caps, running headers, folios, TOC, covers, two-pass
+/// measurement); `Resume`/`Custom` get a flat single-flow document at the
+/// chosen page size with none of that. Book-specific logic stays on the
+/// book path; resume/custom live in their own module — see resume_export.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DocType {
+    #[default]
+    Book,
+    Resume,
+    Custom,
+}
+
+impl DocType {
+    /// True for the book lane (full chapter chrome). False for the flat
+    /// resume/custom lane.
+    pub fn is_book(self) -> bool {
+        matches!(self, DocType::Book)
+    }
+
+    /// The lowercase token used in book.toml (`doc_type = "..."`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DocType::Book => "book",
+            DocType::Resume => "resume",
+            DocType::Custom => "custom",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct BookMeta {
@@ -115,6 +147,31 @@ impl Default for TrimConfig {
         Self {
             size: "6x9".to_string(),
             margins_in: TrimMargins::default(),
+        }
+    }
+}
+
+impl TrimConfig {
+    /// Resolve the trim `size` string to CSS width/height literals for a
+    /// `@page { size: W H }` rule. Lane-agnostic page-size resolution
+    /// shared by every export path. Named presets plus free-form "WxH"
+    /// (inches); A4 stays metric to match the ISO spec exactly. Falls back
+    /// to 6×9. Keep in sync with paper_size_from_trim and book-css.ts.
+    pub fn css_dimensions(&self) -> (String, String) {
+        match self.size.as_str() {
+            "5x8" => ("5in".into(), "8in".into()),
+            "5.5x8.5" => ("5.5in".into(), "8.5in".into()),
+            "6x9" => ("6in".into(), "9in".into()),
+            "letter" => ("8.5in".into(), "11in".into()),
+            "a4" => ("210mm".into(), "297mm".into()),
+            other => other
+                .split_once('x')
+                .and_then(|(w, h)| {
+                    Some((w.trim().parse::<f64>().ok()?, h.trim().parse::<f64>().ok()?))
+                })
+                .filter(|(w, h)| *w > 0.0 && *h > 0.0)
+                .map(|(w, h)| (format!("{}in", w), format!("{}in", h)))
+                .unwrap_or_else(|| ("6in".into(), "9in".into())),
         }
     }
 }
@@ -220,6 +277,11 @@ impl Default for ExportConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BookConfig {
+    /// Document kind — selects the layout lane (book vs resume/custom).
+    /// Defaults to `Book` so every existing book.toml (which omits this
+    /// key) keeps its current behavior.
+    #[serde(default)]
+    pub doc_type: DocType,
     pub book: BookMeta,
     pub trim: TrimConfig,
     pub typography: TypographyConfig,
@@ -236,6 +298,7 @@ pub struct BookConfig {
 impl Default for BookConfig {
     fn default() -> Self {
         Self {
+            doc_type: DocType::default(),
             book: BookMeta::default(),
             trim: TrimConfig::default(),
             typography: TypographyConfig::default(),
@@ -335,6 +398,16 @@ impl BookConfig {
             out.push_str(&toml_string_literal(f));
         }
         out.push_str("]\n\n");
+
+        // Document kind. Top-level key — must precede any [section] header.
+        // Only emitted for non-book docs so book.toml files stay clean.
+        if !self.doc_type.is_book() {
+            out.push_str("# Document kind: book | resume | custom\n");
+            out.push_str(&format!(
+                "doc_type = {}\n\n",
+                toml_string_literal(self.doc_type.as_str())
+            ));
+        }
 
         out.push_str("[book]\n");
         out.push_str(&format!("title = {}\n", toml_string_literal(&self.book.title)));

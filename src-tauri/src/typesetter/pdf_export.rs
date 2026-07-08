@@ -1188,7 +1188,7 @@ const UNICODE_GREEK: &str = "U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+03
 /// loads them into its font cache and embeds (subsets) them into the
 /// PDF — preventing KDP's "not printable" rejection that happens
 /// when text gets rendered in a system font that isn't bundled.
-fn build_font_face_block() -> String {
+pub(crate) fn build_font_face_block() -> String {
     let dir = std::env::temp_dir().join("marlos-fonts");
     let _ = std::fs::create_dir_all(&dir);
 
@@ -1636,6 +1636,17 @@ pub fn paper_size_from_trim(trim_size: &str) -> (f64, f64) {
     match trim_size {
         "5x8" => (5.0, 8.0),
         "5.5x8.5" => (5.5, 8.5),
-        _ => (6.0, 9.0),
+        "6x9" => (6.0, 9.0),
+        // Document (non-book) sizes, in inches (A4 210×297mm ≈ 8.27×11.69).
+        "letter" => (8.5, 11.0),
+        "a4" => (8.267_7, 11.692_9),
+        // Free-form "WxH" in inches (custom trim). Falls back to 6×9. This
+        // is only the Chromium fallback paper param — prefer_css_page_size
+        // means the CSS @page size wins regardless.
+        other => other
+            .split_once('x')
+            .and_then(|(w, h)| Some((w.trim().parse::<f64>().ok()?, h.trim().parse::<f64>().ok()?)))
+            .filter(|(w, h)| *w > 0.0 && *h > 0.0)
+            .unwrap_or((6.0, 9.0)),
     }
 }

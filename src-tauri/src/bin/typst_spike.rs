@@ -268,6 +268,7 @@ fn run_chapter_timing(path: &str) {
     // M2 doesn't read book.toml; M5 will plug this into the
     // production command.
     let mut config = BookConfig {
+        doc_type: Default::default(),
         book: Default::default(),
         trim: Default::default(),
         typography: Default::default(),
@@ -435,6 +436,7 @@ Auxiliary material.
     let tmp = std::env::temp_dir().join("marlos-typst-m2-fixture");
     let _ = std::fs::create_dir_all(&tmp);
     let mut config = BookConfig {
+        doc_type: Default::default(),
         book: Default::default(),
         trim: Default::default(),
         typography: Default::default(),

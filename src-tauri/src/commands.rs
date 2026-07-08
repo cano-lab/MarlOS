@@ -10199,6 +10199,13 @@ pub async fn typesetter_export_pdf(
 
     let config = BookConfig::load(Path::new(&book_path)).map_err(|e| e.to_string())?;
 
+    // Resume / custom documents take the flat single-flow lane — no
+    // chapters, folios, TOC, covers, or two-pass measurement. Dispatch
+    // early so none of the book-specific machinery below runs for them.
+    if !config.doc_type.is_book() {
+        return typesetter_export_resume_pdf(config, output_path).await;
+    }
+
     // Run the citation transform first, then a single pandoc pass over
     // the combined+transformed markdown. Same path the on-screen
     // preview uses, so the PDF and Pages preview always agree.
@@ -10345,6 +10352,50 @@ pub async fn typesetter_export_pdf(
 
     // Headless Chromium is blocking; spawn on a blocking task.
     let html_owned = final_html;
+    let output_for_thread = output.clone();
+    tokio::task::spawn_blocking(move || html_to_pdf(&html_owned, &output_for_thread, paper))
+        .await
+        .map_err(|e| format!("export task join error: {}", e))?
+        .map_err(|e| e.to_string())?;
+
+    Ok(output.display().to_string())
+}
+
+/// Resume / custom-document PDF export — the flat single-flow lane. Kept
+/// out of `typesetter_export_pdf`'s body so the book path stays free of
+/// doc-type branching. Combines the markdown (reusing the lane-neutral
+/// citation/prepare step), runs one pandoc pass to MathML HTML, wraps it in
+/// the resume stylesheet + the user's custom.css, and renders once. No
+/// structure analysis, front/back matter, TOC, LoF, covers, or two-pass
+/// folio measurement.
+async fn typesetter_export_resume_pdf(
+    config: crate::typesetter::BookConfig,
+    output_path: String,
+) -> Result<String, String> {
+    use crate::typesetter::{
+        build_resume_html, cleanup_temp_markdown, html_to_pdf, paper_size_from_trim,
+        prepare_book_markdown, PandocConverter,
+    };
+    use crate::typesetter::pandoc::PandocConvertOptions;
+
+    let (temp_md, _citation_result) =
+        prepare_book_markdown(&config).map_err(|e| e.to_string())?;
+
+    let opts = PandocConvertOptions {
+        math_format: Some("mathml".to_string()),
+        ..Default::default()
+    };
+    let pandoc_outcome = PandocConverter::convert_file(&temp_md, &opts).await;
+    cleanup_temp_markdown(&temp_md);
+    let body_html = pandoc_outcome
+        .map_err(|e| format!("pandoc failed: {}", e))?
+        .html;
+
+    let html = build_resume_html(&config, &body_html);
+    let paper = paper_size_from_trim(&config.trim.size);
+    let output = std::path::PathBuf::from(&output_path);
+
+    let html_owned = html;
     let output_for_thread = output.clone();
     tokio::task::spawn_blocking(move || html_to_pdf(&html_owned, &output_for_thread, paper))
         .await

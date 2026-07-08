@@ -101,6 +101,11 @@ export interface BookMeta {
 }
 
 export interface BookConfig {
+  /** Document kind — selects the layout lane. "book" (default) gets full
+   *  book chrome (chapters, folios, TOC, covers); "resume"/"custom" get a
+   *  flat single-flow document at the chosen page size. Omitted in older
+   *  book.toml files, which the backend defaults to "book". */
+  doc_type?: "book" | "resume" | "custom";
   book: BookMeta;
   trim: {
     size: string;
