@@ -68,6 +68,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 0.5rem;
   margin-top: 0.5rem;
   padding-left: 1.5rem;
 }
@@ -76,6 +77,21 @@
   font-size: 0.85rem;
   color: var(--text-muted, #666);
   font-family: monospace;
+  /* Truncate long base URLs so the Edit button always stays visible even
+     in a narrow sidebar. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-info .btn-link {
+  flex-shrink: 0;
+}
+
+.ai-settings {
+  /* Fill the (now resizable) sidebar rather than a fixed 600px cap. */
+  max-width: 100%;
 }
 
 .provider-edit {

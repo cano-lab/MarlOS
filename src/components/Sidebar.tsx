@@ -33,10 +33,49 @@ interface SidebarProps {
 
 type SidebarTab = "files" | "memory" | "ai";
 
+const SIDEBAR_MIN_WIDTH = 200;
+const SIDEBAR_MAX_WIDTH = 720;
+const SIDEBAR_WIDTH_KEY = "marlos-sidebar-width";
+
 const Sidebar: Component<SidebarProps> = (props) => {
   const [activeTab, setActiveTab] = createSignal<SidebarTab>("files");
   const [suggestionsCollapsed, setSuggestionsCollapsed] = createSignal(false);
   const [decisionLoggerOpen, setDecisionLoggerOpen] = createSignal(false);
+
+  // Resizable width — dragged via the handle on the right edge, persisted
+  // across sessions. Clamped so the sidebar can't be dragged off-screen or
+  // to a uselessly narrow strip.
+  const readStoredWidth = (): number => {
+    const raw = parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY) ?? "", 10);
+    if (Number.isFinite(raw)) {
+      return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, raw));
+    }
+    return 260;
+  };
+  const [width, setWidth] = createSignal(readStoredWidth());
+  const [resizing, setResizing] = createSignal(false);
+
+  const startResize = (e: MouseEvent) => {
+    e.preventDefault();
+    setResizing(true);
+    const startX = e.clientX;
+    const startWidth = width();
+    const onMove = (ev: MouseEvent) => {
+      const next = Math.min(
+        SIDEBAR_MAX_WIDTH,
+        Math.max(SIDEBAR_MIN_WIDTH, startWidth + (ev.clientX - startX)),
+      );
+      setWidth(next);
+    };
+    const onUp = () => {
+      setResizing(false);
+      localStorage.setItem(SIDEBAR_WIDTH_KEY, String(width()));
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
 
   const formatRelativeTime = (isoString: string): string => {
     const date = new Date(isoString);
@@ -68,7 +107,16 @@ const Sidebar: Component<SidebarProps> = (props) => {
   };
 
   return (
-    <aside class="sidebar">
+    <aside
+      class="sidebar"
+      classList={{ "sidebar-resizing": resizing() }}
+      style={{ width: `${width()}px`, "max-width": "none" }}
+    >
+      <div
+        class="sidebar-resize-handle"
+        onMouseDown={startResize}
+        title="Drag to resize"
+      />
       <div class="sidebar-tabs">
         <button
           class={`tab-btn ${activeTab() === "files" ? "active" : ""}`}
