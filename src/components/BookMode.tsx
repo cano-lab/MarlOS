@@ -12,6 +12,7 @@ import {
   SectionAnchor,
 } from "../services/typesetter-service";
 import BookPagedPreview from "./BookPagedPreview";
+import ResumePreview from "./ResumePreview";
 import BookConfigEditor from "./BookConfigEditor";
 import BookEditorPane from "./BookEditorPane";
 import type { BookEditorApi } from "./BookEditorPane";
@@ -1060,29 +1061,45 @@ const BookMode: Component<BookModeProps> = (props) => {
             hidden: viewMode() !== "pages" && viewMode() !== "split",
           }}
         >
-          <BookPagedPreview
-            config={book()!.config}
-            enrichedHtml={book()!.enriched_html}
-            frontCoverPath={book()!.front_cover_path}
-            backCoverPath={book()!.back_cover_path}
-            currentSectionOrder={currentSectionOrder()}
-            onSectionChange={setCurrentSectionOrder}
-            active={viewMode() === "pages" || viewMode() === "split"}
-            disableSectionScrollSync={viewMode() === "split"}
-            onScrollSurfaceReady={setPagesSurface}
-            flashAnchor={flashAnchor()}
-            customCss={customCss()}
-            onFigureContextMenu={openFigureMenu}
-            onPaginated={() => {
-              // Re-pagination reflows the Pages anchors, so the reader's
-              // position drifts. Source is the source of truth — snap
-              // Pages back to it once layout settles, unless the user is
-              // actively scrolling Pages themselves.
-              if (viewMode() === "split" && scrollLeader !== "pgs") {
-                requestAnimationFrame(() => syncPagesToSource("auto"));
-              }
-            }}
-          />
+          {/* Resume/custom docs use the reliable native iframe preview
+              (Chromium — matches the PDF export). Books use Paged.js. */}
+          <Show
+            when={
+              book()!.config.doc_type && book()!.config.doc_type !== "book"
+            }
+            fallback={
+              <BookPagedPreview
+                config={book()!.config}
+                enrichedHtml={book()!.enriched_html}
+                frontCoverPath={book()!.front_cover_path}
+                backCoverPath={book()!.back_cover_path}
+                currentSectionOrder={currentSectionOrder()}
+                onSectionChange={setCurrentSectionOrder}
+                active={viewMode() === "pages" || viewMode() === "split"}
+                disableSectionScrollSync={viewMode() === "split"}
+                onScrollSurfaceReady={setPagesSurface}
+                flashAnchor={flashAnchor()}
+                customCss={customCss()}
+                onFigureContextMenu={openFigureMenu}
+                onPaginated={() => {
+                  // Re-pagination reflows the Pages anchors, so the reader's
+                  // position drifts. Source is the source of truth — snap
+                  // Pages back to it once layout settles, unless the user is
+                  // actively scrolling Pages themselves.
+                  if (viewMode() === "split" && scrollLeader !== "pgs") {
+                    requestAnimationFrame(() => syncPagesToSource("auto"));
+                  }
+                }}
+              />
+            }
+          >
+            <ResumePreview
+              config={book()!.config}
+              enrichedHtml={book()!.enriched_html}
+              customCss={customCss()}
+              active={viewMode() === "pages" || viewMode() === "split"}
+            />
+          </Show>
         </div>
 
         <Show when={viewMode() === "outline"}>
@@ -1190,8 +1207,9 @@ const BookMode: Component<BookModeProps> = (props) => {
           onClose={() => setShowStyle(false)}
           onApply={async (css) => {
             await typesetterService.writeCustomCss(path(), css);
-            setCustomCss(css); // re-paginates the preview; export reads the file
-            setShowStyle(false);
+            setCustomCss(css); // re-renders the preview live; export reads the file
+            // Stay open — the chat is an iterative refine loop; the user
+            // closes it with the ✕ when done.
           }}
         />
       </Show>

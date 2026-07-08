@@ -1,115 +1,202 @@
-import { Component, createSignal, Show } from "solid-js";
+import { Component, createSignal, For, Show } from "solid-js";
 import { typesetterService } from "../services/typesetter-service";
 import "./BookStylePanel.css";
 
 /**
- * Custom-CSS editor for a book: describe a formatting change in plain
- * language, the AI fills/updates an editable CSS box (it sees the current
- * CSS and the document's class vocabulary), and Save writes custom.css
- * next to book.toml — which both the preview and the PDF export pick up.
+ * Conversational CSS styling for a document. Describe a change in plain
+ * language; the AI writes/updates custom.css, which is applied to the live
+ * preview immediately. Each turn builds on the current stylesheet, so you
+ * can keep refining ("make the sidebar narrower", "tighten the spacing")
+ * and watch the Pages preview update. The full conversation stays visible
+ * as history. A raw-CSS editor is available for manual tweaks.
+ *
+ * Right-docked drawer (no blocking backdrop) so the preview stays visible
+ * and interactive while you chat.
  */
 interface BookStylePanelProps {
   bookPath: string;
-  /** The book's current custom.css (already loaded by the parent). */
+  /** The document's current custom.css (already loaded by the parent). */
   currentCss: string;
-  /** Document kind — selects which selector vocabulary the AI is told
-   *  about (book chapters/TOC vs the flat resume/custom elements). */
+  /** Document kind — selects the AI's selector vocabulary (book vs resume). */
   docType?: "book" | "resume" | "custom";
-  /** Persist the edited CSS and apply it (re-paginate). */
+  /** Persist the CSS and apply it to the preview. Does NOT close the panel. */
   onApply: (css: string) => void | Promise<void>;
   onClose: () => void;
 }
 
-const BookStylePanel: Component<BookStylePanelProps> = (props) => {
-  const [draft, setDraft] = createSignal(props.currentCss);
-  const [prompt, setPrompt] = createSignal("");
-  const [busy, setBusy] = createSignal(false);
-  const [saving, setSaving] = createSignal(false);
-  const [error, setError] = createSignal<string | null>(null);
+interface ChatMsg {
+  id: number;
+  role: "user" | "assistant";
+  text: string;
+  /** For assistant turns: the CSS that was applied. */
+  css?: string;
+  error?: boolean;
+}
 
-  const generate = async () => {
-    const desc = prompt().trim();
-    if (!desc || busy()) return;
+let msgSeq = 0;
+
+const BookStylePanel: Component<BookStylePanelProps> = (props) => {
+  const [messages, setMessages] = createSignal<ChatMsg[]>([
+    {
+      id: msgSeq++,
+      role: "assistant",
+      text:
+        props.docType && props.docType !== "book"
+          ? "Describe how you want the resume to look — e.g. “two columns with a skills sidebar, name 24pt bold, section headings in small caps”. I'll write the CSS and apply it to the preview. Keep refining and I'll build on it."
+          : "Describe a styling change — e.g. “make chapter titles bigger with a thin rule under them”. I'll update custom.css and apply it to the preview. Keep refining and I'll build on it.",
+    },
+  ]);
+  const [input, setInput] = createSignal("");
+  const [busy, setBusy] = createSignal(false);
+  const [draftCss, setDraftCss] = createSignal(props.currentCss);
+  const [showEditor, setShowEditor] = createSignal(false);
+
+  let listRef: HTMLDivElement | undefined;
+  const scrollToBottom = () =>
+    queueMicrotask(() => listRef?.scrollTo({ top: listRef.scrollHeight, behavior: "smooth" }));
+
+  const push = (m: Omit<ChatMsg, "id">) => {
+    setMessages((prev) => [...prev, { ...m, id: msgSeq++ }]);
+    scrollToBottom();
+  };
+
+  const send = async () => {
+    const text = input().trim();
+    if (!text || busy()) return;
+    setInput("");
+    push({ role: "user", text });
     setBusy(true);
-    setError(null);
     try {
-      const css = await typesetterService.generateCustomCss(desc, draft(), props.docType);
-      setDraft(css);
-      setPrompt("");
+      // Each turn sees the cumulative CSS, so refinements build on each
+      // other reliably regardless of conversation length.
+      const css = await typesetterService.generateCustomCss(
+        text,
+        draftCss(),
+        props.docType,
+      );
+      setDraftCss(css);
+      await props.onApply(css); // persist + repaginate the preview (stays open)
+      push({ role: "assistant", text: "Applied to the preview.", css });
     } catch (e) {
-      setError(`Generation failed: ${e instanceof Error ? e.message : String(e)}`);
+      push({
+        role: "assistant",
+        text: `Generation failed: ${e instanceof Error ? e.message : String(e)}`,
+        error: true,
+      });
     } finally {
       setBusy(false);
     }
   };
 
-  const save = async () => {
-    setSaving(true);
-    setError(null);
+  const applyEditedCss = async () => {
+    setBusy(true);
     try {
-      await props.onApply(draft());
+      await props.onApply(draftCss());
+      push({ role: "assistant", text: "Applied your manual CSS edits to the preview." });
     } catch (e) {
-      setError(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+      push({
+        role: "assistant",
+        text: `Apply failed: ${e instanceof Error ? e.message : String(e)}`,
+        error: true,
+      });
     } finally {
-      setSaving(false);
+      setBusy(false);
     }
   };
 
   return (
-    <div class="book-style-backdrop" onClick={props.onClose}>
-      <div class="book-style-panel" onClick={(e) => e.stopPropagation()}>
-        <div class="book-style-header">
-          <span class="book-style-title">Custom styling</span>
-          <button class="book-style-x" onClick={props.onClose} title="Close">
-            ✕
-          </button>
-        </div>
-
-        <label class="book-style-field">
-          <span>Describe the change</span>
-          <textarea
-            class="book-style-prompt"
-            rows={2}
-            placeholder="e.g. make chapter titles 1.5x bigger and add a thin rule under them; indent block quotes more"
-            value={prompt()}
-            onInput={(e) => setPrompt(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-                e.preventDefault();
-                void generate();
-              }
-            }}
-          />
-        </label>
-        <div class="book-style-gen-row">
-          <span class="book-style-hint">Ctrl/⌘+Enter to generate</span>
-          <button class="book-style-gen" onClick={generate} disabled={busy() || !prompt().trim()}>
-            {busy() ? "Generating…" : "✨ Generate CSS"}
-          </button>
-        </div>
-
-        <label class="book-style-field book-style-css-field">
-          <span>custom.css — edit freely</span>
-          <textarea
-            class="book-style-css"
-            spellcheck={false}
-            placeholder="/* Your CSS overrides the generated styling. */"
-            value={draft()}
-            onInput={(e) => setDraft(e.currentTarget.value)}
-          />
-        </label>
-
-        <Show when={error()}>
-          <div class="book-style-error">{error()}</div>
-        </Show>
-
-        <div class="book-style-actions">
-          <button onClick={props.onClose}>Cancel</button>
-          <button class="book-style-primary" onClick={save} disabled={saving()}>
-            {saving() ? "Applying…" : "Save & apply"}
-          </button>
-        </div>
+    <div class="style-chat">
+      <div class="style-chat-header">
+        <span class="style-chat-title">
+          🎨 Style chat
+          <Show when={props.docType && props.docType !== "book"}>
+            <span class="style-chat-badge">{props.docType}</span>
+          </Show>
+        </span>
+        <button class="style-chat-x" onClick={props.onClose} title="Close">
+          ✕
+        </button>
       </div>
+
+      <div class="style-chat-msgs" ref={listRef}>
+        <For each={messages()}>
+          {(m) => (
+            <div
+              classList={{
+                "style-msg": true,
+                "style-msg-user": m.role === "user",
+                "style-msg-assistant": m.role === "assistant",
+                "style-msg-error": !!m.error,
+              }}
+            >
+              <div class="style-msg-text">{m.text}</div>
+              <Show when={m.css}>
+                <details class="style-msg-css">
+                  <summary>View CSS</summary>
+                  <pre>{m.css}</pre>
+                </details>
+              </Show>
+            </div>
+          )}
+        </For>
+        <Show when={busy()}>
+          <div class="style-msg style-msg-assistant style-msg-pending">
+            <span class="style-typing">
+              <i /><i /><i />
+            </span>
+            <span>Writing CSS…</span>
+          </div>
+        </Show>
+      </div>
+
+      <div class="style-chat-input">
+        <textarea
+          rows={2}
+          placeholder="Describe a change… (Enter to send, Shift+Enter for a newline)"
+          value={input()}
+          disabled={busy()}
+          onInput={(e) => setInput(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              void send();
+            }
+          }}
+        />
+        <button
+          class="style-chat-send"
+          onClick={() => void send()}
+          disabled={busy() || !input().trim()}
+        >
+          {busy() ? "…" : "Send"}
+        </button>
+      </div>
+
+      <div class="style-chat-foot">
+        <button class="style-chat-link" onClick={() => setShowEditor(!showEditor())}>
+          {showEditor() ? "Hide CSS editor" : "Edit CSS directly"}
+        </button>
+        <span class="style-chat-hint">Changes apply to the preview live.</span>
+      </div>
+
+      <Show when={showEditor()}>
+        <div class="style-chat-editor">
+          <textarea
+            class="style-chat-css"
+            spellcheck={false}
+            value={draftCss()}
+            onInput={(e) => setDraftCss(e.currentTarget.value)}
+            placeholder="/* custom.css — edit freely, then Apply */"
+          />
+          <button
+            class="style-chat-send"
+            onClick={() => void applyEditedCss()}
+            disabled={busy()}
+          >
+            Apply edits
+          </button>
+        </div>
+      </Show>
     </div>
   );
 };
