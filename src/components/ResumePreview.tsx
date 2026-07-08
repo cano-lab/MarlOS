@@ -22,6 +22,19 @@ interface ResumePreviewProps {
   active?: boolean;
 }
 
+/** The last `margin:` declared inside any `@page {}` block wins (source
+ *  order). Returns it so the preview's page box matches whatever margin the
+ *  base CSS, a template, or the AI ended up setting. Falls back otherwise. */
+function effectivePageMargin(css: string, fallback: string): string {
+  const blocks = css.match(/@page[^{]*\{[^}]*\}/g) || [];
+  let margin = fallback;
+  for (const b of blocks) {
+    const m = /margin\s*:\s*([^;}]+)/.exec(b);
+    if (m) margin = m[1].trim();
+  }
+  return margin;
+}
+
 /** CSS length (in/mm/cm/pt/px) → CSS px at 96dpi. */
 function toPx(dim: string): number {
   const m = /^([\d.]+)\s*(in|mm|cm|pt|px)?$/.exec(dim.trim());
@@ -49,14 +62,20 @@ const ResumePreview: Component<ResumePreviewProps> = (props) => {
     const css = buildResumeCss(props.config, props.customCss);
     const m = props.config.trim.margins_in;
     const t = trim();
+    // @page doesn't apply on screen, so we reproduce the page margins as
+    // padding on the .page box. A template or the AI may override the
+    // @page margin, so use the LAST effective @page margin from the
+    // composed CSS (falling back to the config margins) — that keeps the
+    // preview matching the exported PDF.
+    const fallback = `${m.top}in ${m.outside}in ${m.bottom}in ${m.inside}in`;
+    const pad = effectivePageMargin(css, fallback);
     // Simulate the printed page: a white box at the trim size with the
-    // margins as padding. The @page rule inside `css` is ignored on screen
-    // (harmless); the padding reproduces its margins.
+    // effective margins as padding.
     return `<!doctype html><html><head><meta charset="utf-8">
 <style>
 html,body{margin:0;padding:0;background:transparent;}
 .page{width:${t.width};min-height:${t.height};background:#fff;box-sizing:border-box;
-      padding:${m.top}in ${m.outside}in ${m.bottom}in ${m.inside}in;overflow:hidden;}
+      padding:${pad};overflow:hidden;}
 ${css}
 </style></head><body>
 <div class="page"><main class="resume">${props.enrichedHtml}</main></div>

@@ -1,5 +1,6 @@
 import { Component, createEffect, createSignal, For, Show } from "solid-js";
 import { typesetterService } from "../services/typesetter-service";
+import { RESUME_TEMPLATES } from "../typesetter/resume-templates";
 import "./BookStylePanel.css";
 
 /**
@@ -120,6 +121,31 @@ const BookStylePanel: Component<BookStylePanelProps> = (props) => {
     }
   };
 
+  const applyTemplate = async (id: string) => {
+    if (busy()) return;
+    const tpl = RESUME_TEMPLATES.find((t) => t.id === id);
+    if (!tpl) return;
+    push({ role: "user", text: `Start from the “${tpl.name}” template.` });
+    setBusy(true);
+    try {
+      setDraftCss(tpl.css);
+      await props.onApply(tpl.css);
+      push({
+        role: "assistant",
+        text: `Applied the “${tpl.name}” template — ${tpl.description} Ask me to tweak it from here.`,
+        css: tpl.css,
+      });
+    } catch (e) {
+      push({
+        role: "assistant",
+        text: `Couldn't apply template: ${e instanceof Error ? e.message : String(e)}`,
+        error: true,
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const applyEditedCss = async () => {
     setBusy(true);
     try {
@@ -159,6 +185,24 @@ const BookStylePanel: Component<BookStylePanelProps> = (props) => {
           </button>
         </div>
       </div>
+
+      <Show when={props.docType && props.docType !== "book"}>
+        <div class="style-chat-templates">
+          <span class="style-chat-templates-label">Start from:</span>
+          <For each={RESUME_TEMPLATES}>
+            {(tpl) => (
+              <button
+                class="style-chat-tpl"
+                title={tpl.description}
+                disabled={busy()}
+                onClick={() => void applyTemplate(tpl.id)}
+              >
+                {tpl.name}
+              </button>
+            )}
+          </For>
+        </div>
+      </Show>
 
       <div class="style-chat-msgs" ref={listRef}>
         <For each={messages()}>
