@@ -726,7 +726,14 @@ const BookMode: Component<BookModeProps> = (props) => {
   };
 
   return (
-    <div class="book-mode">
+    <div
+      classList={{
+        "book-mode": true,
+        // When the Style chat drawer is open, shrink the main area so the
+        // drawer sits beside it rather than covering the toolbar/preview.
+        "book-mode-drawer-open": showStyle(),
+      }}
+    >
       <div class="book-mode-header">
         <h2>
           Book Mode <span class="book-mode-badge">Phase D — headers + page numbers + chapter openers</span>

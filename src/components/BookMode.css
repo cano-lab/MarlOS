@@ -4,6 +4,18 @@
   height: 100%;
   background: var(--bg-primary);
   color: var(--text-primary);
+  transition: margin-right 0.15s ease;
+}
+
+/* Style chat drawer is 420px, docked right. Reserve that space so the
+   drawer never overlaps the toolbar (Export PDF) or the preview. */
+.book-mode-drawer-open {
+  margin-right: 420px;
+}
+@media (max-width: 900px) {
+  .book-mode-drawer-open {
+    margin-right: 0;
+  }
 }
 
 .book-mode-header {

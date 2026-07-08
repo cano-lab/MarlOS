@@ -43,6 +43,30 @@
   border-radius: 4px;
 }
 
+.style-chat-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.style-chat-clear {
+  background: none;
+  border: 1px solid #4a4a4a;
+  color: #aaa;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+.style-chat-clear:hover:not(:disabled) {
+  color: #ddd;
+  border-color: #666;
+}
+.style-chat-clear:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .style-chat-x {
   background: none;
   border: none;

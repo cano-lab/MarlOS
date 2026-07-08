@@ -1,4 +1,4 @@
-import { Component, createSignal, For, Show } from "solid-js";
+import { Component, createEffect, createSignal, For, Show } from "solid-js";
 import { typesetterService } from "../services/typesetter-service";
 import "./BookStylePanel.css";
 
@@ -33,19 +33,51 @@ interface ChatMsg {
   error?: boolean;
 }
 
-let msgSeq = 0;
+/** localStorage key for a document's style-chat history. */
+const historyKey = (bookPath: string) => `marlos-style-chat:${bookPath}`;
+const MAX_STORED = 60;
 
 const BookStylePanel: Component<BookStylePanelProps> = (props) => {
-  const [messages, setMessages] = createSignal<ChatMsg[]>([
-    {
-      id: msgSeq++,
-      role: "assistant",
-      text:
-        props.docType && props.docType !== "book"
-          ? "Describe how you want the resume to look — e.g. “two columns with a skills sidebar, name 24pt bold, section headings in small caps”. I'll write the CSS and apply it to the preview. Keep refining and I'll build on it."
-          : "Describe a styling change — e.g. “make chapter titles bigger with a thin rule under them”. I'll update custom.css and apply it to the preview. Keep refining and I'll build on it.",
-    },
-  ]);
+  const introText =
+    props.docType && props.docType !== "book"
+      ? "Describe how you want the resume to look — e.g. “two columns with a skills sidebar, name 24pt bold, section headings in small caps”. I'll write the CSS and apply it to the preview. Keep refining and I'll build on it."
+      : "Describe a styling change — e.g. “make chapter titles bigger with a thin rule under them”. I'll update custom.css and apply it to the preview. Keep refining and I'll build on it.";
+
+  const loadHistory = (): ChatMsg[] => {
+    try {
+      const raw = localStorage.getItem(historyKey(props.bookPath));
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr) && arr.length) return arr as ChatMsg[];
+      }
+    } catch {
+      /* ignore corrupt/blocked storage */
+    }
+    return [{ id: 0, role: "assistant", text: introText }];
+  };
+
+  const initial = loadHistory();
+  // Per-instance id counter, seeded past any restored ids so keys stay unique.
+  let idCounter = initial.reduce((mx, m) => Math.max(mx, m.id), 0) + 1;
+  const [messages, setMessages] = createSignal<ChatMsg[]>(initial);
+
+  // Persist (capped) so the history survives closing the panel to export,
+  // then reopening. Keyed per document path.
+  createEffect(() => {
+    try {
+      localStorage.setItem(
+        historyKey(props.bookPath),
+        JSON.stringify(messages().slice(-MAX_STORED)),
+      );
+    } catch {
+      /* ignore quota/blocked storage */
+    }
+  });
+
+  const clearHistory = () => {
+    setMessages([{ id: idCounter++, role: "assistant", text: introText }]);
+  };
+
   const [input, setInput] = createSignal("");
   const [busy, setBusy] = createSignal(false);
   const [draftCss, setDraftCss] = createSignal(props.currentCss);
@@ -56,7 +88,7 @@ const BookStylePanel: Component<BookStylePanelProps> = (props) => {
     queueMicrotask(() => listRef?.scrollTo({ top: listRef.scrollHeight, behavior: "smooth" }));
 
   const push = (m: Omit<ChatMsg, "id">) => {
-    setMessages((prev) => [...prev, { ...m, id: msgSeq++ }]);
+    setMessages((prev) => [...prev, { ...m, id: idCounter++ }]);
     scrollToBottom();
   };
 
@@ -113,9 +145,19 @@ const BookStylePanel: Component<BookStylePanelProps> = (props) => {
             <span class="style-chat-badge">{props.docType}</span>
           </Show>
         </span>
-        <button class="style-chat-x" onClick={props.onClose} title="Close">
-          ✕
-        </button>
+        <div class="style-chat-header-actions">
+          <button
+            class="style-chat-clear"
+            onClick={clearHistory}
+            title="Clear chat history"
+            disabled={busy()}
+          >
+            Clear
+          </button>
+          <button class="style-chat-x" onClick={props.onClose} title="Close">
+            ✕
+          </button>
+        </div>
       </div>
 
       <div class="style-chat-msgs" ref={listRef}>
