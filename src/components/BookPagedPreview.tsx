@@ -19,6 +19,7 @@ import "@fontsource/lexend/400.css";
 import "@fontsource/lexend/600.css";
 import "@fontsource/lexend/700.css";
 import { buildBookCss } from "../typesetter/book-css";
+import { buildResumeCss } from "../typesetter/resume-css";
 import type { BookConfig, SectionAnchor, ScrollSurface } from "../services/typesetter-service";
 import "./BookPagedPreview.css";
 
@@ -310,7 +311,12 @@ const BookPagedPreview: Component<BookPagedPreviewProps> = (props) => {
       // headings, no break-before, no margin boxes, no named pages,
       // no string-set. If this paginates cleanly, we add features
       // back in chunks.
-      const css = buildBookCss(props.config, props.customCss);
+      // Resume/custom docs use the flat single-flow stylesheet; books use
+      // the full chapter-chrome CSS. Matches the export lane split.
+      const css =
+        props.config.doc_type && props.config.doc_type !== "book"
+          ? buildResumeCss(props.config, props.customCss)
+          : buildBookCss(props.config, props.customCss);
 
       // Prepend the book-title marker so future Phase D string-set
       // rules can populate the verso header. Hidden via display:none.

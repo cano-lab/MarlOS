@@ -206,6 +206,11 @@ export const typesetterService = {
   initBook: (markdownPath: string): Promise<string> =>
     invoke<string>("typesetter_book_init", { markdownPath }),
 
+  /** Scaffold a new resume (resume.md + resume-lane book.toml) in `dirPath`.
+   *  Returns the book.toml path to load. Does not overwrite existing files. */
+  newResume: (dirPath: string): Promise<string> =>
+    invoke<string>("typesetter_new_resume", { dirPath }),
+
   /**
    * Import a PDF as a new book. Pure-Rust pipeline on the backend
    * (pdfium-render → text → heading inference → markdown). The user

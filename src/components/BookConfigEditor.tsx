@@ -605,6 +605,34 @@ const BookConfigEditor: Component<BookConfigEditorProps> = (props) => {
         </section>
 
         <section class="bce-section">
+          <h4>Document type</h4>
+          <label class="bce-field">
+            <span>Type</span>
+            <select
+              value={draft().doc_type ?? "book"}
+              onChange={(e) =>
+                update(
+                  (d) =>
+                    (d.doc_type = e.currentTarget.value as
+                      | "book"
+                      | "resume"
+                      | "custom"),
+                )
+              }
+            >
+              <option value="book">Book — chapters, TOC, folios, covers</option>
+              <option value="resume">Resume — flat single-flow document</option>
+              <option value="custom">Custom — flat document, styled freely</option>
+            </select>
+          </label>
+          <p class="bce-help">
+            Books get the full chapter machinery. Resume/Custom render as one
+            continuous flow at the page size below — style them with the 🎨
+            Style panel (AI writes the CSS).
+          </p>
+        </section>
+
+        <section class="bce-section">
           <h4>Trim & margins</h4>
           <label class="bce-field">
             <span>Trim size</span>

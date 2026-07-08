@@ -9947,48 +9947,66 @@ pub async fn typesetter_book_load(book_path: String) -> Result<LoadedBook, Strin
         ));
     }
 
-    let StructuredHtml {
-        structure,
-        mut enriched_html,
-    } = crate::typesetter::analyze_structure_with_options(
-        &combined_html,
-        config.typography.lead_in_word_count as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    // Book lane produces the full chapter structure + generated chrome
+    // (front matter, TOC, LoF, word anchors); the resume/custom lane skips
+    // all of it and previews the flat pandoc HTML, so the on-screen preview
+    // (and the Style-panel live loop) matches the resume PDF exactly.
+    let (structure, enriched_html) = if config.doc_type.is_book() {
+        let StructuredHtml {
+            structure,
+            mut enriched_html,
+        } = crate::typesetter::analyze_structure_with_options(
+            &combined_html,
+            config.typography.lead_in_word_count as usize,
+        )
+        .map_err(|e| e.to_string())?;
 
-    // Prepend generated title / copyright / dedication pages drawn
-    // from book.toml metadata, then the Table of Contents (chapters
-    // numbered, other sections italic). Empty pieces are omitted.
-    let generated_front =
-        crate::typesetter::build_generated_front_matter(&config.book);
-    let toc = crate::typesetter::build_toc(&structure, &config.book.title);
-    if !generated_front.is_empty() || !toc.is_empty() {
-        enriched_html = format!("{}{}{}", generated_front, toc, enriched_html);
-    }
-    // Append generated back-matter — acknowledgements page.
-    let generated_back =
-        crate::typesetter::build_generated_back_matter(&config.book);
-    if !generated_back.is_empty() {
-        enriched_html.push_str(&generated_back);
-    }
-    // Number captioned figures and append the List of Figures (its folios
-    // come from Paged.js target-counter in the preview). Gated by the
-    // [export] include_list_of_figures toggle.
-    let (numbered_html, lof) = crate::typesetter::build_list_of_figures(
-        &enriched_html,
-        config.export.include_list_of_figures,
-    );
-    enriched_html = numbered_html;
-    if !lof.is_empty() {
-        enriched_html.push_str(&lof);
-    }
+        // Prepend generated title / copyright / dedication pages drawn
+        // from book.toml metadata, then the Table of Contents (chapters
+        // numbered, other sections italic). Empty pieces are omitted.
+        let generated_front =
+            crate::typesetter::build_generated_front_matter(&config.book);
+        let toc = crate::typesetter::build_toc(&structure, &config.book.title);
+        if !generated_front.is_empty() || !toc.is_empty() {
+            enriched_html = format!("{}{}{}", generated_front, toc, enriched_html);
+        }
+        // Append generated back-matter — acknowledgements page.
+        let generated_back =
+            crate::typesetter::build_generated_back_matter(&config.book);
+        if !generated_back.is_empty() {
+            enriched_html.push_str(&generated_back);
+        }
+        // Number captioned figures and append the List of Figures (its folios
+        // come from Paged.js target-counter in the preview). Gated by the
+        // [export] include_list_of_figures toggle.
+        let (numbered_html, lof) = crate::typesetter::build_list_of_figures(
+            &enriched_html,
+            config.export.include_list_of_figures,
+        );
+        enriched_html = numbered_html;
+        if !lof.is_empty() {
+            enriched_html.push_str(&lof);
+        }
 
-    // Word-anchor accessibility pass. Runs last so it sees the final
-    // tagged HTML (math anchors, headings, lead-in spans) and can
-    // keep its hands off them. No-op when the toggle is off.
-    if config.export.word_anchors {
-        enriched_html = crate::typesetter::word_anchors::apply(&enriched_html);
-    }
+        // Word-anchor accessibility pass. Runs last so it sees the final
+        // tagged HTML (math anchors, headings, lead-in spans) and can
+        // keep its hands off them. No-op when the toggle is off.
+        if config.export.word_anchors {
+            enriched_html = crate::typesetter::word_anchors::apply(&enriched_html);
+        }
+        (structure, enriched_html)
+    } else {
+        // Flat resume/custom lane — no chapter structure, no generated
+        // chrome. Empty structure (the outline pane just shows nothing).
+        let structure = crate::typesetter::BookStructure {
+            sections: Vec::new(),
+            chapter_count: 0,
+            interlude_count: 0,
+            front_matter_count: 0,
+            back_matter_count: 0,
+        };
+        (structure, combined_html.clone())
+    };
 
     let resolve_cover = |rel: &Option<String>| -> Option<String> {
         let r = rel.as_ref()?;
@@ -10019,6 +10037,76 @@ pub fn typesetter_book_init(markdown_path: String) -> Result<String, String> {
     let path = std::path::PathBuf::from(&markdown_path);
     let written = BookConfig::init_from_markdown(&path).map_err(|e| e.to_string())?;
     Ok(written.display().to_string())
+}
+
+/// Starter content for a scaffolded resume. Plain markdown so the flat
+/// resume lane (pandoc → resume CSS) renders it directly; the Kimi Style
+/// panel then refines the layout via custom.css.
+const RESUME_STARTER_MD: &str = r#"# Your Name
+
+your.email@example.com · (555) 123-4567 · City, Country · linkedin.com/in/you
+
+## Summary
+
+One or two lines on who you are and what you do best.
+
+## Experience
+
+### Job Title — Company
+*Jan 2022 – Present*
+
+- Led X, resulting in Y.
+- Built Z used by N people.
+
+### Previous Title — Company
+*2019 – 2022*
+
+- Accomplishment with a measurable result.
+
+## Education
+
+### Degree — Institution
+*Year*
+
+## Skills
+
+Skill one · Skill two · Skill three · Skill four
+"#;
+
+/// Scaffold a new resume in `dir_path`: a starter `resume.md` plus a
+/// `book.toml` on the resume lane (doc_type = resume, US Letter, page
+/// numbers off, symmetric margins). Returns the book.toml path for the UI
+/// to load. Existing files are not overwritten.
+#[tauri::command]
+pub fn typesetter_new_resume(dir_path: String) -> Result<String, String> {
+    use crate::typesetter::DocType;
+    let dir = std::path::PathBuf::from(&dir_path);
+    if !dir.is_dir() {
+        return Err(format!("not a directory: {}", dir.display()));
+    }
+
+    let md_path = dir.join("resume.md");
+    if !md_path.exists() {
+        std::fs::write(&md_path, RESUME_STARTER_MD).map_err(|e| e.to_string())?;
+    }
+
+    let mut config = BookConfig::default();
+    config.doc_type = DocType::Resume;
+    config.trim.size = "letter".to_string();
+    // Symmetric document margins — no spine, so inside == outside.
+    config.trim.margins_in.inside = 0.75;
+    config.trim.margins_in.outside = 0.75;
+    config.trim.margins_in.top = 0.6;
+    config.trim.margins_in.bottom = 0.6;
+    config.typography.page_number_style = "none".to_string();
+    config.book.title = "Your Name".to_string();
+    config.files = vec!["resume.md".to_string()];
+    config.root_dir = dir.clone();
+    config.config_path = dir.join("book.toml");
+
+    let toml_path = dir.join("book.toml");
+    std::fs::write(&toml_path, config.to_toml_string()).map_err(|e| e.to_string())?;
+    Ok(toml_path.display().to_string())
 }
 
 #[derive(serde::Serialize)]

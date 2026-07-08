@@ -625,6 +625,39 @@ const BookMode: Component<BookModeProps> = (props) => {
     }
   };
 
+  // Scaffold a new resume: pick a folder, write a starter resume.md +
+  // resume-lane book.toml (Letter, folios off), then load it. The
+  // Kimi-powered Style panel then refines the layout live.
+  const newResume = async () => {
+    setError(null);
+    setInfo(null);
+    let dir: string | null = null;
+    try {
+      const res = await open({
+        multiple: false,
+        directory: true,
+        title: "Choose a folder for the new resume",
+      });
+      if (typeof res === "string") dir = res;
+    } catch (e) {
+      setError(`Folder picker failed: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    if (!dir) return;
+    setBusy(true);
+    setInfo("Scaffolding resume…");
+    try {
+      const tomlPath = await typesetterService.newResume(dir);
+      setPath(tomlPath);
+      setInfo("Resume created. Loading… Use 🎨 Style to design it with AI.");
+      await loadBook();
+    } catch (e) {
+      setError(`New resume failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   // Group sections by kind for the tree pane
   const sectionsByKind = (): Record<SectionKind, BookSection[]> => {
     const acc: Record<SectionKind, BookSection[]> = {
@@ -755,6 +788,14 @@ const BookMode: Component<BookModeProps> = (props) => {
           title="Pick a PDF; we extract the text, infer headings, and open it as a fresh book."
         >
           Import PDF…
+        </button>
+        <button
+          class="book-mode-btn"
+          onClick={newResume}
+          disabled={busy() || !probe()?.available}
+          title="Scaffold a new resume (US Letter, flat layout) and design it with AI via the Style panel."
+        >
+          New Resume…
         </button>
       </div>
 
