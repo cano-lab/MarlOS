@@ -401,12 +401,32 @@ impl AiManager {
             }));
         }
 
+        // Kimi K2 quirks (kimi-k2.x on the /coding endpoint):
+        //  * In its default reasoning mode it burns the entire token budget
+        //    on hidden reasoning and often returns empty `content`, and it
+        //    rejects any temperature != 1.
+        //  * Sending `thinking: {type: "disabled"}` switches it to a direct,
+        //    non-reasoning answer (fast — seconds vs minutes) but then
+        //    requires temperature == 0.6 (temperature is validated per-mode).
+        // For app tasks (CSS generation, code ops, summaries) we want the
+        // direct answer, so disable thinking and pin temp to 0.6. Only when
+        // the model name says Kimi — other providers are untouched.
+        let is_kimi = model
+            .as_deref()
+            .map(|m| m.to_lowercase().contains("kimi"))
+            .unwrap_or(false);
+        let effective_temp = if is_kimi { 0.6 } else { config.temperature };
+
         let mut payload = serde_json::json!({
             "messages": all_messages,
-            "temperature": config.temperature,
+            "temperature": effective_temp,
             "max_tokens": config.max_tokens,
             "stream": false
         });
+
+        if is_kimi {
+            payload["thinking"] = serde_json::json!({ "type": "disabled" });
+        }
 
         if let Some(model) = &model {
             payload["model"] = serde_json::json!(model);

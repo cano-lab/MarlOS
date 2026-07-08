@@ -256,7 +256,7 @@ const AISettings: Component = () => {
           <input
             type="number"
             min="100"
-            max="8000"
+            max="33000"
             step="100"
             value={config().defaultParams.maxTokens}
             onChange={(e) => {

@@ -257,8 +257,18 @@ export const typesetterService = {
   /** Ask the AI to produce an updated custom.css from a plain-language
    *  description, given the current CSS and the document's class
    *  vocabulary. Returns the complete stylesheet (markdown fences stripped). */
-  generateCustomCss: async (description: string, currentCss: string): Promise<string> => {
-    const system = STYLE_SYSTEM_PROMPT;
+  generateCustomCss: async (
+    description: string,
+    currentCss: string,
+    docType?: "book" | "resume" | "custom",
+  ): Promise<string> => {
+    // Resume/custom docs live on the flat lane with a different selector
+    // vocabulary — feeding them the book prompt would target chapter/TOC
+    // selectors that don't exist. Pick the matching prompt.
+    const system =
+      docType && docType !== "book"
+        ? RESUME_STYLE_SYSTEM_PROMPT
+        : STYLE_SYSTEM_PROMPT;
     const prompt =
       `Current custom.css (may be empty):\n\`\`\`css\n${currentCss || ""}\n\`\`\`\n\n` +
       `Change request: ${description}\n\n` +
@@ -295,3 +305,21 @@ Use only these selectors (this is the document's structure):
 - Page boxes: @page, @page :left, @page :right (margin boxes @top-center / @bottom-center hold the running header and folio)
 
 Rules: use pt/in/em units (this is print, not screen — avoid px for type). Keep changes minimal and targeted to the request. Do not invent selectors or class names outside this list. Do not include @font-face or external @import. Output ONLY the CSS.`;
+
+/** System prompt for the flat resume/custom lane. Different selector
+ *  vocabulary from the book prompt — no chapters, TOC, folios, or covers;
+ *  the document is one continuous flow of plain markdown elements inside
+ *  <main class="resume">. */
+const RESUME_STYLE_SYSTEM_PROMPT = `You write CSS for a single-page (or short, multi-page) print document — typically a resume/CV — typeset with CSS Paged Media (rendered by Chromium for PDF and Paged.js for the on-screen preview). Your CSS is appended AFTER a minimal base stylesheet, so it overrides defaults by source order — avoid !important unless necessary.
+
+The document is one continuous flow of plain markdown, wrapped in <main class="resume">. There are NO chapters, table of contents, page folios, running headers, drop caps, or cover pages — do not target those. Use only these selectors:
+- Container: main.resume
+- Headings: h1 (name/title), h2 (section headings like Experience/Education/Skills), h3 (job/role/degree titles), h4
+- Text: p, strong, em, a
+- Lists: ul, ol, li
+- Rules & tables: hr, table, thead, tbody, tr, td, th
+- Page box: @page (set size/margins here; e.g. two-column layouts via columns on main.resume or a grid)
+
+Layout tips: for a two-column resume use CSS multi-column (columns/column-gap) or grid on main.resume; a sidebar can be a floated or grid column. Keep it ATS-friendly and print-clean.
+
+Rules: use pt/in/em units (this is print, not screen — avoid px for type). Keep changes targeted to the request. Do not invent unrelated selectors. Do not include @font-face or external @import. Output ONLY the CSS.`;

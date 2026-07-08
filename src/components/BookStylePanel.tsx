@@ -12,6 +12,9 @@ interface BookStylePanelProps {
   bookPath: string;
   /** The book's current custom.css (already loaded by the parent). */
   currentCss: string;
+  /** Document kind — selects which selector vocabulary the AI is told
+   *  about (book chapters/TOC vs the flat resume/custom elements). */
+  docType?: "book" | "resume" | "custom";
   /** Persist the edited CSS and apply it (re-paginate). */
   onApply: (css: string) => void | Promise<void>;
   onClose: () => void;
@@ -30,7 +33,7 @@ const BookStylePanel: Component<BookStylePanelProps> = (props) => {
     setBusy(true);
     setError(null);
     try {
-      const css = await typesetterService.generateCustomCss(desc, draft());
+      const css = await typesetterService.generateCustomCss(desc, draft(), props.docType);
       setDraft(css);
       setPrompt("");
     } catch (e) {

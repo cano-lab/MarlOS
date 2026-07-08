@@ -1186,6 +1186,7 @@ const BookMode: Component<BookModeProps> = (props) => {
         <BookStylePanel
           bookPath={path()}
           currentCss={customCss()}
+          docType={book()?.config.doc_type}
           onClose={() => setShowStyle(false)}
           onApply={async (css) => {
             await typesetterService.writeCustomCss(path(), css);
