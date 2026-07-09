@@ -9951,61 +9951,79 @@ pub async fn typesetter_book_load(book_path: String) -> Result<LoadedBook, Strin
     // (front matter, TOC, LoF, word anchors); the resume/custom lane skips
     // all of it and previews the flat pandoc HTML, so the on-screen preview
     // (and the Style-panel live loop) matches the resume PDF exactly.
+    // An empty flat structure — used by the resume/custom lane and as the
+    // graceful fallback when a book-typed doc turns out to have no sections.
+    let empty_structure = || crate::typesetter::BookStructure {
+        sections: Vec::new(),
+        chapter_count: 0,
+        interlude_count: 0,
+        front_matter_count: 0,
+        back_matter_count: 0,
+    };
+
     let (structure, enriched_html) = if config.doc_type.is_book() {
-        let StructuredHtml {
-            structure,
-            mut enriched_html,
-        } = crate::typesetter::analyze_structure_with_options(
+        match crate::typesetter::analyze_structure_with_options(
             &combined_html,
             config.typography.lead_in_word_count as usize,
-        )
-        .map_err(|e| e.to_string())?;
+        ) {
+            Ok(StructuredHtml {
+                structure,
+                mut enriched_html,
+            }) => {
+                // Prepend generated title / copyright / dedication pages drawn
+                // from book.toml metadata, then the Table of Contents (chapters
+                // numbered, other sections italic). Empty pieces are omitted.
+                let generated_front =
+                    crate::typesetter::build_generated_front_matter(&config.book);
+                let toc = crate::typesetter::build_toc(&structure, &config.book.title);
+                if !generated_front.is_empty() || !toc.is_empty() {
+                    enriched_html = format!("{}{}{}", generated_front, toc, enriched_html);
+                }
+                // Append generated back-matter — acknowledgements page.
+                let generated_back =
+                    crate::typesetter::build_generated_back_matter(&config.book);
+                if !generated_back.is_empty() {
+                    enriched_html.push_str(&generated_back);
+                }
+                // Number captioned figures and append the List of Figures (its
+                // folios come from Paged.js target-counter in the preview).
+                // Gated by the [export] include_list_of_figures toggle.
+                let (numbered_html, lof) = crate::typesetter::build_list_of_figures(
+                    &enriched_html,
+                    config.export.include_list_of_figures,
+                );
+                enriched_html = numbered_html;
+                if !lof.is_empty() {
+                    enriched_html.push_str(&lof);
+                }
 
-        // Prepend generated title / copyright / dedication pages drawn
-        // from book.toml metadata, then the Table of Contents (chapters
-        // numbered, other sections italic). Empty pieces are omitted.
-        let generated_front =
-            crate::typesetter::build_generated_front_matter(&config.book);
-        let toc = crate::typesetter::build_toc(&structure, &config.book.title);
-        if !generated_front.is_empty() || !toc.is_empty() {
-            enriched_html = format!("{}{}{}", generated_front, toc, enriched_html);
+                // Word-anchor accessibility pass. Runs last so it sees the final
+                // tagged HTML (math anchors, headings, lead-in spans) and can
+                // keep its hands off them. No-op when the toggle is off.
+                if config.export.word_anchors {
+                    enriched_html = crate::typesetter::word_anchors::apply(&enriched_html);
+                }
+                (structure, enriched_html)
+            }
+            // A flat document (e.g. a resume) opened on the book lane has no
+            // top-level chapter sections. Don't fail the load — render it flat
+            // and tell the user how to switch lanes. Failing here is a dead
+            // end: you can't reach ⚙ Settings to change the document type
+            // without first loading the document.
+            Err(crate::typesetter::structure::StructureError::NoSections) => {
+                combined_warnings.push_str(
+                    "\n--- no chapter sections found — rendering as a flat document. \
+                     If this is a resume or a one-off document, set \
+                     Document type = Resume in Settings, then Save & reload. ---\n",
+                );
+                (empty_structure(), combined_html.clone())
+            }
+            Err(e) => return Err(e.to_string()),
         }
-        // Append generated back-matter — acknowledgements page.
-        let generated_back =
-            crate::typesetter::build_generated_back_matter(&config.book);
-        if !generated_back.is_empty() {
-            enriched_html.push_str(&generated_back);
-        }
-        // Number captioned figures and append the List of Figures (its folios
-        // come from Paged.js target-counter in the preview). Gated by the
-        // [export] include_list_of_figures toggle.
-        let (numbered_html, lof) = crate::typesetter::build_list_of_figures(
-            &enriched_html,
-            config.export.include_list_of_figures,
-        );
-        enriched_html = numbered_html;
-        if !lof.is_empty() {
-            enriched_html.push_str(&lof);
-        }
-
-        // Word-anchor accessibility pass. Runs last so it sees the final
-        // tagged HTML (math anchors, headings, lead-in spans) and can
-        // keep its hands off them. No-op when the toggle is off.
-        if config.export.word_anchors {
-            enriched_html = crate::typesetter::word_anchors::apply(&enriched_html);
-        }
-        (structure, enriched_html)
     } else {
         // Flat resume/custom lane — no chapter structure, no generated
         // chrome. Empty structure (the outline pane just shows nothing).
-        let structure = crate::typesetter::BookStructure {
-            sections: Vec::new(),
-            chapter_count: 0,
-            interlude_count: 0,
-            front_matter_count: 0,
-            back_matter_count: 0,
-        };
-        (structure, combined_html.clone())
+        (empty_structure(), combined_html.clone())
     };
 
     let resolve_cover = |rel: &Option<String>| -> Option<String> {
