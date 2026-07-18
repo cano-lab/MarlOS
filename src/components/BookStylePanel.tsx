@@ -1,6 +1,7 @@
 import { Component, createEffect, createSignal, For, Show } from "solid-js";
 import { typesetterService } from "../services/typesetter-service";
 import { RESUME_TEMPLATES } from "../typesetter/resume-templates";
+import { PROPOSAL_TEMPLATES, isProposalTemplate } from "../typesetter/proposal-templates";
 import "./BookStylePanel.css";
 
 /**
@@ -20,6 +21,8 @@ interface BookStylePanelProps {
   currentCss: string;
   /** Document kind — selects the AI's selector vocabulary (book vs resume). */
   docType?: "book" | "resume" | "custom";
+  /** Optional template / subtype identifier (e.g. a proposal template). */
+  templateId?: string;
   /** Persist the CSS and apply it to the preview. Does NOT close the panel. */
   onApply: (css: string) => void | Promise<void>;
   onClose: () => void;
@@ -39,10 +42,30 @@ const historyKey = (bookPath: string) => `marlos-style-chat:${bookPath}`;
 const MAX_STORED = 60;
 
 const BookStylePanel: Component<BookStylePanelProps> = (props) => {
-  const introText =
-    props.docType && props.docType !== "book"
-      ? "Describe how you want the resume to look — e.g. “two columns with a skills sidebar, name 24pt bold, section headings in small caps”. I'll write the CSS and apply it to the preview. Keep refining and I'll build on it."
-      : "Describe a styling change — e.g. “make chapter titles bigger with a thin rule under them”. I'll update custom.css and apply it to the preview. Keep refining and I'll build on it.";
+  const isProposal = () => props.templateId && isProposalTemplate(props.templateId);
+  const isResume = () => props.docType === "resume";
+  const isFlat = () => props.docType && props.docType !== "book";
+
+  const templates = () => {
+    if (isProposal()) return PROPOSAL_TEMPLATES;
+    if (isFlat()) return RESUME_TEMPLATES;
+    return [];
+  };
+
+  const badgeLabel = () => {
+    if (isProposal()) return "proposal";
+    return props.docType ?? "custom";
+  };
+
+  const introText = () => {
+    if (isProposal()) {
+      return "Describe how you want the proposal to look — e.g. “tight budget table with right-aligned numbers”, “make the specific aims section stand out with a left rule”, or “use a two-column layout for the concept note”. I'll write the CSS and apply it to the preview.";
+    }
+    if (isResume()) {
+      return "Describe how you want the resume to look — e.g. “two columns with a skills sidebar, name 24pt bold, section headings in small caps”. I'll write the CSS and apply it to the preview. Keep refining and I'll build on it.";
+    }
+    return "Describe a styling change — e.g. “make chapter titles bigger with a thin rule under them”. I'll update custom.css and apply it to the preview. Keep refining and I'll build on it.";
+  };
 
   const loadHistory = (): ChatMsg[] => {
     try {
@@ -54,7 +77,7 @@ const BookStylePanel: Component<BookStylePanelProps> = (props) => {
     } catch {
       /* ignore corrupt/blocked storage */
     }
-    return [{ id: 0, role: "assistant", text: introText }];
+    return [{ id: 0, role: "assistant", text: introText() }];
   };
 
   const initial = loadHistory();
@@ -76,7 +99,7 @@ const BookStylePanel: Component<BookStylePanelProps> = (props) => {
   });
 
   const clearHistory = () => {
-    setMessages([{ id: idCounter++, role: "assistant", text: introText }]);
+    setMessages([{ id: idCounter++, role: "assistant", text: introText() }]);
   };
 
   const [input, setInput] = createSignal("");
@@ -106,6 +129,7 @@ const BookStylePanel: Component<BookStylePanelProps> = (props) => {
         text,
         draftCss(),
         props.docType,
+        props.templateId,
       );
       setDraftCss(css);
       await props.onApply(css); // persist + repaginate the preview (stays open)
@@ -123,7 +147,7 @@ const BookStylePanel: Component<BookStylePanelProps> = (props) => {
 
   const applyTemplate = async (id: string) => {
     if (busy()) return;
-    const tpl = RESUME_TEMPLATES.find((t) => t.id === id);
+    const tpl = templates().find((t) => t.id === id);
     if (!tpl) return;
     push({ role: "user", text: `Start from the “${tpl.name}” template.` });
     setBusy(true);
@@ -167,8 +191,8 @@ const BookStylePanel: Component<BookStylePanelProps> = (props) => {
       <div class="style-chat-header">
         <span class="style-chat-title">
           🎨 Style chat
-          <Show when={props.docType && props.docType !== "book"}>
-            <span class="style-chat-badge">{props.docType}</span>
+          <Show when={isFlat()}>
+            <span class="style-chat-badge">{badgeLabel()}</span>
           </Show>
         </span>
         <div class="style-chat-header-actions">
@@ -186,10 +210,10 @@ const BookStylePanel: Component<BookStylePanelProps> = (props) => {
         </div>
       </div>
 
-      <Show when={props.docType && props.docType !== "book"}>
+      <Show when={isFlat()}>
         <div class="style-chat-templates">
           <span class="style-chat-templates-label">Start from:</span>
-          <For each={RESUME_TEMPLATES}>
+          <For each={templates()}>
             {(tpl) => (
               <button
                 class="style-chat-tpl"

@@ -269,6 +269,7 @@ fn run_chapter_timing(path: &str) {
     // production command.
     let mut config = BookConfig {
         doc_type: Default::default(),
+        template_id: None,
         book: Default::default(),
         trim: Default::default(),
         typography: Default::default(),
@@ -437,6 +438,7 @@ Auxiliary material.
     let _ = std::fs::create_dir_all(&tmp);
     let mut config = BookConfig {
         doc_type: Default::default(),
+        template_id: None,
         book: Default::default(),
         trim: Default::default(),
         typography: Default::default(),

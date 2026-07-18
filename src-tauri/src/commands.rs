@@ -5451,12 +5451,12 @@ pub async fn open_terminal(
         let result = if wt_result.map(|o| o.status.success()).unwrap_or(false) {
             // Use Windows Terminal
             Command::new("wt")
-                .args(["-d", &path, "cmd", "/k", &cmd_to_run])
+                .args(["-d", &path, "powershell", "-NoExit", "-Command", &cmd_to_run])
                 .spawn()
         } else {
-            // Fall back to cmd
+            // Fall back to PowerShell
             Command::new("cmd")
-                .args(["/c", "start", "cmd", "/k", &format!("cd /d \"{}\" && {}", path, cmd_to_run)])
+                .args(["/c", "start", "MarlOS Terminal", "powershell", "-NoExit", "-Command", &format!("Set-Location \"{}\"; {}", path, cmd_to_run)])
                 .spawn()
         };
 
@@ -9867,6 +9867,22 @@ pub struct LoadedBook {
 #[tauri::command]
 pub async fn typesetter_book_load(book_path: String) -> Result<LoadedBook, String> {
     let path = std::path::PathBuf::from(&book_path);
+
+    // Opening a lone markdown file with no neighboring book.toml creates
+    // one on the spot (lane sniffed from the content) so the file just
+    // opens — no manual "Init book.toml" step. Only when the path is an
+    // existing markdown file; anything else keeps the original error.
+    if BookConfig::locate(&path).is_err()
+        && path.is_file()
+        && path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|e| matches!(e.to_ascii_lowercase().as_str(), "md" | "markdown" | "txt"))
+            .unwrap_or(false)
+    {
+        BookConfig::init_from_markdown(&path).map_err(|e| e.to_string())?;
+    }
+
     let mut config = BookConfig::load(&path).map_err(|e| e.to_string())?;
 
     // If the user opened a .md file directly and it's not in book.toml's
@@ -10016,6 +10032,12 @@ pub async fn typesetter_book_load(book_path: String) -> Result<LoadedBook, Strin
                      If this is a resume or a one-off document, set \
                      Document type = Resume in Settings, then Save & reload. ---\n",
                 );
+                // Present the doc as flat so the frontend picks the reliable
+                // iframe preview — Paged.js throws "item doesn't belong to
+                // list" on flat content mid-split. In-memory only; the user's
+                // book.toml is untouched (the warning explains how to make
+                // the switch permanent via Settings).
+                config.doc_type = crate::typesetter::DocType::Custom;
                 (empty_structure(), combined_html.clone())
             }
             Err(e) => return Err(e.to_string()),
@@ -10119,6 +10141,92 @@ pub fn typesetter_new_resume(dir_path: String) -> Result<String, String> {
     config.typography.page_number_style = "none".to_string();
     config.book.title = "Your Name".to_string();
     config.files = vec!["resume.md".to_string()];
+    config.root_dir = dir.clone();
+    config.config_path = dir.join("book.toml");
+
+    let toml_path = dir.join("book.toml");
+    std::fs::write(&toml_path, config.to_toml_string()).map_err(|e| e.to_string())?;
+    Ok(toml_path.display().to_string())
+}
+
+/// Scaffold a new custom flat document in `dir_path`: a starter markdown
+/// file plus a `book.toml` on the custom lane (doc_type = custom). The
+/// `template_id` is persisted so the Style chat can pick the right prompt.
+/// If `description` is provided and AI is available, the scaffold headings
+/// are expanded into full prose; otherwise the raw headings are written.
+/// `css_seed` is saved as `custom.css` when non-empty. Returns the
+/// book.toml path for the UI to load. Existing files are not overwritten.
+#[tauri::command]
+pub async fn typesetter_new_custom_document(
+    dir_path: String,
+    file_name: String,
+    title: String,
+    template_id: String,
+    description: Option<String>,
+    page_size: Option<String>,
+    scaffold_headings: Option<String>,
+    css_seed: Option<String>,
+    ai_manager: State<'_, Arc<AiManager>>,
+) -> Result<String, String> {
+    use crate::typesetter::DocType;
+
+    let dir = std::path::PathBuf::from(&dir_path);
+    if !dir.is_dir() {
+        return Err(format!("not a directory: {}", dir.display()));
+    }
+
+    let md_path = dir.join(&file_name);
+    if !md_path.exists() {
+        let scaffold = scaffold_headings.unwrap_or_default();
+        let md_content = if let Some(desc) = description.as_ref().filter(|s| !s.trim().is_empty()) {
+            if ai_manager.is_available().await {
+                let prompt = format!(
+                    "Expand the following outline into a complete Markdown document.\n\n\
+                     Topic / purpose: {desc}\n\n\
+                     Outline (preserve these headings and structure):\n{scaffold}\n\n\
+                     Write in a formal, proposal-ready style suitable for the topic. \
+                     Use Markdown headings. Keep the headings from the outline. \
+                     Fill each section with concise, substantive placeholder prose \
+                     that the author can revise. Output ONLY Markdown, no commentary."
+                );
+                match ai_manager.generate(&prompt, None).await {
+                    Ok(response) => {
+                        let text = response.content.trim().to_string();
+                        if text.is_empty() { scaffold } else { text }
+                    }
+                    Err(e) => {
+                        log::warn!("AI content generation failed, falling back to scaffold: {e}");
+                        scaffold
+                    }
+                }
+            } else {
+                scaffold
+            }
+        } else {
+            scaffold
+        };
+        std::fs::write(&md_path, md_content).map_err(|e| e.to_string())?;
+    }
+
+    let css_path = dir.join("custom.css");
+    if !css_path.exists() {
+        if let Some(css) = css_seed {
+            std::fs::write(&css_path, css).map_err(|e| e.to_string())?;
+        }
+    }
+
+    let mut config = BookConfig::default();
+    config.doc_type = DocType::Custom;
+    config.template_id = Some(template_id);
+    config.trim.size = page_size.unwrap_or_else(|| "letter".to_string());
+    // Symmetric margins for flat documents.
+    config.trim.margins_in.inside = 0.75;
+    config.trim.margins_in.outside = 0.75;
+    config.trim.margins_in.top = 0.6;
+    config.trim.margins_in.bottom = 0.6;
+    config.typography.page_number_style = "none".to_string();
+    config.book.title = title;
+    config.files = vec![file_name];
     config.root_dir = dir.clone();
     config.config_path = dir.join("book.toml");
 

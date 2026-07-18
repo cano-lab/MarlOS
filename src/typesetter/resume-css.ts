@@ -55,7 +55,9 @@ h2 {
   letter-spacing: 0.05em;
 }
 h3 { font-size: 1em; margin: 0.7em 0 0.15em; }
-h1, h2, h3, h4 { break-after: avoid; }
+/* NOTE: Paged.js v0.4 throws "item doesn't belong to list" when it hits
+   break-after: avoid inside the flat lane, so we omit it here. The Rust
+   PDF path keeps break-avoid for cleaner Chromium-native print output. */
 
 p { margin: 0.35em 0; }
 ul, ol { margin: 0.3em 0 0.35em 1.2em; padding: 0; }

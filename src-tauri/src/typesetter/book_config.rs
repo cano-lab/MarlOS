@@ -282,6 +282,11 @@ pub struct BookConfig {
     /// key) keeps its current behavior.
     #[serde(default)]
     pub doc_type: DocType,
+    /// Optional template identifier that seeded this document. Used by the
+    /// flat lane (resume/custom) to pick the right Style-chat prompt and
+    /// starter templates. Not required for book documents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
     pub book: BookMeta,
     pub trim: TrimConfig,
     pub typography: TypographyConfig,
@@ -299,6 +304,7 @@ impl Default for BookConfig {
     fn default() -> Self {
         Self {
             doc_type: DocType::default(),
+            template_id: None,
             book: BookMeta::default(),
             trim: TrimConfig::default(),
             typography: TypographyConfig::default(),
@@ -404,9 +410,16 @@ impl BookConfig {
         if !self.doc_type.is_book() {
             out.push_str("# Document kind: book | resume | custom\n");
             out.push_str(&format!(
-                "doc_type = {}\n\n",
+                "doc_type = {}\n",
                 toml_string_literal(self.doc_type.as_str())
             ));
+            if let Some(tpl) = &self.template_id {
+                out.push_str(&format!(
+                    "template_id = {}\n",
+                    toml_string_literal(tpl)
+                ));
+            }
+            out.push('\n');
         }
 
         out.push_str("[book]\n");
@@ -534,7 +547,13 @@ impl BookConfig {
 
     /// Generate a starter `book.toml` next to the given markdown file.
     /// Used by the UI when the user picks a markdown file in a directory
-    /// that doesn't have a book.toml yet.
+    /// that doesn't have a book.toml yet — and by `typesetter_book_load`
+    /// automatically, so opening a lone .md just works.
+    ///
+    /// Lane sniffing: a manuscript with several `# ` H1 headings reads as
+    /// a book (chapter chrome, Paged.js preview); anything else is a flat
+    /// document. Flat docs named like a resume get the resume lane (resume-
+    /// tuned Style chat), everything else lands on the generic custom lane.
     pub fn init_from_markdown(markdown_path: &Path) -> Result<PathBuf, BookConfigError> {
         let dir = markdown_path
             .parent()
@@ -552,37 +571,78 @@ impl BookConfig {
             .and_then(|s| s.to_str())
             .unwrap_or("Untitled");
 
-        let toml_text = format!(
-            r#"# Marlos book.toml — generated starter. Edit freely.
+        // BookConfig defaults are the book lane (6x9, KDP margins), so a
+        // book-sniffed manuscript needs no further tweaks.
+        let mut config = BookConfig {
+            files: vec![file_name.to_string()],
+            root_dir: dir.to_path_buf(),
+            config_path: target.clone(),
+            ..BookConfig::default()
+        };
+        config.book.title = stem.replace(['-', '_'], " ");
 
-# Markdown files in reading order, relative to this file.
-files = ["{file}"]
+        if !looks_like_book(markdown_path) {
+            // Flat lane — same shape typesetter_new_resume writes: letter,
+            // symmetric margins (no spine), no page numbers.
+            let s = stem.to_lowercase();
+            config.doc_type = if s.contains("resume") || s.contains("cover") || s == "cv" {
+                DocType::Resume
+            } else {
+                DocType::Custom
+            };
+            config.trim.size = "letter".to_string();
+            config.trim.margins_in.inside = 0.75;
+            config.trim.margins_in.outside = 0.75;
+            config.trim.margins_in.top = 0.6;
+            config.trim.margins_in.bottom = 0.6;
+            config.typography.page_number_style = "none".to_string();
+        }
 
-[book]
-title = "{title}"
-subtitle = ""
-author = ""
-isbn = ""
-language = "en"
-
-[trim]
-size = "6x9"
-margins_in = {{ inside = 1.0, outside = 0.875, top = 0.75, bottom = 0.75 }}
-
-[typography]
-body_font = "EB Garamond"
-body_size_pt = 11.0
-body_leading_pt = 14.0
-
-[export]
-color_mode = "bw"
-"#,
-            title = stem.replace(['-', '_'], " "),
-            file = file_name,
-        );
-        std::fs::write(&target, toml_text)?;
+        std::fs::write(&target, config.to_toml_string())?;
         Ok(target)
     }
+}
+
+/// Heuristic for `init_from_markdown`: a manuscript with two or more ATX
+/// H1 headings (`# `) reads as a book (chapters); one or none reads as a
+/// flat document. Fenced code blocks are skipped so `# comment` lines in
+/// examples don't count. Unreadable files default to flat — the flat lane
+/// renders anything, and the user can switch lanes in Settings.
+fn looks_like_book(markdown_path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(markdown_path) else {
+        return false;
+    };
+    let mut h1_count = 0usize;
+    let mut fence: Option<char> = None;
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.starts_with("```") {
+            fence = match fence {
+                Some('`') => None,
+                None => Some('`'),
+                other => other,
+            };
+            continue;
+        }
+        if t.starts_with("~~~") {
+            fence = match fence {
+                Some('~') => None,
+                None => Some('~'),
+                other => other,
+            };
+            continue;
+        }
+        if fence.is_some() {
+            continue;
+        }
+        if t.starts_with("# ") || t == "#" {
+            h1_count += 1;
+            if h1_count >= 2 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn toml_string_literal(s: &str) -> String {

@@ -193,6 +193,7 @@ mod tests {
     fn cfg() -> BookConfig {
         BookConfig {
             doc_type: Default::default(),
+            template_id: None,
             book: Default::default(),
             trim: Default::default(),
             typography: Default::default(),

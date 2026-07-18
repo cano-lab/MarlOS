@@ -8,6 +8,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { getProposalTemplate } from "../typesetter/proposal-templates";
 
 export interface PandocProbe {
   available: boolean;
@@ -106,6 +107,9 @@ export interface BookConfig {
    *  flat single-flow document at the chosen page size. Omitted in older
    *  book.toml files, which the backend defaults to "book". */
   doc_type?: "book" | "resume" | "custom";
+  /** Optional template / subtype identifier for the flat lane. Used to
+   *  pick the right Style-chat prompt and starter templates. */
+  template_id?: string;
   book: BookMeta;
   trim: {
     size: string;
@@ -211,6 +215,29 @@ export const typesetterService = {
   newResume: (dirPath: string): Promise<string> =>
     invoke<string>("typesetter_new_resume", { dirPath }),
 
+  /** Scaffold a new custom flat document (research/grant proposal, etc.)
+   *  in `dirPath`. Returns the book.toml path to load. */
+  newCustomDocument: (
+    dirPath: string,
+    fileName: string,
+    title: string,
+    templateId: string,
+    description?: string,
+    pageSize?: string,
+    scaffoldHeadings?: string,
+    cssSeed?: string,
+  ): Promise<string> =>
+    invoke<string>("typesetter_new_custom_document", {
+      dirPath,
+      fileName,
+      title,
+      templateId,
+      description: description ?? null,
+      pageSize: pageSize ?? null,
+      scaffoldHeadings: scaffoldHeadings ?? null,
+      cssSeed: cssSeed ?? null,
+    }),
+
   /**
    * Import a PDF as a new book. Pure-Rust pipeline on the backend
    * (pdfium-render → text → heading inference → markdown). The user
@@ -261,14 +288,12 @@ export const typesetterService = {
     description: string,
     currentCss: string,
     docType?: "book" | "resume" | "custom",
+    templateId?: string,
   ): Promise<string> => {
     // Resume/custom docs live on the flat lane with a different selector
     // vocabulary — feeding them the book prompt would target chapter/TOC
     // selectors that don't exist. Pick the matching prompt.
-    const system =
-      docType && docType !== "book"
-        ? RESUME_STYLE_SYSTEM_PROMPT
-        : STYLE_SYSTEM_PROMPT;
+    const system = pickStyleSystemPrompt(docType, templateId);
     const prompt =
       `Current custom.css (may be empty):\n\`\`\`css\n${currentCss || ""}\n\`\`\`\n\n` +
       `Change request: ${description}\n\n` +
@@ -286,6 +311,24 @@ export const typesetterService = {
 function stripCssFences(s: string): string {
   const fence = s.match(/```(?:css)?\s*([\s\S]*?)```/i);
   return (fence ? fence[1] : s).trim();
+}
+
+/** Pick the right Style-chat system prompt for the document lane and,
+ *  when relevant, the proposal/resume template subtype. */
+function pickStyleSystemPrompt(
+  docType?: "book" | "resume" | "custom",
+  templateId?: string,
+): string {
+  if (!docType || docType === "book") return STYLE_SYSTEM_PROMPT;
+  if (templateId) {
+    const tpl = getProposalTemplate(templateId);
+    if (tpl) {
+      return tpl.category === "funder"
+        ? FUNDER_PROPOSAL_STYLE_SYSTEM_PROMPT
+        : PROPOSAL_STYLE_SYSTEM_PROMPT;
+    }
+  }
+  return RESUME_STYLE_SYSTEM_PROMPT;
 }
 
 /** System prompt describing the typeset document's selector vocabulary so
@@ -323,5 +366,41 @@ The document is one continuous flow of plain markdown, wrapped in <main class="r
 Layout tips: for a two-column resume use CSS multi-column (columns/column-gap) or grid on main.resume; a sidebar can be a floated or grid column. Keep it ATS-friendly and print-clean.
 
 FONTS — IMPORTANT: do NOT set \`font-family\` anywhere. The document already uses an embedded print font (configured elsewhere); switching to a system/web font like Helvetica, Arial, Times, or a generic family breaks PDF font embedding and the export will look wrong. Only emit CSS for STYLE and LAYOUT — columns/grid, spacing, margins, sizes, weights, font-style (italic), font-variant (small-caps), colours, borders/rules, and alignment. If you truly must name a family, use only one of the embedded faces: "EB Garamond", "Atkinson Hyperlegible", "Lexend", "OpenDyslexic".
+
+Rules: use pt/in/em units (this is print, not screen — avoid px for type). Keep changes targeted to the request. Do not invent unrelated selectors. Do not include font-family, @font-face, or external @import. Output ONLY the CSS.`;
+
+/** System prompt for the flat research proposal lane. Emphasizes academic
+ *  proposal sections and table-friendly layouts for timelines and budgets. */
+const PROPOSAL_STYLE_SYSTEM_PROMPT = `You write CSS for a print research proposal typeset with CSS Paged Media (rendered by Chromium for PDF and Paged.js for the on-screen preview). Your CSS is appended AFTER a minimal base stylesheet, so it overrides defaults by source order — avoid !important unless necessary.
+
+The document is one continuous flow of plain markdown, wrapped in <main class="resume">. There are NO chapters, table of contents, page folios, running headers, drop caps, or cover pages — do not target those. Use only these selectors:
+- Container: main.resume
+- Headings: h1 (proposal title), h2 (major sections: Abstract, Introduction, Objectives, Methodology, Expected Outcomes, Timeline, Budget, References), h3 (subsections), h4
+- Metadata: h1 + p (author/affiliation lines), strong, em, a
+- Lists: ul, ol, li
+- Rules & tables: hr, table, thead, tbody, tr, td, th
+- Page box: @page (set size/margins here)
+
+Layout tips: proposals often need readable tables for timelines and budgets. Style tables with clean borders, aligned numbers, and enough padding. Keep section headings prominent and well-spaced. Multi-column layouts are fine for compact concept notes. Avoid dense walls of text.
+
+FONTS — IMPORTANT: do NOT set \`font-family\` anywhere. The document already uses an embedded print font (configured elsewhere); switching to a system/web font breaks PDF font embedding. Only emit CSS for STYLE and LAYOUT — columns/grid, spacing, margins, sizes, weights, font-style, font-variant, colours, borders/rules, and alignment. If you truly must name a family, use only one of the embedded faces: "EB Garamond", "Atkinson Hyperlegible", "Lexend", "OpenDyslexic".
+
+Rules: use pt/in/em units (this is print, not screen — avoid px for type). Keep changes targeted to the request. Do not invent unrelated selectors. Do not include font-family, @font-face, or external @import. Output ONLY the CSS.`;
+
+/** System prompt for funder-specific grant proposals. Adds emphasis on
+ *  budget tables, compliance-friendly spacing, and page-limit awareness. */
+const FUNDER_PROPOSAL_STYLE_SYSTEM_PROMPT = `You write CSS for a print grant proposal typeset with CSS Paged Media (rendered by Chromium for PDF and Paged.js for the on-screen preview). Your CSS is appended AFTER a minimal base stylesheet, so it overrides defaults by source order — avoid !important unless necessary.
+
+The document is one continuous flow of plain markdown, wrapped in <main class="resume">. There are NO chapters, table of contents, page folios, running headers, drop caps, or cover pages — do not target those. Use only these selectors:
+- Container: main.resume
+- Headings: h1 (proposal title), h2 (funder-required sections: Abstract, Specific Aims, Significance, Innovation, Approach, Timeline, Budget Justification, Biosketch, References), h3 (subsections), h4
+- Metadata: h1 + p (PI, institution, sponsor lines), strong, em, a
+- Lists: ul, ol, li
+- Rules & tables: hr, table, thead, tbody, tr, td, th
+- Page box: @page (set size/margins here)
+
+Layout tips: funder proposals must be highly readable and page-efficient. Use crisp table styling for budgets and timelines (aligned numbers, clear headers). Keep headings scannable and sections clearly separated. Avoid decorative flourishes that waste space. Multi-column is acceptable for one-page concept notes only when the funder allows it.
+
+FONTS — IMPORTANT: do NOT set \`font-family\` anywhere. The document already uses an embedded print font (configured elsewhere); switching to a system/web font breaks PDF font embedding. Only emit CSS for STYLE and LAYOUT — columns/grid, spacing, margins, sizes, weights, font-style, font-variant, colours, borders/rules, and alignment. If you truly must name a family, use only one of the embedded faces: "EB Garamond", "Atkinson Hyperlegible", "Lexend", "OpenDyslexic".
 
 Rules: use pt/in/em units (this is print, not screen — avoid px for type). Keep changes targeted to the request. Do not invent unrelated selectors. Do not include font-family, @font-face, or external @import. Output ONLY the CSS.`;

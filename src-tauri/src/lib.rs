@@ -533,6 +533,7 @@ pub fn run() {
             commands::typesetter_book_load,
             commands::typesetter_book_init,
             commands::typesetter_new_resume,
+            commands::typesetter_new_custom_document,
             commands::typesetter_import_pdf,
             commands::typesetter_book_save,
             commands::typesetter_analyze_html,
