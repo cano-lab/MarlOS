@@ -147,7 +147,7 @@ main.resume h2 {
 main.resume h3 { font-size: 9.5pt; font-weight: 700; margin: 0.09in 0 0.01in; break-after: avoid; }
 main.resume h4 { font-size: 9pt; font-style: italic; color: #555; margin: 0 0 0.03in; }
 main.resume p { font-size: 9pt; line-height: 1.3; margin: 0.025in 0; }
-main.resume ul { margin: 0.03in 0 0.06in 0.9em; padding: 0; }
+main.resume ul { margin: 0.03in 0 0.06in; padding-left: 0.22in; list-style-position: outside; }
 main.resume li { font-size: 9pt; line-height: 1.25; margin: 0.015in 0; break-inside: avoid; }
 `,
   },

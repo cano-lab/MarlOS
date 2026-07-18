@@ -20,6 +20,10 @@ interface ResumePreviewProps {
   customCss?: string;
   /** When false the parent keeps us mounted but hidden; skip work. */
   active?: boolean;
+  /** Fired after each render with the flowed content's bottom edge (px from
+   *  the page top) and the full page height in px. The Layout panel's
+   *  auto-fit loop uses this to detect overflow / underfill. */
+  onMeasured?: (m: { contentPx: number; pagePx: number }) => void;
 }
 
 /** The last `margin:` declared inside any `@page {}` block wins (source
@@ -95,6 +99,17 @@ ${css}
     const page = doc.querySelector(".page") as HTMLElement | null;
     const h = page ? page.getBoundingClientRect().height : doc.body.scrollHeight;
     if (h > 0) setPageH(h);
+    if (props.onMeasured && page) {
+      const main = doc.querySelector("main.resume") as HTMLElement | null;
+      const pageTop = page.getBoundingClientRect().top;
+      // Natural content bottom: with a fixed-height (fill-page) container
+      // this reports the fixed box, which is why auto-fit measures with
+      // fillPage off and only re-enables it in the final CSS.
+      const contentPx = main
+        ? main.getBoundingClientRect().bottom - pageTop
+        : h;
+      props.onMeasured({ contentPx, pagePx: toPx(trim().height) });
+    }
   };
 
   // Re-render the iframe document whenever the inputs change.

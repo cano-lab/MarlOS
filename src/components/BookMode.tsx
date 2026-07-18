@@ -17,7 +17,9 @@ import BookConfigEditor from "./BookConfigEditor";
 import BookEditorPane from "./BookEditorPane";
 import type { BookEditorApi } from "./BookEditorPane";
 import BookStylePanel from "./BookStylePanel";
+import BookLayoutPanel, { type LayoutMeasurement } from "./BookLayoutPanel";
 import RelevantSources from "./RelevantSources";
+import { PROPOSAL_TEMPLATES, getProposalTemplate } from "../typesetter/proposal-templates";
 import "./BookMode.css";
 
 /**
@@ -143,6 +145,78 @@ const BookMode: Component<BookModeProps> = (props) => {
   // to both the preview and the PDF export. Edited via the Style panel.
   const [customCss, setCustomCss] = createSignal("");
   const [showStyle, setShowStyle] = createSignal(false);
+  // Interactive layout panel (flat lane only) + the preview measurement its
+  // auto-fit loop reads. seq bumps on every measurement so the panel can
+  // await a fresh one after each trial CSS.
+  const [showLayout, setShowLayout] = createSignal(false);
+  const [lastMeasure, setLastMeasure] = createSignal<LayoutMeasurement | null>(null);
+  // New proposal modal state.
+  const [showProposalModal, setShowProposalModal] = createSignal(false);
+  const [selectedProposalTemplate, setSelectedProposalTemplate] = createSignal<string | null>(null);
+  const [proposalDescription, setProposalDescription] = createSignal("");
+
+  // Scaffold a new custom flat document from a proposal template. Opens a
+  // modal to pick the template and enter a topic, then asks for a folder,
+  // writes proposal.md + custom.css + book.toml, and loads the result.
+  const newProposal = () => {
+    setError(null);
+    setInfo(null);
+    setSelectedProposalTemplate(null);
+    setProposalDescription("");
+    setShowProposalModal(true);
+  };
+
+  const createProposal = async () => {
+    const tplId = selectedProposalTemplate();
+    if (!tplId) {
+      setError("Please choose a proposal template.");
+      return;
+    }
+    const tpl = getProposalTemplate(tplId);
+    if (!tpl) {
+      setError(`Unknown proposal template: ${tplId}`);
+      return;
+    }
+
+    let dir: string | null = null;
+    try {
+      const res = await open({
+        multiple: false,
+        directory: true,
+        title: "Choose a folder for the new proposal",
+      });
+      if (typeof res === "string") dir = res;
+    } catch (e) {
+      setError(`Folder picker failed: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    if (!dir) return;
+
+    setShowProposalModal(false);
+    setBusy(true);
+    setInfo(`Scaffolding ${tpl.name} proposal…`);
+    try {
+      const fileName = "proposal.md";
+      const title = proposalDescription().trim() || tpl.name;
+      const tomlPath = await typesetterService.newCustomDocument(
+        dir,
+        fileName,
+        title,
+        tpl.id,
+        proposalDescription().trim() || undefined,
+        tpl.page_size,
+        tpl.scaffold,
+        tpl.css,
+      );
+      setPath(tomlPath);
+      setInfo(`${tpl.name} proposal created. Loading… Use 🎨 Style to refine it with AI.`);
+      await loadBook();
+    } catch (e) {
+      setError(`New proposal failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   /** Open the margin editor from a preview right-click, seeded with the
    *  figure's current mode + inset. */
@@ -731,7 +805,7 @@ const BookMode: Component<BookModeProps> = (props) => {
         "book-mode": true,
         // When the Style chat drawer is open, shrink the main area so the
         // drawer sits beside it rather than covering the toolbar/preview.
-        "book-mode-drawer-open": showStyle(),
+        "book-mode-drawer-open": showStyle() || showLayout(),
       }}
     >
       <div class="book-mode-header">
@@ -804,6 +878,14 @@ const BookMode: Component<BookModeProps> = (props) => {
           title="Scaffold a new resume (US Letter, flat layout) and design it with AI via the Style panel."
         >
           New Resume…
+        </button>
+        <button
+          class="book-mode-btn"
+          onClick={newProposal}
+          disabled={busy() || !probe()?.available}
+          title="Scaffold a new research or grant proposal (flat layout) and design it with AI via the Style panel."
+        >
+          New Proposal…
         </button>
       </div>
 
@@ -959,12 +1041,28 @@ const BookMode: Component<BookModeProps> = (props) => {
           </button>
           <button
             class="book-mode-btn"
-            onClick={() => setShowStyle(true)}
+            onClick={() => {
+              setShowLayout(false);
+              setShowStyle(true);
+            }}
             title="Custom styling — describe a change and the AI writes the CSS"
             disabled={!book()}
           >
             🎨 Style
           </button>
+          <Show when={book()?.config.doc_type && book()!.config.doc_type !== "book"}>
+            <button
+              class="book-mode-btn"
+              onClick={() => {
+                setShowStyle(false);
+                setShowLayout(true);
+              }}
+              title="Interactive layout — columns, section boxes, auto-fit to one page"
+              disabled={!book()}
+            >
+              📐 Layout
+            </button>
+          </Show>
         </div>
 
         <div class="book-mode-main-area">
@@ -1105,6 +1203,9 @@ const BookMode: Component<BookModeProps> = (props) => {
               enrichedHtml={book()!.enriched_html}
               customCss={customCss()}
               active={viewMode() === "pages" || viewMode() === "split"}
+              onMeasured={(m) =>
+                setLastMeasure((prev) => ({ seq: (prev?.seq ?? 0) + 1, ...m }))
+              }
             />
           </Show>
         </div>
@@ -1211,6 +1312,7 @@ const BookMode: Component<BookModeProps> = (props) => {
           bookPath={path()}
           currentCss={customCss()}
           docType={book()?.config.doc_type}
+          templateId={book()?.config.template_id}
           onClose={() => setShowStyle(false)}
           onApply={async (css) => {
             await typesetterService.writeCustomCss(path(), css);
@@ -1219,6 +1321,119 @@ const BookMode: Component<BookModeProps> = (props) => {
             // closes it with the ✕ when done.
           }}
         />
+      </Show>
+
+      {/* Interactive layout panel: columns, section boxes, auto-fit.
+          Flat lane only — books have their own chapter chrome. */}
+      <Show when={showLayout() && book()}>
+        <BookLayoutPanel
+          enrichedHtml={book()!.enriched_html}
+          currentCss={customCss()}
+          trimSize={book()!.config.trim.size}
+          measurement={lastMeasure}
+          onPreview={(css) => setCustomCss(css)}
+          onApply={async (css) => {
+            await typesetterService.writeCustomCss(path(), css);
+            setCustomCss(css);
+          }}
+          onClose={async () => {
+            setShowLayout(false);
+            // Revert unapplied live previews to the saved stylesheet.
+            try {
+              setCustomCss(await typesetterService.readCustomCss(path()));
+            } catch {
+              /* keep current in-memory CSS if the read fails */
+            }
+          }}
+        />
+      </Show>
+
+      {/* New proposal template picker modal. */}
+      <Show when={showProposalModal()}>
+        <>
+          <div
+            class="fig-menu-backdrop"
+            onClick={() => setShowProposalModal(false)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setShowProposalModal(false);
+            }}
+          />
+          <div
+            class="fig-menu"
+            style={{
+              width: "480px",
+              "max-height": "80vh",
+              overflow: "auto",
+              left: "50%",
+              top: "50%",
+              transform: "translate(-50%, -50%)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div class="fig-menu-title">New proposal</div>
+            <div class="fig-menu-caption">
+              Pick a template and describe the topic. The AI will scaffold the
+              content; you can refine the style in the Style panel.
+            </div>
+
+            <div style={{ display: "flex", "flex-direction": "column", gap: "0.75rem", margin: "0.75rem 0" }}>
+              <For each={PROPOSAL_TEMPLATES}>
+                {(tpl) => (
+                  <label
+                    style={{
+                      display: "flex",
+                      "align-items": "flex-start",
+                      gap: "0.5rem",
+                      padding: "0.5rem",
+                      border: selectedProposalTemplate() === tpl.id
+                        ? "1.5pt solid #2a6fb0"
+                        : "1pt solid #ddd",
+                      "border-radius": "4px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="proposal-template"
+                      value={tpl.id}
+                      checked={selectedProposalTemplate() === tpl.id}
+                      onChange={() => setSelectedProposalTemplate(tpl.id)}
+                    />
+                    <div>
+                      <strong>{tpl.name}</strong>
+                      <span style={{ "font-size": "0.85em", color: "#666", "margin-left": "0.4rem" }}>
+                        {tpl.category}
+                      </span>
+                      <div style={{ "font-size": "0.85em", color: "#444" }}>{tpl.description}</div>
+                    </div>
+                  </label>
+                )}
+              </For>
+            </div>
+
+            <label class="fig-menu-field">
+              <span>Topic / description (optional)</span>
+              <textarea
+                rows={3}
+                placeholder="e.g. 'a study on CRISPR gene editing in model organisms'"
+                value={proposalDescription()}
+                onInput={(e) => setProposalDescription(e.currentTarget.value)}
+              />
+            </label>
+
+            <div class="fig-menu-actions">
+              <button onClick={() => setShowProposalModal(false)}>Cancel</button>
+              <button
+                class="fig-menu-primary"
+                onClick={() => void createProposal()}
+                disabled={!selectedProposalTemplate()}
+              >
+                Create proposal
+              </button>
+            </div>
+          </div>
+        </>
       </Show>
 
       {/* Right-click figure margin editor (anchored at the click). */}

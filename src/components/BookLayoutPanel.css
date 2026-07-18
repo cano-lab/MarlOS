@@ -1,0 +1,262 @@
+/* Right-docked drawer for interactive layout control — matches the Style
+   chat drawer so both panels feel like the same surface. */
+.layout-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 420px;
+  max-width: 96vw;
+  background: #2a2a2a;
+  color: #ddd;
+  border-left: 1px solid #444;
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  z-index: 50;
+}
+
+.layout-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid #3a3a3a;
+  flex-shrink: 0;
+}
+
+.layout-panel-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.layout-panel-x {
+  background: none;
+  border: none;
+  color: #aaa;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.layout-panel-x:hover {
+  color: #fff;
+  background: #3a3a3a;
+}
+
+.layout-panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.layout-group-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #888;
+  margin-bottom: 8px;
+}
+
+/* --- presets --- */
+.layout-presets {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.layout-preset {
+  background: #232323;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  color: #ccc;
+  cursor: pointer;
+  padding: 8px 10px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.layout-preset:hover {
+  border-color: #555;
+}
+
+.layout-preset.active {
+  border-color: #4a9eff;
+  background: #24344a;
+  color: #fff;
+}
+
+.layout-preset-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.layout-preset-desc {
+  font-size: 10px;
+  color: #999;
+}
+
+.layout-preset.active .layout-preset-desc {
+  color: #b8d4f0;
+}
+
+/* --- section chips --- */
+.layout-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  margin-bottom: 6px;
+  background: #232323;
+}
+
+.layout-chip-title {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.layout-chip-select {
+  background: #1c1c1c;
+  color: #ddd;
+  border: 1px solid #4a4a4a;
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 3px 4px;
+}
+
+.layout-chip-check {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #bbb;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* --- sliders --- */
+.layout-slider {
+  display: block;
+  margin-bottom: 10px;
+}
+
+.layout-slider-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #bbb;
+  margin-bottom: 2px;
+}
+
+.layout-slider-value {
+  color: #eee;
+  font-variant-numeric: tabular-nums;
+}
+
+.layout-slider input[type="range"] {
+  width: 100%;
+  accent-color: #4a9eff;
+}
+
+.layout-accent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.layout-accent input[type="color"] {
+  width: 36px;
+  height: 24px;
+  border: 1px solid #4a4a4a;
+  border-radius: 4px;
+  background: #1c1c1c;
+  padding: 1px;
+}
+
+.layout-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #bbb;
+  cursor: pointer;
+  margin-bottom: 6px;
+}
+
+/* --- actions --- */
+.layout-autofit {
+  width: 100%;
+  background: #24344a;
+  border: 1px solid #4a9eff;
+  color: #cfe2ff;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px;
+}
+
+.layout-autofit:hover:not(:disabled) {
+  background: #2c415e;
+}
+
+.layout-autofit:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.layout-status {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #9db8d8;
+  line-height: 1.4;
+}
+
+.layout-panel-foot {
+  border-top: 1px solid #3a3a3a;
+  padding: 12px 14px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.layout-apply {
+  width: 100%;
+  background: #2e5c34;
+  border: 1px solid #4c9a58;
+  color: #d9f2de;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px;
+}
+
+.layout-apply:hover:not(:disabled) {
+  background: #376e3e;
+}
+
+.layout-apply:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.layout-hint {
+  font-size: 10px;
+  color: #888;
+  text-align: center;
+}
